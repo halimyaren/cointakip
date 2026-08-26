@@ -1,0 +1,53 @@
+# =====================================================================
+# CoinTakip — .gitignore
+# =====================================================================
+# EN ÖNEMLİ KURAL: data/ klasörü ASLA yayınlanmaz.
+# İçinde şunlar var:
+#   - portfolio.json  → gerçek işlem geçmişi ve pozisyon büyüklükleri
+#   - settings.json   → PIN hash'i, kurtarma anahtarı hash'i ve
+#                       Base64 ile saklanan Gemini/Telegram API anahtarları
+# Base64 şifreleme DEĞİLDİR; anahtar depoya girerse okunabilir kabul edin.
+# Yanlışlıkla eklenmişse: git rm --cached -r data/ ve anahtarı yenileyin.
+# =====================================================================
+
+data/
+*.json.tmp
+
+# Uygulama günlükleri ve yedekler (data/ altında ama açıkça belirtiyoruz)
+data/logs/
+data/backups/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Claude Code — geliştirme aracı yapılandırması.
+# Yerel mutlak dosya yollarını (D:\Claude_Projects\...) içerdiği için
+# herkese açık depoda yeri yok.
+.claude/
+
+# İşletim sistemi / editör
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ---------------------------------------------------------------------
+# Geliştirme sürecine ait iç notlar.
+# Bu belgeler portföy büyüklükleri ve kişisel çalışma notları içerir.
+# Yayınlamak istemiyorsan aşağıdaki satırların başındaki # işaretini kaldır.
+# ---------------------------------------------------------------------
+CLAUDE_CODE_HANDOFF.md
+PROJECT_HANDOFF.md
+MASTER_PLAN_ROADMAP.md
+proje_devralma_raporu.md

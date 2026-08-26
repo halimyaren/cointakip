@@ -1,0 +1,10 @@
+# CoinTakip — Geliştirme / Test Bağımlılıkları (FAZ C2)
+#
+# Bunlar SADECE test çalıştırmak içindir. Uygulamanın kendisi bu paketlere
+# ihtiyaç duymaz; son kullanıcı yalnızca requirements.txt'i kurar.
+#
+# Kurulum:      python -m pip install -r requirements-dev.txt
+# Test:         python -m pytest
+
+pytest>=8.0.0
+httpx>=0.27.0
