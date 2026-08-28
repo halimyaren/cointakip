@@ -24,7 +24,8 @@ from data_manager import (
     set_price_sources, validate_source_spec, normalize_symbol_key,
     open_hedge, close_hedge, delete_hedge, hedge_scenario,
     write_off_position, undo_write_off, transfer_position, undo_transfer,
-    list_transfers, list_write_offs, WRITE_OFF_REASONS
+    list_transfers, list_write_offs, WRITE_OFF_REASONS,
+    get_rebuild_plan, apply_rebuild, undo_rebuild, list_rebuilds
 )
 from price_service import price_service
 import archive
@@ -201,6 +202,62 @@ def run_reconcile():
     return reconcile.reconcile(load_portfolio())
 
 
+# -------------------------------------------------------------
+# FAZ F5: MUTABAKAT DÜZELTMESİ
+# -------------------------------------------------------------
+@app.get("/api/reconcile/rebuild")
+def get_reconcile_rebuild_plan():
+    """
+    Borsa kayıtlarından yeniden kurulmuş lot önerileri. **Salt okunurdur.**
+
+    Öneriyi görmek deftere hiçbir şey yazmaz; yazma yalnızca kullanıcının
+    pozisyon başına verdiği açık onayla, aşağıdaki POST ucundan olur.
+    """
+    return get_rebuild_plan()
+
+
+@app.post("/api/reconcile/rebuild/{pos_key:path}")
+def api_apply_rebuild(pos_key: str, payload: dict = Body(None)):
+    """
+    Tek bir pozisyonun lotlarını borsa kayıtlarıyla değiştirir.
+
+    Nakit hareketi yok, gerçekleşmiş K/Z yok — bu bir kayıt düzeltmesidir.
+    İşlem geri alınabilir. İstemcinin gönderdiği lotlara güvenilmez: sunucu
+    planı yeniden üretir ve yalnızca imza uyuşursa uygular.
+    """
+    payload = payload or {}
+    try:
+        kayit = apply_rebuild(
+            pos_key,
+            signature=payload.get("signature"),
+            note=payload.get("note", ""),
+        )
+    except ValueError as e:
+        kod = 404 if "önerisi yok" in str(e).lower() else 400
+        raise HTTPException(status_code=kod, detail=str(e))
+    logger.info("Mutabakat düzeltmesi #%s: %s — %s lot → %s lot, miktar %+.8f",
+                kayit["id"], pos_key, kayit["before"]["lot_count"],
+                kayit["after"]["lot_count"], kayit["diff_qty"])
+    return {"success": True, "rebuild": kayit, **_f1_snapshot()}
+
+
+@app.get("/api/rebuilds")
+def get_rebuilds():
+    return {"rebuilds": list_rebuilds()}
+
+
+@app.post("/api/rebuilds/{rebuild_id}/undo")
+def api_undo_rebuild(rebuild_id: int):
+    try:
+        sonuc = undo_rebuild(rebuild_id)
+    except ValueError as e:
+        kod = 404 if "bulunamadı" in str(e).lower() else 400
+        raise HTTPException(status_code=kod, detail=str(e))
+    logger.info("Mutabakat düzeltmesi geri alındı: #%s (%s lot geri açıldı)",
+                rebuild_id, sonuc["restored_lots"])
+    return {"success": True, "result": sonuc, **_f1_snapshot()}
+
+
 @app.post("/api/archive/snapshot")
 def create_archive_snapshot():
     """Elle fotoğraf al. Bugünün kaydı varsa üzerine yazar."""
@@ -304,6 +361,7 @@ def _f1_snapshot():
         "consolidated_coins": metrics.get("consolidated_coins", []),
         "transfers": list_transfers(data),
         "write_offs": list_write_offs(data),
+        "rebuilds": list_rebuilds(data),
     }
 
 

@@ -2,7 +2,7 @@
 
 **A local-first, privacy-focused crypto portfolio tracker.**
 
-🇹🇷 [Türkçe README](README.tr.md)
+🇹🇷 [Türkçe README](README.tr.md) · 📖 [Kullanım Kılavuzu (Türkçe)](KILAVUZ.md)
 
 Your data never leaves your machine. No cloud sync, no account, no requirement to
 hand over exchange API keys. The app runs on `127.0.0.1` on your own computer and
@@ -62,9 +62,17 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   no record are reported, not hidden.
 - **Exchange reconciliation** — compares the trade-history files you download from
   your exchange (Binance CSV, MEXC XLSX) against your ledger and shows the
-  differences. It **writes nothing to the ledger**; your cost basis stays exactly as
-  you entered it. The report distinguishes a genuine discrepancy from "the export
-  does not reach back that far".
+  differences. The comparison **writes nothing to the ledger**. The report
+  distinguishes a genuine discrepancy from "the export does not reach back that far".
+- **Reconciliation repair** — replays the trades in those files through FIFO and
+  rebuilds the lots you should be holding today, **with their real purchase dates
+  and real prices**. You do not have to remember which trade you forgot to record;
+  the file already knows. Repairs are applied **one position at a time**, require
+  explicit approval and can be undone — there is no bulk import. No proposal is
+  offered for a position whose coverage cannot be proven. The realised P&L of past
+  round-trips — invisible until now if your ledger has no sale records — is booked
+  as a single summary entry; without it a repair would cheapen the position and
+  make your results look better than they are.
 - **Excel export**, daily automatic backups, privacy mode.
 
 ---
@@ -133,7 +141,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-360 tests, about 14 seconds. The suite **never touches your real data and never hits
+407 tests, about 16 seconds. The suite **never touches your real data and never hits
 the network**: data paths are redirected to a temporary directory, all external calls
 are mocked, and no test calls the AI API.
 
@@ -147,7 +155,8 @@ app/
 ├── data_manager.py   Financial engine: cost basis, FIFO, hedging, PIN, Excel
 ├── price_service.py  Multi-tier price discovery and source registry
 ├── archive.py        SQLite net-worth / price archive (never on the critical path)
-├── reconcile.py      Exchange export ↔ ledger reconciliation (read-only)
+├── reconcile.py      Exchange export ↔ ledger reconciliation and repair
+│                     proposals (read-only; writes go through data_manager)
 ├── ai_service.py     Gemini integration + local fallback engine
 └── static/           Alpine.js single-page UI + bundled libraries
 ```

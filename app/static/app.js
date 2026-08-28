@@ -226,6 +226,18 @@ function portfolioApp() {
     reconcileBusy: false,
     reconcileFilter: 'all',
 
+    // Faz F5: Mutabakat düzeltmesi (öneri salt okunur, uygulama onaylı)
+    rebuildPlan: null,
+    rebuildBusy: false,
+    rebuildApplying: null,     // uygulanmakta olan pos_key
+    rebuildFilter: 'actionable',
+    rebuildExpanded: null,     // lot dökümü açık olan satırın pos_key'i
+    rebuilds: [],
+    // Uygulama onayı kendi modalını kullanır: karşılaştırma tablosu, etki/uyarı
+    // ayrımı ve alım dökümü düz metne sığmıyor.
+    rebuildConfirm: { open: false, row: null },
+    showReconcileHelp: false,
+
     // Faz F2: Arşiv (net varlık geçmişi)
     archiveStatus: {},
     archiveSeries: [],
@@ -574,6 +586,129 @@ function portfolioApp() {
         this.notify(e.message || 'Mutabakat çalıştırılamadı.', 'error', 5000);
       } finally {
         this.reconcileBusy = false;
+      }
+    },
+
+    // -------------------------------------------------------------
+    // FAZ F5: MUTABAKAT DÜZELTMESİ
+    // -------------------------------------------------------------
+    // Öneriyi görmek deftere hiçbir şey yazmaz. Uygulama pozisyon başınadır:
+    // toplu bir "hepsini uygula" düğmesi BİLEREK yok — her düzeltme maliyet
+    // tabanını değiştirir ve kullanıcının onu tek tek görmesi gerekir.
+    // Etiketler kullanıcının sorduğu soruyu cevaplamalı: "ne yapmalıyım?"
+    // Önceki "Dikkatli bak" etiketi neyin dikkat gerektirdiğini söylemiyordu.
+    rebuildStatusMeta: {
+      ready: {
+        label: 'Uygulanabilir', badge: 'bg-emerald-500/15 text-emerald-300 border border-emerald-700/50',
+        help: 'Dosya bu varlığın geçmişini baştan sona kapsıyor. Öneri güvenilir.'
+      },
+      caution: {
+        label: 'Önce uyarıyı oku', badge: 'bg-amber-500/15 text-amber-300 border border-amber-700/50',
+        help: 'Öneri hesaplanabildi ama bilmeniz gereken bir şey var — genelde ' +
+              'o borsadan coin çekmiş olmanız. Satırdaki ⚠ ile başlayan cümleyi okuyun.'
+      },
+      blocked: {
+        label: 'Kapsam yetersiz', badge: 'bg-slate-500/15 text-slate-400 border border-slate-600',
+        help: 'Öneri VERİLMİYOR: dosya o kadar geriye gitmiyor ya da dışarıdan gelmiş, ' +
+              'maliyeti bilinmeyen coin var. Uydurmaktansa susmayı tercih ediyor.'
+      },
+      identical: {
+        label: 'Zaten uyumlu', badge: 'bg-slate-700/40 text-slate-500 border border-slate-700',
+        help: 'Defteriniz borsa kayıtlarıyla tutuyor. Yapılacak bir şey yok.'
+      },
+    },
+
+    get rebuildRows() {
+      if (!this.rebuildPlan) return [];
+      const rows = this.rebuildPlan.rows || [];
+      if (this.rebuildFilter === 'all') return rows;
+      if (this.rebuildFilter === 'actionable') {
+        return rows.filter(r => r.status === 'ready' || r.status === 'caution');
+      }
+      return rows.filter(r => r.status === this.rebuildFilter);
+    },
+
+    async fetchRebuildPlan() {
+      if (this.rebuildBusy) return;
+      this.rebuildBusy = true;
+      try {
+        const resp = await fetch('/api/reconcile/rebuild');
+        if (!resp.ok) throw new Error('Düzeltme önerileri hesaplanamadı.');
+        this.rebuildPlan = await resp.json();
+      } catch (e) {
+        this.notify(e.message || 'Düzeltme önerileri hesaplanamadı.', 'error', 5000);
+      } finally {
+        this.rebuildBusy = false;
+      }
+    },
+
+    openRebuildConfirm(r) {
+      this.rebuildConfirm = { open: true, row: r };
+    },
+
+    async applyRebuild(r) {
+      if (this.rebuildApplying) return;
+      this.rebuildConfirm.open = false;
+      this.rebuildApplying = r.pos_key;
+      try {
+        const resp = await fetch('/api/reconcile/rebuild/' + encodeURI(r.pos_key), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signature: r.signature })
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Düzeltme uygulanamadı.');
+        this._applyLedgerSnapshot(body);
+        const k = body.rebuild;
+        let mesaj = `${k.asset} düzeltildi: ${this.formatNum(k.before.qty, 6)} → ` +
+                    `${this.formatNum(k.after.qty, 6)} adet, maliyet ` +
+                    `$${this.formatNum(k.before.invested, 2)} → $${this.formatNum(k.after.invested, 2)}.`;
+        if (k.realized && k.realized.booked) {
+          mesaj += ` Geçmiş satışların $${this.formatNum(Math.abs(k.realized.pnl_usd), 2)} ` +
+                   `gerçekleşmiş ${k.realized.pnl_usd < 0 ? 'zararı' : 'kârı'} da deftere geçti.`;
+        }
+        this.notify(mesaj, 'success', 7000);
+        await this.fetchRebuildPlan();
+        await this.fetchPortfolio();
+      } catch (e) {
+        this.notify(e.message || 'Düzeltme uygulanamadı.', 'error', 8000);
+      } finally {
+        this.rebuildApplying = null;
+      }
+    },
+
+    async undoRebuildRecord(k) {
+      const id = (k && k.id != null) ? k.id : k;
+      const kayit = (k && k.id != null) ? k : null;
+      const onay = await this.askConfirm({
+        title: 'Düzeltmeyi geri al',
+        message: kayit ? `${kayit.asset} — ${kayit.exchange} pozisyonu elle girdiğiniz hâline dönecek.`
+                       : 'Pozisyon elle girdiğiniz eski hâline dönecek.',
+        detail: (kayit
+          ? `Borsa kayıtlarından kurulmuş ${kayit.after.lot_count} alım silinecek, ` +
+            `eski ${kayit.before.lot_count} kayıt geri açılacak ` +
+            `(${this.formatNum(kayit.after.qty, 6)} → ${this.formatNum(kayit.before.qty, 6)} adet). `
+          : '') +
+          ((kayit && kayit.realized && kayit.realized.booked)
+            ? `Düzeltmeyle deftere geçen $${this.formatNum(kayit.realized.pnl_usd, 2)} ` +
+              'gerçekleşmiş K/Z kaydı da silinecek. '
+            : '') +
+          'Düzeltmeden sonra bu varlığı sattıysanız işlem reddedilir.',
+        confirmText: 'Geri Al',
+        tone: 'danger'
+      });
+      if (!onay) return;
+      try {
+        const resp = await fetch('/api/rebuilds/' + id + '/undo', { method: 'POST' });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Düzeltme geri alınamadı.');
+        this._applyLedgerSnapshot(body);
+        this.notify(`Düzeltme geri alındı: ${body.result.restored_lots} lot eski hâline döndü.`,
+                    'success', 5000);
+        await this.fetchRebuildPlan();
+        await this.fetchPortfolio();
+      } catch (e) {
+        this.notify(e.message || 'Düzeltme geri alınamadı.', 'error', 6000);
       }
     },
 
@@ -2336,17 +2471,20 @@ function portfolioApp() {
       if (body.consolidated_coins) this.consolidatedCoins = body.consolidated_coins;
       if (body.transfers) this.transfers = body.transfers;
       if (body.write_offs) this.writeOffs = body.write_offs;
+      if (body.rebuilds) this.rebuilds = body.rebuilds;
     },
 
     async fetchLedgerHistory() {
       try {
-        const [tr, wo] = await Promise.all([
+        const [tr, wo, rb] = await Promise.all([
           fetch('/api/transfers').then(r => r.json()),
-          fetch('/api/write-offs').then(r => r.json())
+          fetch('/api/write-offs').then(r => r.json()),
+          fetch('/api/rebuilds').then(r => r.json())
         ]);
         this.transfers = tr.transfers || [];
         this.writeOffs = wo.write_offs || [];
         this.writeOffReasons = wo.reasons || [];
+        this.rebuilds = rb.rebuilds || [];
       } catch (e) {
         this.notify('Transfer/yazım geçmişi yüklenemedi.', 'error');
       }

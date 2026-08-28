@@ -1241,7 +1241,7 @@
             <span>🗄️ Arşiv & Net Varlık</span>
           </button>
           <!-- FAZ F3 — Borsa mutabakatı. SALT OKUNUR: deftere hiçbir şey yazmaz. -->
-          <button @click="tvSubTab = 'reconcile'; if (!reconcileReport) runReconcile();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'reconcile' ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
+          <button @click="tvSubTab = 'reconcile'; if (!reconcileReport) { runReconcile(); fetchRebuildPlan(); fetchLedgerHistory(); }" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'reconcile' ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
             <i data-lucide="git-compare" class="w-4 h-4"></i>
             <span>🔍 Borsa Mutabakatı</span>
           </button>
@@ -1525,13 +1525,92 @@
 
         <div class="px-4 py-3 rounded-xl bg-violet-950/40 border border-violet-800/50 text-[11.5px] text-violet-200 leading-relaxed font-sans">
           Borsadan indirdiğiniz dışa aktarım dosyalarını defterinizle karşılaştırır.
-          <b>Bu ekran deftere hiçbir şey yazmaz</b> — maliyet tabanınız sizin
-          girdiğiniz hâliyle kalır, borsa onu asla ezmez. Amaç içe aktarmak değil,
-          <b>farkı görmek</b>; ne yapacağınıza siz karar verirsiniz.
+          <b>Bu tablo deftere hiçbir şey yazmaz</b> — yalnızca farkı gösterir.
+          Aşağıdaki <b>Düzeltme Önerileri</b> bölümü ise, siz tek tek onaylarsanız
+          defteri düzeltebilir.
           <span class="block mt-1.5 text-violet-300/80">
             Dosyaları <code class="px-1 rounded bg-violet-900/50" x-text="reconcileReport ? reconcileReport.export_root : 'borsa_exports/'"></code>
             klasörüne koyun. Bu klasör <code class="px-1 rounded bg-violet-900/50">.gitignore</code>'dadır, yayınlanmaz.
           </span>
+        </div>
+
+        <!-- Açılır kullanım kılavuzu: ayrı dosyadaki kılavuz okunmaz, buradaki okunur. -->
+        <div class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden font-sans">
+          <button @click="showReconcileHelp = !showReconcileHelp"
+                  class="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-slate-800/50 transition">
+            <span class="text-[12px] font-bold text-slate-200">📖 Bu ekran nasıl kullanılır?</span>
+            <span class="text-slate-500 text-xs" x-text="showReconcileHelp ? '▾ Kapat' : '▸ Aç'"></span>
+          </button>
+
+          <div x-show="showReconcileHelp" style="display:none;" class="px-4 pb-4 space-y-4 text-[11.5px] text-slate-300 leading-relaxed border-t border-slate-800 pt-3">
+
+            <div>
+              <div class="font-bold text-white mb-1">Neden bu ekran var?</div>
+              Borsalar geçmişi süresiz saklamaz. Defterinize elle girdiğiniz rakamlar ise
+              hafızaya dayanır — bir işlemi kaydetmeyi unutmak, iki kez girmek veya yanlış
+              fiyat yazmak olağandır. Bu ekran borsanın kendi kaydıyla sizinkini karşılaştırır.
+            </div>
+
+            <div>
+              <div class="font-bold text-white mb-1">Adım adım</div>
+              <ol class="list-decimal ml-4 space-y-1 text-slate-400">
+                <li>Borsanızın web sitesinden işlem geçmişinizi indirin
+                    (Binance → <i>Order History → Export</i>, MEXC → <i>Export History</i>).
+                    Binance CSV, MEXC XLSX verir; ikisi de destekleniyor.</li>
+                <li>Dosyaları <code class="px-1 rounded bg-slate-800">borsa_exports/</code>
+                    klasörüne koyun. Alt klasör açabilirsiniz, dosya adını değiştirmeyin.</li>
+                <li>Yukarıdaki tabloda farkı görün. <b>Burada hiçbir şey değişmez.</b></li>
+                <li>Aşağıdan <b>Önerileri Hesapla</b>'ya basın.</li>
+                <li>Her pozisyonu tek tek inceleyip <b>Bu Pozisyonu Düzelt</b> deyin.
+                    Onay penceresi ne değişeceğini rakamla gösterir.</li>
+              </ol>
+              <div class="mt-1.5 text-slate-500">
+                Bu bir kerelik iştir. Dosyalar 2023'e kadar inen derin geçmişi verir —
+                borsa API'sinin asla veremeyeceği derinlik. Bundan sonrası için her ay
+                dosya indirmeniz gerekmeyecek.
+              </div>
+            </div>
+
+            <div>
+              <div class="font-bold text-white mb-1">"4 alım" ne demek?</div>
+              Bir <b>alım</b> (teknik adıyla <i>lot</i>) = tek bir satın alma işlemi, kendi
+              tarihi ve kendi fiyatıyla. "4 alım" demek, bugün elinizde kalan coinlerin dört
+              ayrı alışverişten geldiği demektir. Ayrı tutulmaları şart: kısmi satış yaptığınızda
+              FIFO en eski alımdan başlar, dolayısıyla hangi coini sattığınız kârınızı değiştirir.
+              Hepsini tek ortalamaya indirmek bu hesabı bozardı.
+            </div>
+
+            <div>
+              <div class="font-bold text-white mb-1">Durum etiketleri</div>
+              <div class="space-y-1.5">
+                <template x-for="d in ['ready', 'caution', 'blocked', 'identical']" :key="d">
+                  <div class="flex items-start gap-2">
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap mt-px"
+                          :class="rebuildStatusMeta[d].badge" x-text="rebuildStatusMeta[d].label"></span>
+                    <span class="text-slate-400 flex-1" x-text="rebuildStatusMeta[d].help"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <div>
+              <div class="font-bold text-white mb-1">Düzeltme neyi değiştirir?</div>
+              <ul class="list-disc ml-4 space-y-1 text-slate-400">
+                <li>Elle girdiğiniz kayıtlar <b>silinmez</b>, kapatılır. Her düzeltme geri alınabilir.</li>
+                <li>Yerlerine borsanın kaydından kurulmuş, <b>gerçek tarih ve fiyatlı</b> alımlar gelir.</li>
+                <li><b>Nakit bakiyeniz değişmez.</b> Bu bir alım satım değil, kayıt düzeltmesidir.</li>
+                <li>Geçmişte yaptığınız satışların o ana kadar hiçbir yerde görünmeyen
+                    gerçekleşmiş kâr/zararı da deftere geçer. Yazılmasaydı pozisyon ucuzlar
+                    ve sistem sizi <b>olduğunuzdan kârlı</b> gösterirdi.</li>
+              </ul>
+            </div>
+
+            <div class="px-3 py-2 rounded-lg bg-amber-950/30 border border-amber-800/40 text-amber-200/90">
+              <b>Excel'inizi atmayın.</b> Borsa dosyası yalnızca kapsadığı aralıkta kesindir.
+              2023-02 öncesi Binance, 2024-10 öncesi MEXC ve tüm cüzdan/DEX varlıklarınız için
+              tek kaynak hâlâ sizin kendi kaydınız.
+            </div>
+          </div>
         </div>
 
         <!-- Kapsam ve özet -->
@@ -1641,6 +1720,166 @@
           <template x-for="w in reconcileReport.warnings.slice(0, 3)" :key="w">
             <div class="text-amber-300/80 mt-0.5" x-text="w"></div>
           </template>
+        </div>
+
+        <!-- ========================================================= -->
+        <!-- FAZ F5: DÜZELTME ÖNERİLERİ                                -->
+        <!-- ========================================================= -->
+        <div class="pt-2 border-t border-slate-800">
+          <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div>
+              <h3 class="text-sm font-bold text-white font-sans flex items-center gap-2">
+                🛠️ Düzeltme Önerileri
+              </h3>
+              <p class="text-[11px] text-slate-500 font-sans mt-0.5">
+                Borsa dosyanızdaki işlemler FIFO ile yürütülerek bugün elinizde kalması
+                gereken lotlar yeniden kurulur — gerçek tarih ve gerçek fiyatlarla.
+              </p>
+            </div>
+            <button @click="fetchRebuildPlan()" :disabled="rebuildBusy"
+                    class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-600 text-white text-xs font-bold transition font-sans">
+              <span x-text="rebuildBusy ? 'Hesaplanıyor…' : (rebuildPlan ? '↻ Yenile' : 'Önerileri Hesapla')"></span>
+            </button>
+          </div>
+
+          <div class="px-4 py-3 rounded-xl bg-emerald-950/30 border border-emerald-800/50 text-[11.5px] text-emerald-200 leading-relaxed font-sans mb-3">
+            Defteriniz bir <b>işlem günlüğü değil</b>, sisteme geçtiğiniz gün elinizde kalanı
+            girdiğiniz bir fotoğraf. Bu yüzden "hangi işlemi girmeyi unuttum" sorusunun cevabı
+            defterde yok — <b>borsa dosyasında var.</b> Aşağıdaki öneriler oradan üretiliyor.
+            <span class="block mt-1.5 text-emerald-300/80">
+              Öneriyi görmek hiçbir şey yazmaz. <b>Uygulama pozisyon başınadır</b> ve her biri
+              geri alınabilir; toplu uygulama düğmesi bilerek yoktur.
+            </span>
+          </div>
+
+          <div x-show="rebuildPlan" class="flex flex-wrap items-center gap-2 mb-3 font-sans">
+            <button @click="rebuildFilter = 'actionable'"
+                    class="px-3 py-1 rounded-lg text-[11px] font-bold transition"
+                    :class="rebuildFilter === 'actionable' ? 'bg-emerald-500 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'">
+              Yapılacaklar (<span x-text="rebuildPlan ? ((rebuildPlan.status_counts.ready || 0) + (rebuildPlan.status_counts.caution || 0)) : 0"></span>)
+            </button>
+            <template x-for="d in ['ready', 'caution', 'blocked', 'identical']" :key="d">
+              <button x-show="(rebuildPlan.status_counts[d] || 0) > 0" @click="rebuildFilter = d"
+                      class="px-3 py-1 rounded-lg text-[11px] font-bold transition border"
+                      :class="rebuildFilter === d ? 'bg-slate-200 text-slate-900 border-transparent' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'">
+                <span x-text="rebuildStatusMeta[d].label"></span>
+                <span class="ml-1 opacity-80 font-mono-nums" x-text="'(' + (rebuildPlan.status_counts[d] || 0) + ')'"></span>
+              </button>
+            </template>
+            <button @click="rebuildFilter = 'all'"
+                    class="px-3 py-1 rounded-lg text-[11px] font-bold transition"
+                    :class="rebuildFilter === 'all' ? 'bg-slate-200 text-slate-900' : 'bg-slate-800 text-slate-400 hover:text-white'">
+              Tümü
+            </button>
+          </div>
+
+          <div x-show="rebuildPlan" class="space-y-2">
+            <template x-for="r in rebuildRows" :key="r.pos_key">
+              <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                <div class="p-3.5 flex flex-wrap items-start justify-between gap-3">
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="font-bold text-white text-sm font-sans" x-text="r.asset"></span>
+                      <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px] font-sans" x-text="r.exchange"></span>
+                      <span class="px-2 py-0.5 rounded text-[10px] font-bold font-sans"
+                            :class="rebuildStatusMeta[r.status].badge"
+                            x-text="rebuildStatusMeta[r.status].label"></span>
+                    </div>
+
+                    <div class="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11.5px] font-mono-nums">
+                      <span class="text-slate-500">
+                        Defterde
+                        <b class="text-cyan-300 ml-1" x-text="formatNum(r.ledger_qty, 4)"></b>
+                        <span class="text-slate-600 ml-1" x-text="'$' + formatNum(r.ledger_invested, 2)"></span>
+                      </span>
+                      <span class="text-slate-600">→</span>
+                      <span class="text-slate-500">
+                        Borsa
+                        <b class="text-teal-300 ml-1" x-text="formatNum(r.proposed_qty, 4)"></b>
+                        <span class="text-slate-600 ml-1" x-text="'$' + formatNum(r.proposed_invested, 2)"></span>
+                      </span>
+                      <span x-show="Math.abs(r.diff_qty) > 1e-8" class="font-bold"
+                            :class="r.diff_qty > 0 ? 'text-emerald-400' : 'text-rose-400'"
+                            x-text="(r.diff_qty > 0 ? '+' : '') + formatNum(r.diff_qty, 4) + ' adet'"></span>
+                      <button @click="rebuildExpanded = (rebuildExpanded === r.pos_key ? null : r.pos_key)"
+                              x-show="r.proposed_lots.length > 0"
+                              :title="'Bugün elinizde kalan coinler ' + r.proposed_lots.length + ' ayrı alımdan geliyor. Dökümü görmek için tıklayın.'"
+                              class="text-[11px] text-violet-400 hover:text-violet-300 font-sans underline decoration-dotted">
+                        <span x-text="(rebuildExpanded === r.pos_key ? '▾ ' : '▸ ') + r.proposed_lots.length + ' alım'"></span>
+                      </button>
+                    </div>
+
+                    <template x-for="e in (r.effects || [])" :key="e">
+                      <div class="mt-1.5 text-[11px] text-sky-300/90 font-sans leading-snug">• <span x-text="e"></span></div>
+                    </template>
+                    <template x-for="w in (r.warnings || [])" :key="w">
+                      <div class="mt-1.5 text-[11px] text-amber-300/90 font-sans leading-snug">⚠ <span x-text="w"></span></div>
+                    </template>
+                    <template x-for="b in (r.blockers || [])" :key="b">
+                      <div class="mt-1.5 text-[11px] text-slate-500 font-sans leading-snug">✕ <span x-text="b"></span></div>
+                    </template>
+                  </div>
+
+                  <button x-show="r.status === 'ready' || r.status === 'caution'"
+                          @click="openRebuildConfirm(r)" :disabled="rebuildApplying !== null"
+                          class="px-3.5 py-2 rounded-lg text-xs font-bold transition whitespace-nowrap font-sans disabled:opacity-40"
+                          :class="r.status === 'ready' ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-amber-600 hover:bg-amber-500 text-white'">
+                    <span x-text="rebuildApplying === r.pos_key ? 'Uygulanıyor…' : 'Bu Pozisyonu Düzelt'"></span>
+                  </button>
+                </div>
+
+                <!-- Lot dökümü: kullanıcı neyi onayladığını görebilmeli -->
+                <div x-show="rebuildExpanded === r.pos_key" class="border-t border-slate-800 bg-slate-950/60 px-3.5 py-2.5 overflow-x-auto">
+                  <table class="w-full text-[11px] font-mono-nums">
+                    <thead class="text-slate-500 text-[10px] uppercase font-sans">
+                      <tr><th class="text-left py-1">Alım tarihi</th><th class="text-right py-1">Miktar</th><th class="text-right py-1">Birim maliyet</th><th class="text-right py-1">Tutar</th></tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-800/60">
+                      <template x-for="(l, i) in r.proposed_lots" :key="i">
+                        <tr>
+                          <td class="py-1 text-slate-400" x-text="l.date"></td>
+                          <td class="py-1 text-right text-slate-200" x-text="formatNum(l.qty, 8)"></td>
+                          <td class="py-1 text-right text-slate-300" x-text="'$' + formatPrice(l.cost)"></td>
+                          <td class="py-1 text-right text-slate-400" x-text="'$' + formatNum(l.qty * l.cost, 2)"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+
+            <div x-show="rebuildRows.length === 0"
+                 class="px-4 py-8 rounded-xl bg-slate-900 border border-slate-800 text-center text-slate-500 text-xs font-sans">
+              Bu filtrede öneri yok.
+            </div>
+          </div>
+
+          <!-- Uygulanmış düzeltmeler: her biri geri alınabilir -->
+          <div x-show="rebuilds.length > 0" class="mt-4">
+            <h4 class="text-[11px] uppercase tracking-wider text-slate-500 font-sans mb-2"
+                x-text="'Uygulanmış düzeltmeler (' + rebuilds.length + ')'"></h4>
+            <div class="space-y-1.5">
+              <template x-for="k in rebuilds" :key="k.id">
+                <div class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-[11px]">
+                  <div class="font-mono-nums text-slate-400">
+                    <span class="text-slate-600" x-text="'#' + k.id + ' · ' + k.date"></span>
+                    <b class="text-white ml-2 font-sans" x-text="k.asset"></b>
+                    <span class="text-slate-600 ml-1 font-sans" x-text="k.exchange"></span>
+                    <span class="ml-2" x-text="formatNum(k.before.qty, 4) + ' → ' + formatNum(k.after.qty, 4)"></span>
+                    <span class="text-slate-600 ml-2" x-text="'$' + formatNum(k.before.invested, 2) + ' → $' + formatNum(k.after.invested, 2)"></span>
+                    <span x-show="k.realized && k.realized.booked" class="ml-2"
+                          :class="k.realized.pnl_usd < 0 ? 'text-rose-400' : 'text-emerald-400'"
+                          x-text="'K/Z $' + formatNum(k.realized.pnl_usd, 2)"></span>
+                  </div>
+                  <button @click="undoRebuildRecord(k)"
+                          class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 text-[10.5px] font-bold transition font-sans">
+                    Geri Al
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -3443,6 +3682,144 @@
                 x-text="confirmDialog.confirmText"></button>
       </div>
     </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- MODAL: FAZ F5 — DÜZELTME ONAYI                                -->
+  <!-- Maliyet tabanı değişiyor; kullanıcı neyin değişeceğini rakamla -->
+  <!-- görmeden onaylamamalı. Bu yüzden düz metin onay yetmiyor.      -->
+  <!-- ============================================================= -->
+  <div x-show="rebuildConfirm.open" class="fixed inset-0 z-[60] overflow-y-auto bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+       x-transition:enter="transition ease-out duration-150" style="display: none;"
+       @keydown.escape.window="rebuildConfirm.open && (rebuildConfirm.open = false)">
+    <template x-if="rebuildConfirm.row">
+      <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-xl w-full shadow-2xl max-h-[90vh] overflow-y-auto">
+
+        <div class="sticky top-0 bg-slate-900 border-b border-slate-800 px-5 py-4 flex items-start gap-3 z-10">
+          <div class="p-2 rounded-xl flex-shrink-0 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+            <span class="text-lg">🛠️</span>
+          </div>
+          <div class="min-w-0 flex-1">
+            <h3 class="text-base font-bold text-white tracking-tight">
+              <span x-text="rebuildConfirm.row.asset"></span> pozisyonunu düzelt
+            </h3>
+            <p class="text-xs text-slate-400 mt-0.5">
+              <span x-text="rebuildConfirm.row.exchange"></span> ·
+              defterinizdeki kayıtlar borsa kaydından kurulanlarla değiştirilecek
+            </p>
+          </div>
+          <button @click="rebuildConfirm.open = false"
+                  class="text-slate-500 hover:text-white text-xl leading-none px-1">&times;</button>
+        </div>
+
+        <div class="p-5 space-y-4">
+
+          <!-- Karşılaştırma: rakamlar yan yana olmadan karar verilemez -->
+          <div class="rounded-xl border border-slate-800 overflow-hidden">
+            <table class="w-full text-xs font-mono-nums">
+              <thead class="bg-slate-800/60 text-slate-400 text-[10px] uppercase font-sans">
+                <tr>
+                  <th class="text-left py-2 px-3"></th>
+                  <th class="text-right py-2 px-3">Miktar</th>
+                  <th class="text-right py-2 px-3">Toplam maliyet</th>
+                  <th class="text-right py-2 px-3">Ortalama</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800">
+                <tr>
+                  <td class="py-2 px-3 text-slate-400 font-sans">Defterinizde</td>
+                  <td class="py-2 px-3 text-right text-cyan-300" x-text="formatNum(rebuildConfirm.row.ledger_qty, 6)"></td>
+                  <td class="py-2 px-3 text-right text-slate-300" x-text="'$' + formatNum(rebuildConfirm.row.ledger_invested, 2)"></td>
+                  <td class="py-2 px-3 text-right text-slate-400" x-text="rebuildConfirm.row.ledger_avg_cost > 0 ? '$' + formatPrice(rebuildConfirm.row.ledger_avg_cost) : '—'"></td>
+                </tr>
+                <tr class="bg-slate-950/40">
+                  <td class="py-2 px-3 text-slate-400 font-sans">Borsa kaydına göre</td>
+                  <td class="py-2 px-3 text-right text-teal-300 font-bold" x-text="formatNum(rebuildConfirm.row.proposed_qty, 6)"></td>
+                  <td class="py-2 px-3 text-right text-slate-200 font-bold" x-text="'$' + formatNum(rebuildConfirm.row.proposed_invested, 2)"></td>
+                  <td class="py-2 px-3 text-right text-slate-300" x-text="rebuildConfirm.row.proposed_avg_cost > 0 ? '$' + formatPrice(rebuildConfirm.row.proposed_avg_cost) : '—'"></td>
+                </tr>
+                <tr class="bg-slate-800/40 font-sans">
+                  <td class="py-2 px-3 text-slate-500 text-[11px]">Fark</td>
+                  <td class="py-2 px-3 text-right font-mono-nums font-bold"
+                      :class="Math.abs(rebuildConfirm.row.diff_qty) < 1e-8 ? 'text-slate-600' : (rebuildConfirm.row.diff_qty > 0 ? 'text-emerald-400' : 'text-rose-400')"
+                      x-text="Math.abs(rebuildConfirm.row.diff_qty) < 1e-8 ? '—' : (rebuildConfirm.row.diff_qty > 0 ? '+' : '') + formatNum(rebuildConfirm.row.diff_qty, 6)"></td>
+                  <td class="py-2 px-3 text-right font-mono-nums font-bold"
+                      :class="Math.abs(rebuildConfirm.row.diff_invested) < 0.01 ? 'text-slate-600' : (rebuildConfirm.row.diff_invested > 0 ? 'text-emerald-400' : 'text-rose-400')"
+                      x-text="Math.abs(rebuildConfirm.row.diff_invested) < 0.01 ? '—' : (rebuildConfirm.row.diff_invested > 0 ? '+$' : '-$') + formatNum(Math.abs(rebuildConfirm.row.diff_invested), 2)"></td>
+                  <td class="py-2 px-3"></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Ne olacak -->
+          <div x-show="rebuildConfirm.row.effects && rebuildConfirm.row.effects.length > 0" class="space-y-1.5">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500 font-sans">Ne olacak</div>
+            <template x-for="e in rebuildConfirm.row.effects" :key="e">
+              <div class="flex items-start gap-2 px-3 py-2 rounded-lg bg-sky-950/30 border border-sky-800/40">
+                <span class="text-sky-400 text-xs mt-px">•</span>
+                <span class="text-[11.5px] text-sky-200/90 leading-relaxed font-sans" x-text="e"></span>
+              </div>
+            </template>
+          </div>
+
+          <!-- Neye dikkat -->
+          <div x-show="rebuildConfirm.row.warnings && rebuildConfirm.row.warnings.length > 0" class="space-y-1.5">
+            <div class="text-[10px] uppercase tracking-wider text-amber-500/80 font-sans">Neye dikkat etmelisiniz</div>
+            <template x-for="w in rebuildConfirm.row.warnings" :key="w">
+              <div class="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-950/30 border border-amber-800/40">
+                <span class="text-amber-400 text-xs mt-px">⚠</span>
+                <span class="text-[11.5px] text-amber-200/90 leading-relaxed font-sans" x-text="w"></span>
+              </div>
+            </template>
+          </div>
+
+          <!-- Alım dökümü -->
+          <div x-show="rebuildConfirm.row.proposed_lots.length > 0">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500 font-sans mb-1.5">
+              Deftere yazılacak alımlar
+              (<span x-text="rebuildConfirm.row.proposed_lots.length"></span>)
+            </div>
+            <div class="rounded-lg border border-slate-800 overflow-x-auto max-h-52 overflow-y-auto">
+              <table class="w-full text-[11px] font-mono-nums">
+                <thead class="bg-slate-800/60 text-slate-500 text-[10px] uppercase font-sans sticky top-0">
+                  <tr>
+                    <th class="text-left py-1.5 px-3">Alım tarihi</th>
+                    <th class="text-right py-1.5 px-3">Miktar</th>
+                    <th class="text-right py-1.5 px-3">Birim fiyat</th>
+                    <th class="text-right py-1.5 px-3">Tutar</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/60">
+                  <template x-for="(l, i) in rebuildConfirm.row.proposed_lots" :key="i">
+                    <tr>
+                      <td class="py-1.5 px-3 text-slate-400" x-text="l.date"></td>
+                      <td class="py-1.5 px-3 text-right text-slate-200" x-text="formatNum(l.qty, 8)"></td>
+                      <td class="py-1.5 px-3 text-right text-slate-300" x-text="'$' + formatPrice(l.cost)"></td>
+                      <td class="py-1.5 px-3 text-right text-slate-500" x-text="'$' + formatNum(l.qty * l.cost, 2)"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <p class="text-[11px] text-slate-500 leading-relaxed font-sans px-3 py-2 rounded-lg bg-slate-950/60 border border-slate-800">
+            Eski kayıtlarınız silinmez, kapatılır — <b class="text-slate-400">bu işlem geri alınabilir</b>.
+            Nakit bakiyeniz değişmez; bu bir alım satım değil, kayıt düzeltmesidir.
+          </p>
+        </div>
+
+        <div class="sticky bottom-0 bg-slate-900 border-t border-slate-800 px-5 py-3 flex items-center justify-end gap-2">
+          <button type="button" @click="rebuildConfirm.open = false"
+                  class="px-4 py-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs font-semibold transition">İptal</button>
+          <button type="button" @click="applyRebuild(rebuildConfirm.row)" :disabled="rebuildApplying !== null"
+                  class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold shadow-md transition">
+            Düzeltmeyi Uygula
+          </button>
+        </div>
+      </div>
+    </template>
   </div>
 
   <!-- ============================================================= -->

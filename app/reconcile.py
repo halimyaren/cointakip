@@ -33,6 +33,7 @@ kapsam aralığı hesaplanır ve rapora yazılır.
 
 import csv
 import glob
+import hashlib
 import os
 import re
 from datetime import datetime
@@ -557,5 +558,406 @@ def reconcile(data, root=None):
         "status_counts": sayim,
         "warnings": uyarilar[:50],
         # Bu rapor salt okunurdur; arayüz bunu kullanıcıya açıkça söyler.
+        "read_only": True,
+    }
+
+
+# =====================================================================
+# FAZ F5 — LOT YENİDEN KURULUMU (ÖNERİ ÜRETİMİ)
+# =====================================================================
+"""
+NEDEN BU VAR
+------------
+F3 "borsa X diyor, defterin Y diyor" der ve orada durur. Ama kullanıcının
+defteri bir İŞLEM GÜNLÜĞÜ değildir: sisteme geçtiği gün elinde kalan
+pozisyonları elle girmiştir. Yani "hangi işlemi girmeyi unuttum" sorusunun
+defter tarafında cevabı yoktur — girilmemiş bir işlem değil, hiç girilmemiş
+bir geçmiş söz konusudur.
+
+Cevap borsa dosyasındadır. Dosya her alımı ve satımı tarihiyle taşıdığı için
+FIFO yürütülerek "bugün elde ne kalmış olması gerektiği" gerçek tarih ve
+gerçek fiyatlarla yeniden kurulabilir. Kullanıcının hatırlamasına gerek yok.
+
+Bu bölüm YALNIZCA ÖNERİ ÜRETİR. Yazma işi `data_manager.apply_rebuild`
+tarafındadır ve pozisyon başına açık onay ister. F3'ün salt okunurluğu
+bozulmadı: `reconcile()` hâlâ hiçbir şey yazmaz, bu fonksiyonlar da yazmaz.
+
+DÜRÜSTLÜK KURALI (F3'ten devam)
+-------------------------------
+Kapsamı kanıtlanamayan bir pozisyon için öneri VERİLMEZ. Yanlış bir maliyet
+tabanı, eksik bir maliyet tabanından daha zararlıdır: kullanıcı ona güvenir.
+Öneriyi engelleyen üç durum var ve üçü de rapora ayrı ayrı yazılır.
+"""
+
+# Yeniden kurulmuş lotların defterdeki maliyet yöntemi etiketi.
+REBUILD_COST_METHOD = "Borsa Kaydı (mutabakat)"
+
+
+def ledger_positions(data):
+    """
+    Defterdeki aktif pozisyonlar, **(varlık, konum) çifti** bazında.
+
+    `ledger_summary` varlığı borsalar üstünden toplar; düzeltme için bu yetmez.
+    Binance'teki TIA ile MEXC'teki TIA ayrı maliyet tabanı taşır ve uygulamanın
+    temel vaadi budur — ikisini birlikte ezmek o ayrımı yok ederdi.
+    """
+    from data_manager import ACTIVE_STATUS, normalize_location
+    ozet = {}
+    for tx in data.get("transactions", []):
+        if tx.get("status") != ACTIVE_STATUS:
+            continue
+        ham = str(tx.get("coin") or "").upper().strip()
+        varlik = normalize_asset(ham[:-4] if ham.endswith("USDT") and len(ham) > 4 else ham)
+        if not varlik:
+            continue
+        konum = normalize_location(tx.get("exchange"))
+        s = ozet.setdefault((varlik, konum), {
+            "asset": varlik, "location": konum, "coin": ham,
+            "qty": 0.0, "invested": 0.0, "lots": 0,
+            "first_date": None, "tx_ids": [],
+        })
+        qty = float(tx.get("qty") or 0.0)
+        s["qty"] += qty
+        s["invested"] += qty * float(tx.get("cost") or 0.0)
+        s["lots"] += 1
+        s["tx_ids"].append(int(tx.get("id", 0) or 0))
+        tarih = str(tx.get("date") or "")[:10]
+        if tarih:
+            s["first_date"] = tarih if s["first_date"] is None else min(s["first_date"], tarih)
+    for s in ozet.values():
+        s["avg_cost"] = (s["invested"] / s["qty"]) if s["qty"] > 0 else 0.0
+    return ozet
+
+
+def _birim_maliyet(olay):
+    """
+    Bir alım olayının birim maliyeti.
+
+    `usd_value / qty` tercih edilir çünkü `qty` komisyon düşülmüş NET miktardır:
+    100 token alıp 0.1'ini komisyona verdiyseniz 99.9 tokene o paranın tamamını
+    ödemişsinizdir. Ham `price` sütunu bunu kaçırır. Kotasyon dolara sabitli
+    değilse maliyet BİLİNMİYOR sayılır — uydurmak yerine söylemek doğrudur.
+    """
+    if not olay.get("usd_known"):
+        return 0.0, False
+    qty = float(olay.get("qty") or 0.0)
+    tutar = abs(float(olay.get("usd_value") or 0.0))
+    if qty > 0 and tutar > 0:
+        return tutar / qty, True
+    fiyat = float(olay.get("price") or 0.0)
+    return (fiyat, True) if fiyat > 0 else (0.0, False)
+
+
+def fifo_rebuild(olaylar):
+    """
+    Tek bir (varlık, borsa) çifti için kalan lotları FIFO ile yeniden kurar.
+
+    `(lotlar, tanı)` döndürür. Tanı, önerinin güvenilir olup olmadığına karar
+    vermek için gereken sinyalleri taşır; bunlar gizlenmez, rapora çıkar.
+
+    GERÇEKLEŞMİŞ K/Z NEDEN BURADA HESAPLANIYOR
+    ------------------------------------------
+    FIFO'da hayatta kalan lotlar en SON alımlardır. Düşen bir coinde bunlar
+    genellikle en ucuz alımlardır; dolayısıyla yeniden kurulmuş pozisyonun
+    maliyeti, kullanıcının konsolide ortalamasından belirgin biçimde düşük
+    çıkar. Aradaki fark kaybolmuş değildir — geçmişteki satışlarda
+    GERÇEKLEŞMİŞTİR.
+
+    Kullanıcının defterinde hiç satış kaydı olmadığı için o zarar hiçbir yerde
+    durmuyor. Yalnızca açık lotları düzeltip bunu atlarsak pozisyon ucuzlar,
+    tablo iyileşir ve sistem gerçekte olduğundan KÂRLI görünür. Bu, düzeltmenin
+    amacının tam tersidir. Bu yüzden kapanmış tur-işlemlerin gerçekleşmiş K/Z'si
+    de burada hesaplanır ve uygulanırken deftere tek bir özet kayıt olarak
+    yazılır.
+
+    Çekilen miktarın taşıdığı maliyet ayrı tutulur: o coinler satılmadı, başka
+    bir konuma gitti. Kullanıcı onları oraya bu maliyetle girebilsin diye
+    rapora yazılır.
+    """
+    lotlar = []
+    fazla_satis = 0.0
+    cekilen = 0.0
+    cekilen_maliyet = 0.0
+    yatirilan = 0.0
+    satilan_qty = 0.0
+    satis_hasilati = 0.0
+    satilan_maliyet = 0.0
+    son_satis_tarihi = None
+    kz_bilinmeyen = 0
+    # Aynı gün içinde önce giriş sonra çıkış işlensin; ters sıra sahte
+    # "açığa satış" üretir ve kapsam boşluğu sanılır.
+    sirali = sorted(olaylar, key=lambda o: (o.get("time") or "",
+                                            0 if float(o.get("qty") or 0) >= 0 else 1))
+    for o in sirali:
+        qty = float(o.get("qty") or 0.0)
+        tarih = (o.get("time") or "")[:10]
+        if qty > 0:
+            if o.get("kind") == "DEPOSIT":
+                yatirilan += qty
+                maliyet, bilinir = 0.0, False
+            else:
+                maliyet, bilinir = _birim_maliyet(o)
+            lotlar.append({"date": tarih, "qty": qty, "cost": maliyet,
+                           "cost_known": bilinir, "kind": o.get("kind")})
+        elif qty < 0:
+            satis_mi = o.get("kind") == "TRADE"
+            kalan = -qty
+            tuketilen_maliyet = 0.0
+            maliyet_tam = True
+            while kalan > 1e-12 and lotlar:
+                alinan = min(kalan, lotlar[0]["qty"])
+                if lotlar[0]["cost_known"]:
+                    tuketilen_maliyet += alinan * lotlar[0]["cost"]
+                else:
+                    maliyet_tam = False
+                lotlar[0]["qty"] -= alinan
+                kalan -= alinan
+                if lotlar[0]["qty"] <= 1e-12:
+                    lotlar.pop(0)
+            if kalan > 1e-9:
+                fazla_satis += kalan
+                maliyet_tam = False
+
+            if satis_mi:
+                satilan_qty += -qty
+                satilan_maliyet += tuketilen_maliyet
+                son_satis_tarihi = max(son_satis_tarihi or "", tarih) or None
+                if o.get("usd_known") and maliyet_tam:
+                    satis_hasilati += abs(float(o.get("usd_value") or 0.0))
+                else:
+                    kz_bilinmeyen += 1
+            else:
+                cekilen += -qty
+                cekilen_maliyet += tuketilen_maliyet
+
+    lotlar = [l for l in lotlar if l["qty"] > 1e-12]
+    return lotlar, {
+        "oversold_qty": fazla_satis,
+        "withdrawn_qty": cekilen,
+        "withdrawn_cost_usd": cekilen_maliyet,
+        "deposited_qty": yatirilan,
+        "unknown_cost_qty": sum(l["qty"] for l in lotlar if not l["cost_known"]),
+        "event_count": len(sirali),
+        "realized_qty": satilan_qty,
+        "realized_proceeds_usd": satis_hasilati,
+        "realized_cost_usd": satilan_maliyet,
+        "realized_pnl_usd": satis_hasilati - satilan_maliyet,
+        "realized_last_date": son_satis_tarihi,
+        # Tek bir satışın bile K/Z'si çıkarılamıyorsa toplam güvenilmez;
+        # yaklaşık bir rakamı kesinmiş gibi deftere yazmayız.
+        "realized_known": kz_bilinmeyen == 0 and satilan_qty > 1e-12,
+        "realized_unknown_trades": kz_bilinmeyen,
+    }
+
+
+def lot_signature(lotlar):
+    """
+    Önerinin parmak izi.
+
+    Kullanıcı öneriyi gördükten sonra klasöre yeni bir dosya koyarsa öneri
+    değişir; eski ekranı onaylamak sessizce BAŞKA bir şeyi uygular. İmza
+    uyuşmazsa uygulama reddedilir ve kullanıcıdan listeyi yenilemesi istenir.
+    """
+    ham = "|".join(f"{l['date']}:{round(float(l['qty']), 10):.10f}:"
+                   f"{round(float(l['cost']), 12):.12f}" for l in lotlar)
+    return hashlib.sha1(ham.encode("utf-8")).hexdigest()[:16]
+
+
+def _kz_zaten_defterde(data, varlik, borsa):
+    """
+    Bu (varlık, konum) için defterde zaten gerçekleşmiş K/Z kaydı var mı?
+
+    Varsa borsanın kapanmış turlarını bir kez daha yazmak MÜKERRER olur. Kural
+    kaba tutuldu — tek bir satış kaydı bile varsa yazmıyoruz — çünkü hata yönü
+    önemli: eksik kalmış bir K/Z kullanıcıyı arayışa iter, uydurulmuş bir K/Z
+    ise yanlış bir rakama güvendirir. İkincisi daha zararlıdır.
+    """
+    from data_manager import normalize_location
+    for tx in data.get("transactions", []):
+        ham = str(tx.get("coin") or "").upper().strip()
+        v = normalize_asset(ham[:-4] if ham.endswith("USDT") and len(ham) > 4 else ham)
+        if v != varlik or normalize_location(tx.get("exchange")) != borsa:
+            continue
+        if tx.get("exit_price") is not None or tx.get("realized_pnl_usd") is not None:
+            return True
+    return False
+
+
+def build_rebuild_plan(data, root=None):
+    """
+    Her (varlık, borsa) çifti için düzeltme önerisi üretir. **Yazma yok.**
+    """
+    olaylar, kaynaklar, uyarilar = load_all_events(root)
+    pencere = coverage_windows(olaylar)
+    defter = ledger_positions(data)
+
+    # Olayları çift bazında grupla — tek geçiş yeter.
+    gruplar = {}
+    for o in olaylar:
+        varlik = o.get("asset")
+        if not varlik or varlik in STABLE_QUOTES:
+            continue
+        gruplar.setdefault((varlik, o["exchange"]), []).append(o)
+
+    # Defterde olup borsada hiç görünmeyen pozisyonlar da değerlendirilmeli:
+    # "borsa sıfır diyor" da bir bilgidir. Ama yalnızca KAPSANAN borsalar için.
+    ciftler = set(gruplar)
+    for (varlik, konum) in defter:
+        if varlik not in STABLE_QUOTES and konum in pencere:
+            ciftler.add((varlik, konum))
+
+    satirlar = []
+    for varlik, borsa in sorted(ciftler):
+        alt_olaylar = gruplar.get((varlik, borsa), [])
+        lotlar, tani = fifo_rebuild(alt_olaylar)
+        d = defter.get((varlik, borsa))
+
+        onerilen_qty = sum(l["qty"] for l in lotlar)
+        onerilen_maliyet = sum(l["qty"] * l["cost"] for l in lotlar)
+        defter_qty = d["qty"] if d else 0.0
+        defter_maliyet = d["invested"] if d else 0.0
+        kapsam_basi = pencere.get(borsa, {}).get("first")
+
+        coin_adi = d["coin"] if d else f"{varlik}USDT"
+        pos_key = f"{coin_adi}@{borsa}"
+
+        # --- Öneriyi ENGELLEYEN durumlar ---
+        engeller = []
+        if tani["oversold_qty"] > 1e-9:
+            engeller.append(
+                f"Borsa kayıtlarında {tani['oversold_qty']:,.8f} adet karşılıksız çıkış var — "
+                f"alım dosyanın başlangıcından ({kapsam_basi}) önce yapılmış. "
+                "Dosya bu varlığın geçmişini tam kapsamıyor."
+            )
+        if tani["unknown_cost_qty"] > 1e-9:
+            engeller.append(
+                f"Kalan lotların {tani['unknown_cost_qty']:,.8f} adedi dışarıdan gelen bir "
+                "yatırma; borsa dosyası bunun maliyetini bilmiyor. Sıfır maliyet yazmak "
+                "sahte kâr üretirdi."
+            )
+        if d and d.get("first_date") and kapsam_basi and d["first_date"] < kapsam_basi:
+            engeller.append(
+                f"Defterdeki en eski kayıt {d['first_date']}, dosya ise {kapsam_basi} "
+                "tarihinde başlıyor. Öncesi dosyada yok."
+            )
+        if not lotlar and not d:
+            continue  # ne borsada ne defterde bir şey var
+
+        # --- Öneriyi ZAYIFLATAN ama engellemeyen durumlar ---
+        # Deftere geçmemiş bir gerçekleşmiş K/Z var mı? Yalnızca hesabı tam
+        # çıkarılabiliyorsa ve defterde bu pozisyonun hiç satış kaydı yoksa.
+        kz_var = tani["realized_known"] and abs(tani["realized_pnl_usd"]) > 0.01
+        kz_defterde = _kz_zaten_defterde(data, varlik, borsa)
+        yazilacak_kz = kz_var and not kz_defterde
+
+        # ETKİ ile İKAZ ayrı tutuluyor. "Şu olacak" bir uyarı değildir; ikisini
+        # aynı listeye koymak her satırı uyarılı gösterir ve uyarı anlamını
+        # yitirir — kullanıcı gerçekten dikkat etmesi gerekeni fark edemez.
+        etkiler = []
+        ikazlar = []
+
+        if yazilacak_kz:
+            isaret = "kâr" if tani["realized_pnl_usd"] > 0 else "zarar"
+            etkiler.append(
+                f"Kapanmış {tani['realized_qty']:,.8f} adetlik alım-satımın "
+                f"${abs(tani['realized_pnl_usd']):,.2f} gerçekleşmiş {isaret}ı deftere "
+                "tek bir özet kayıt olarak geçecek. Şu an hiçbir yerde görünmüyor."
+            )
+        if d is None:
+            etkiler.append("Defterde bu konumda böyle bir pozisyon yok; düzeltme yeni bir "
+                           "pozisyon açacak.")
+        if not lotlar and d:
+            etkiler.append("Borsa kayıtlarına göre bu pozisyondan tamamen çıkılmış. "
+                           "Düzeltme defterdeki kaydı kapatır, nakit üretmez.")
+
+        if tani["withdrawn_qty"] > 1e-9:
+            ikazlar.append(
+                f"Bu borsadan {tani['withdrawn_qty']:,.8f} adet çekilmiş "
+                f"(taşıdığı maliyet ${tani['withdrawn_cost_usd']:,.2f}). Öneri yalnızca "
+                f"{borsa} bakiyesini anlatır; çekilen miktar cüzdanınızda duruyorsa onu "
+                "ayrı bir konum olarak bu maliyetle eklemelisiniz."
+            )
+        if kz_var and kz_defterde:
+            ikazlar.append(
+                f"Borsa kayıtlarındaki ${abs(tani['realized_pnl_usd']):,.2f} gerçekleşmiş K/Z "
+                "deftere YAZILMAYACAK: bu pozisyonun zaten satış kaydı var ve iki kez saymak "
+                "tabloyu bozardı. Yalnızca açık lotlar düzeltilir."
+            )
+        elif tani["realized_unknown_trades"] > 0:
+            ikazlar.append(
+                f"{tani['realized_unknown_trades']} satışın dolar karşılığı çıkarılamadı "
+                "(dolara sabitli olmayan kotasyon veya kapsam dışı alım). Gerçekleşmiş K/Z "
+                "deftere yazılmayacak — açık lotlar yine de düzeltilir."
+            )
+
+        fark_qty = onerilen_qty - defter_qty
+        # "Aynı" demek için açık lotların tutması yetmez: deftere geçmemiş bir
+        # gerçekleşmiş K/Z varsa uygulanacak bir şey hâlâ vardır.
+        ayni = (d is not None and _yakin(onerilen_qty, defter_qty)
+                and abs(onerilen_maliyet - defter_maliyet) < 0.01
+                and not yazilacak_kz)
+
+        if engeller:
+            durum = "blocked"
+        elif ayni:
+            durum = "identical"
+        elif ikazlar:
+            durum = "caution"
+        else:
+            durum = "ready"
+
+        satirlar.append({
+            "asset": varlik,
+            "exchange": borsa,
+            "coin": coin_adi,
+            "pos_key": pos_key,
+            "ledger_qty": defter_qty,
+            "ledger_invested": defter_maliyet,
+            "ledger_avg_cost": d["avg_cost"] if d else 0.0,
+            "ledger_lots": d["lots"] if d else 0,
+            "ledger_first_date": d.get("first_date") if d else None,
+            "proposed_qty": onerilen_qty,
+            "proposed_invested": onerilen_maliyet,
+            "proposed_avg_cost": (onerilen_maliyet / onerilen_qty) if onerilen_qty > 0 else 0.0,
+            "proposed_lots": [{"date": l["date"], "qty": l["qty"], "cost": l["cost"]}
+                              for l in lotlar],
+            "diff_qty": fark_qty,
+            "diff_invested": onerilen_maliyet - defter_maliyet,
+            "coverage_start": kapsam_basi,
+            "trade_count": tani["event_count"],
+            "withdrawn_qty": tani["withdrawn_qty"],
+            "withdrawn_cost_usd": tani["withdrawn_cost_usd"],
+            "realized_qty": tani["realized_qty"],
+            "realized_proceeds_usd": tani["realized_proceeds_usd"],
+            "realized_cost_usd": tani["realized_cost_usd"],
+            "realized_pnl_usd": tani["realized_pnl_usd"],
+            "realized_last_date": tani["realized_last_date"],
+            "realized_known": tani["realized_known"],
+            # Uygulama bu bayrağa bakar: K/Z özeti yazılacak mı, yazılmayacak mı.
+            "will_book_realized": yazilacak_kz,
+            "status": durum,
+            "blockers": engeller,
+            "warnings": ikazlar,
+            "effects": etkiler,
+            "signature": lot_signature(lotlar),
+        })
+
+    sira = {"ready": 0, "caution": 1, "blocked": 2, "identical": 3}
+    satirlar.sort(key=lambda r: (sira.get(r["status"], 4), -abs(r["diff_invested"]), r["asset"]))
+
+    sayim = {}
+    for r in satirlar:
+        sayim[r["status"]] = sayim.get(r["status"], 0) + 1
+
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "export_root": root or export_root(),
+        "files_found": len(kaynaklar),
+        "sources": kaynaklar,
+        "coverage": pencere,
+        "rows": satirlar,
+        "status_counts": sayim,
+        "warnings": uyarilar[:50],
+        # Plan üretimi de salt okunurdur; yazma ancak açık onayla olur.
         "read_only": True,
     }

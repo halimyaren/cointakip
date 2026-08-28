@@ -2,7 +2,7 @@
 
 **Yerel çalışan, gizlilik öncelikli kripto portföy takip terminali.**
 
-🇬🇧 [English README](README.md)
+🇬🇧 [English README](README.md) · 📖 [Kullanım Kılavuzu](KILAVUZ.md)
 
 Verileriniz bilgisayarınızdan çıkmaz. Buluta yükleme yok, hesap açma yok,
 borsa API anahtarı verme zorunluluğu yok. Uygulama `127.0.0.1` üzerinde
@@ -59,9 +59,16 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   gizlenmez, açıkça bildirilir.
 - **Borsa mutabakatı** — borsanızın web arayüzünden indirdiğiniz işlem geçmişi
   dosyalarını (Binance CSV, MEXC XLSX) defterinizle karşılaştırır ve farkları
-  gösterir. **Deftere hiçbir şey yazmaz**; maliyet tabanınız sizin girdiğiniz
-  hâliyle kalır. Rapor, gerçek bir tutarsızlığı "dosya o kadar geriye gitmiyor"
-  durumundan ayırt eder.
+  gösterir. Karşılaştırma **deftere hiçbir şey yazmaz**. Rapor, gerçek bir
+  tutarsızlığı "dosya o kadar geriye gitmiyor" durumundan ayırt eder.
+- **Mutabakat düzeltmesi** — dosyalardaki işlemler FIFO ile yürütülerek bugün
+  elinizde kalması gereken lotlar **gerçek alım tarihleri ve gerçek fiyatlarıyla**
+  yeniden kurulur. Hangi işlemi kaydetmeyi unuttuğunuzu hatırlamanız gerekmez;
+  dosya zaten biliyor. Düzeltme **pozisyon başınadır**, açık onay ister ve geri
+  alınabilir — toplu içe aktarma yoktur. Kapsamı kanıtlanamayan bir pozisyon için
+  öneri verilmez. Geçmiş satışların o ana kadar hiçbir yerde görünmeyen
+  gerçekleşmiş kâr/zararı da tek bir özet kayıt olarak deftere geçer; yoksa
+  düzeltme pozisyonu ucuzlatır ve tabloyu olduğundan iyi gösterirdi.
 - **Excel dışa aktarım**, günlük otomatik yedekleme, gizlilik modu.
 
 ---
@@ -131,7 +138,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-360 test, yaklaşık 14 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
+407 test, yaklaşık 16 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
 veri yolları geçici bir klasöre yönlendirilir, tüm dış çağrılar taklit edilir ve
 hiçbir test yapay zekâ API'sine istek atmaz.
 
@@ -145,7 +152,8 @@ app/
 ├── data_manager.py   Finansal motor: maliyet hesabı, FIFO, hedge, PIN, Excel
 ├── price_service.py  Çok kademeli fiyat keşfi ve kaynak kayıt defteri
 ├── archive.py        SQLite net varlık / fiyat arşivi (kritik yolda değildir)
-├── reconcile.py      Borsa dışa aktarımı ↔ defter mutabakatı (salt okunur)
+├── reconcile.py      Borsa dışa aktarımı ↔ defter mutabakatı ve düzeltme
+│                     önerileri (salt okunur; yazma data_manager'dan geçer)
 ├── ai_service.py     Gemini entegrasyonu + yerel yedek motor
 └── static/           Alpine.js tek sayfa arayüz + paketlenmiş kütüphaneler
 ```

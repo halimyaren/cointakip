@@ -126,6 +126,15 @@ def _ensure_schema(data):
     if "next_transfer_id" not in data:
         mevcut_t = [int(t.get("id", 0) or 0) for t in data["transfers"]]
         data["next_transfer_id"] = (max(mevcut_t) + 1) if mevcut_t else 1
+
+    # FAZ F5 — Mutabakat düzeltmeleri de ayrı bir denetim defterinde tutulur.
+    # Eski lotlar SİLİNMEZ, kapatılır; kayıt hangi lotun kapandığını ve hangi
+    # lotların oluştuğunu taşır, böylece düzeltme birebir geri alınabilir.
+    if "rebuilds" not in data or not isinstance(data.get("rebuilds"), list):
+        data["rebuilds"] = []
+    if "next_rebuild_id" not in data:
+        mevcut_r = [int(r.get("id", 0) or 0) for r in data["rebuilds"]]
+        data["next_rebuild_id"] = (max(mevcut_r) + 1) if mevcut_r else 1
     return data
 
 
@@ -1239,11 +1248,16 @@ def _defter_artigi_mi(tx):
     (iki kez sayılırdı), ikincisi ise zaten sıfırlandı ve canlı fiyat
     bulunamadığında maliyet üzerinden değerlenip "para hâlâ orada" izlenimi
     verirdi. İkisi de gerçekleşmiş K/Z tarafında doğru şekilde görünüyor.
+
+    FAZ F5 — Mutabakat düzeltmesiyle kapatılan lotlar da buraya girer: onların
+    yerine aynı pozisyonun borsa kayıtlarından kurulmuş hâli duruyor. Listede
+    göstermek aynı varlığı iki kez saydırırdı.
     """
     return bool(
         tx.get("transfer_out_id")
         or tx.get("write_off_ref")
-        or tx.get("close_reason") == "write_off"
+        or tx.get("rebuild_out_id")
+        or tx.get("close_reason") in ("write_off", "rebuild")
     )
 
 
@@ -1595,6 +1609,259 @@ def list_write_offs(data=None):
     kayitlar = [t for t in data.get("transactions", [])
                 if t.get("close_reason") == "write_off"]
     kayitlar.sort(key=lambda t: int(t.get("id", 0) or 0), reverse=True)
+    return kayitlar
+
+
+# =====================================================================
+# FAZ F5: MUTABAKAT DÜZELTMESİ
+# =====================================================================
+"""
+NE YAPAR
+--------
+Bir pozisyonun defterdeki lotlarını, borsa dışa aktarım dosyalarından FIFO ile
+yeniden kurulmuş lotlarla DEĞİŞTİRİR. Öneriyi `reconcile.build_rebuild_plan`
+üretir; burası yalnızca uygular.
+
+DÖRT KURAL
+----------
+1. **Sessiz düzeltme yok.** Her düzeltme `rebuilds` defterinde ayrı, gerekçeli
+   ve geri alınabilir bir kayıttır. Eski lotlar silinmez, kapatılır.
+
+2. **Toplu içe aktarma yok.** Uygulama pozisyon başınadır; kullanıcı her birini
+   ayrı görür ve ayrı onaylar.
+
+3. **Gerçekleşmiş K/Z üretilmez.** Bu bir ekonomik olay değil, kayıt
+   düzeltmesidir. Kapatılan lotlara `exit_price` veya `realized_pnl_usd`
+   YAZILMAZ; `calculate_realized_metrics` yalnızca bu iki alandan birini
+   taşıyan kayıtları saydığı için düzeltme K/Z tablosunu kirletmez.
+
+4. **Sunucu istemciye güvenmez.** Uygulanacak lotlar istek gövdesinden
+   alınmaz; sunucu planı kendisi yeniden üretir ve istemcinin gönderdiği imzayı
+   doğrular. Böylece ne uydurma bir maliyet enjekte edilebilir ne de ekranda
+   duran eski bir öneri sessizce başka bir şeye dönüşebilir.
+"""
+
+REBUILD_CLOSE_REASON = "rebuild"
+
+
+def get_rebuild_plan(data=None, root=None):
+    """Düzeltme önerilerini döndürür. Salt okunur."""
+    import reconcile
+    if data is None:
+        data = load_portfolio()
+    return reconcile.build_rebuild_plan(data, root)
+
+
+def apply_rebuild(pos_key: str, signature: str = None, note: str = "", root=None):
+    """
+    Bir pozisyonun lotlarını borsa kayıtlarından kurulmuş hâliyle değiştirir.
+
+    Nakit hareketi yok, gerçekleşmiş K/Z yok. Geri alınabilir.
+    """
+    import reconcile
+    data = load_portfolio()
+    plan = reconcile.build_rebuild_plan(data, root)
+    satir = next((r for r in plan["rows"] if r["pos_key"] == pos_key), None)
+    if satir is None:
+        raise ValueError(f"Bu pozisyon için düzeltme önerisi yok: {pos_key}")
+
+    if satir["status"] == "blocked":
+        raise ValueError("Bu pozisyon düzeltilemez — " + " ".join(satir["blockers"]))
+    if satir["status"] == "identical":
+        raise ValueError("Bu pozisyon zaten borsa kayıtlarıyla aynı; "
+                         "değiştirilecek bir şey yok.")
+    if signature and signature != satir["signature"]:
+        raise ValueError("Öneri değişmiş — dışa aktarım dosyaları güncellenmiş olabilir. "
+                         "Listeyi yenileyip yeniden bakın.")
+
+    symbol, exch, eski_lotlar = _aktif_lotlar(data, pos_key)
+    rid = int(data.get("next_rebuild_id", 1))
+    bugun = datetime.now().strftime("%Y-%m-%d")
+
+    onceki_qty = sum(float(tx.get("qty") or 0.0) for tx in eski_lotlar)
+    onceki_maliyet = sum(float(tx.get("qty") or 0.0) * float(tx.get("cost") or 0.0)
+                         for tx in eski_lotlar)
+
+    kapatilan_ids = []
+    for tx in eski_lotlar:
+        tx["status"] = CLOSED_STATUS
+        tx["rebuild_out_id"] = rid
+        # Gerçekleşmiş K/Z alanları BİLEREK yazılmıyor (bkz. kural 3).
+        tx["close_reason"] = REBUILD_CLOSE_REASON
+        tx["exit_date"] = bugun
+        kapatilan_ids.append(int(tx.get("id", 0) or 0))
+
+    kategori = eski_lotlar[0].get("category", "Altcoin") if eski_lotlar else "Altcoin"
+    coin_adi = satir["coin"]
+    next_id = _sonraki_tx_id(data)
+    olusan_ids = []
+
+    for lot in satir["proposed_lots"]:
+        qty = round(float(lot["qty"]), 12)
+        if qty <= 0:
+            continue
+        maliyet = round(float(lot["cost"]), 12)
+        data["transactions"].append({
+            "id": next_id,
+            # Gerçek alım tarihi korunur — düzeltmenin bütün değeri bu.
+            "date": lot["date"] or bugun,
+            "coin": coin_adi,
+            "exchange": exch,
+            "qty": qty,
+            "cost": maliyet,
+            "status": ACTIVE_STATUS,
+            "type": "DÜZELTME",
+            "rebuild_in_id": rid,
+            "cost_method": reconcile.REBUILD_COST_METHOD,
+            "notes": f"Borsa mutabakatı ile yeniden kuruldu (#{rid}): "
+                     f"{lot['date']} tarihli alım, {qty:.8f} @ ${maliyet:,.8f} — {exch}",
+            "category": kategori,
+        })
+        olusan_ids.append(next_id)
+        next_id += 1
+
+    # --- Geçmişteki satışların gerçekleşmiş K/Z'si ---
+    # FIFO'da hayatta kalan lotlar en son (ve düşen bir coinde en ucuz)
+    # alımlardır; aradaki fark kaybolmadı, geçmiş satışlarda gerçekleşti.
+    # Bunu yazmazsak düzeltme pozisyonu ucuzlatır ve tabloyu olduğundan
+    # İYİ gösterir. Tek bir özet kayıt olarak yazılıyor: satış satış değil,
+    # çünkü amaç işlem geçmişini içe aktarmak değil, sonucu doğru göstermek.
+    kz_tx_id = None
+    if satir.get("will_book_realized"):
+        kz_qty = float(satir["realized_qty"])
+        kz_maliyet = float(satir["realized_cost_usd"])
+        kz_hasilat = float(satir["realized_proceeds_usd"])
+        kz_tx_id = next_id
+        data["transactions"].append({
+            "id": kz_tx_id,
+            "date": satir.get("coverage_start") or bugun,
+            "coin": coin_adi,
+            "exchange": exch,
+            "qty": round(kz_qty, 12),
+            "cost": round(kz_maliyet / kz_qty, 12) if kz_qty > 0 else 0.0,
+            "status": CLOSED_STATUS,
+            "type": "MUTABAKAT",
+            "exit_price": round(kz_hasilat / kz_qty, 12) if kz_qty > 0 else 0.0,
+            "exit_date": satir.get("realized_last_date") or bugun,
+            "exit_value": round(kz_hasilat, 6),
+            "realized_pnl_usd": round(kz_hasilat - kz_maliyet, 2),
+            "fee_amount": 0.0,
+            "fee_asset": "USDT",
+            "fee_usd": 0.0,
+            "cost_method": reconcile.REBUILD_COST_METHOD,
+            "close_reason": "rebuild_realized",
+            "rebuild_in_id": rid,
+            "notes": f"Borsa mutabakatı (#{rid}): {exch} üzerinde kapanmış "
+                     f"{kz_qty:,.8f} {satir['asset']} alım-satımının özeti — "
+                     f"maliyet ${kz_maliyet:,.2f}, hasılat ${kz_hasilat:,.2f}. "
+                     "Tek tek işlemler içe aktarılmadı; yalnızca sonuç yazıldı.",
+            "category": kategori,
+        })
+        next_id += 1
+
+    kayit = {
+        "id": rid,
+        "date": bugun,
+        "pos_key": pos_key,
+        "asset": satir["asset"],
+        "coin": coin_adi,
+        "exchange": exch,
+        "before": {
+            "qty": onceki_qty,
+            "invested": round(onceki_maliyet, 6),
+            "avg_cost": round(onceki_maliyet / onceki_qty, 12) if onceki_qty > 0 else 0.0,
+            "lot_count": len(eski_lotlar),
+        },
+        "after": {
+            "qty": satir["proposed_qty"],
+            "invested": round(satir["proposed_invested"], 6),
+            "avg_cost": round(satir["proposed_avg_cost"], 12),
+            "lot_count": len(olusan_ids),
+        },
+        "diff_qty": satir["proposed_qty"] - onceki_qty,
+        "diff_invested": round(satir["proposed_invested"] - onceki_maliyet, 6),
+        "realized": {
+            "booked": bool(kz_tx_id),
+            "tx_id": kz_tx_id,
+            "qty": satir.get("realized_qty", 0.0),
+            "proceeds_usd": round(float(satir.get("realized_proceeds_usd") or 0.0), 2),
+            "cost_usd": round(float(satir.get("realized_cost_usd") or 0.0), 2),
+            "pnl_usd": round(float(satir.get("realized_pnl_usd") or 0.0), 2),
+        },
+        "closed_tx_ids": kapatilan_ids,
+        "created_tx_ids": olusan_ids,
+        "signature": satir["signature"],
+        "coverage_start": satir.get("coverage_start"),
+        "applied_warnings": satir.get("warnings", []),
+        "sources": [k["name"] for k in plan.get("sources", [])],
+        "note": (note or "").strip(),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    data["rebuilds"].append(kayit)
+    data["next_rebuild_id"] = rid + 1
+
+    # Pozisyon tamamen kapandıysa oradaki hedef fiyat kaydı anlamsızlaşır.
+    if not olusan_ids and pos_key in data.get("targets", {}):
+        del data["targets"][pos_key]
+
+    save_portfolio(data)
+    return kayit
+
+
+def undo_rebuild(rebuild_id: int):
+    """Düzeltmeyi geri alır: oluşan lotları siler, eski lotları geri açar."""
+    data = load_portfolio()
+    kayit = next((r for r in data.get("rebuilds", [])
+                  if int(r.get("id", 0) or 0) == int(rebuild_id)), None)
+    if not kayit:
+        raise ValueError(f"Düzeltme kaydı bulunamadı: {rebuild_id}")
+
+    # Düzeltmeyle oluşan bir lot sonradan satıldıysa geri alma veriyi bozar.
+    mevcut = {int(t.get("id", 0) or 0): t for t in data.get("transactions", [])}
+    for tx_id in kayit.get("created_tx_ids", []):
+        tx = mevcut.get(int(tx_id))
+        if tx is None:
+            raise ValueError("Bu düzeltme geri alınamaz: oluşan lotlardan biri silinmiş.")
+        if tx.get("status") != ACTIVE_STATUS:
+            raise ValueError("Bu düzeltme geri alınamaz: düzeltmeyle oluşan lotlardan biri "
+                             "satılmış veya kapatılmış. Önce o işlemi geri alın.")
+
+    silinecek = {int(i) for i in kayit.get("created_tx_ids", [])}
+    # K/Z özeti de düzeltmeyle birlikte gitmeli; yoksa geri alma gerçekleşmiş
+    # K/Z tablosunda sahibi olmayan bir kayıt bırakırdı.
+    kz_id = (kayit.get("realized") or {}).get("tx_id")
+    if kz_id:
+        silinecek.add(int(kz_id))
+    data["transactions"] = [t for t in data.get("transactions", [])
+                            if int(t.get("id", 0) or 0) not in silinecek]
+
+    mevcut = {int(t.get("id", 0) or 0): t for t in data["transactions"]}
+    geri_gelen = 0
+    for tx_id in kayit.get("closed_tx_ids", []):
+        tx = mevcut.get(int(tx_id))
+        if tx is None:
+            continue
+        tx["status"] = ACTIVE_STATUS
+        tx.pop("rebuild_out_id", None)
+        tx.pop("exit_date", None)
+        if tx.get("close_reason") == REBUILD_CLOSE_REASON:
+            tx.pop("close_reason", None)
+        geri_gelen += 1
+
+    data["rebuilds"] = [r for r in data.get("rebuilds", [])
+                        if int(r.get("id", 0) or 0) != int(rebuild_id)]
+    save_portfolio(data)
+    return {"rebuild_id": int(rebuild_id),
+            "restored_lots": geri_gelen,
+            "removed_lots": len(silinecek)}
+
+
+def list_rebuilds(data=None):
+    """Düzeltme defterini yeniden eskiye doğru döndürür."""
+    if data is None:
+        data = load_portfolio()
+    kayitlar = list(data.get("rebuilds", []))
+    kayitlar.sort(key=lambda r: int(r.get("id", 0) or 0), reverse=True)
     return kayitlar
 
 
