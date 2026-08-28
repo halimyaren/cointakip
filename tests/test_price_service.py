@@ -198,7 +198,7 @@ def test_binance_kademesi_dusuk_hacimli_semboleri_eler(motor, monkeypatch):
         {"symbol": "OLUUSDT", "lastPrice": "1.0", "volume": "0", "openPrice": "1.0", "priceChangePercent": "0"},
     ]
 
-    def sahte_getir(url, timeout=5):
+    def sahte_getir(url, timeout=5, user_agent=None):
         if "binance" in url:
             return binance_ticker
         raise OSError("MEXC bu testte devre dışı")   # kademeleri ayrı tut
@@ -219,7 +219,7 @@ def test_mexc_kademesi_dusuk_hacimli_tokenlari_kabul_eder(motor, monkeypatch):
     bulunmayan ince likiditeli altcoinler için son CEX şansıdır. Hacme göre
     elemek kullanıcının gerçekten tuttuğu tokenları görünmez yapardı.
     """
-    def sahte_getir(url, timeout=5):
+    def sahte_getir(url, timeout=5, user_agent=None):
         if "binance" in url:
             raise OSError("Binance bu testte devre dışı")
         return [{"symbol": "INCEUSDT", "lastPrice": "0.5", "volume": "0",
@@ -247,7 +247,7 @@ def test_tum_kaynaklar_coktugunde_uygulama_ayakta_kalir(motor, monkeypatch):
 
 def test_binance_fiyatlari_mexc_tarafindan_ezilmez(motor, monkeypatch):
     """Kademe önceliği: Binance verisi varsa MEXC üzerine yazmamalı."""
-    def sahte_getir(url, timeout=5):
+    def sahte_getir(url, timeout=5, user_agent=None):
         if "binance" in url:
             return [{"symbol": "BTCUSDT", "lastPrice": "100000", "volume": "500",
                      "openPrice": "98000", "priceChangePercent": "2.0"}]

@@ -37,6 +37,34 @@ SOURCE_LABELS = {
     "dex": "DexScreener (On-Chain)",
 }
 
+# FAZ F1d — Kaynak başına User-Agent.
+#
+# Kaynaklar bu konuda BİRBİRİNE ZIT davranıyor ve tek bir ortak başlık
+# kullanmak, ikisinden birini kalıcı olarak kırıyor:
+#
+#   DexScreener : çıplak urllib isteğini 403 ile reddeder → tarayıcı UA'sı şart
+#   Gate.io     : tarayıcı UA'sını 403 ile reddeder       → UA gönderilmemeli
+#
+# Ölçüm (27 Ağustos 2026, api.gateio.ws/api/v4/spot/tickers):
+#   Chrome/120 UA → HTTP 403   |   UA yok / curl / python-requests → 2232 parite
+#
+# Bu yüzden varsayılan tarayıcı UA'sıdır ama her adaptör kendi başlığını seçer.
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+# Kaynak kimliği -> o kaynağa gönderilecek User-Agent. None = başlık gönderme.
+SOURCE_USER_AGENTS = {
+    "binance": BROWSER_UA,
+    "mexc": BROWSER_UA,
+    "whitebit": BROWSER_UA,
+    "gateio": None,
+    "dex": BROWSER_UA,
+}
+
+# Bir kaynak bu kadar üst üste başarısız olursa arayüzde "yanıt vermiyor"
+# olarak işaretlenir. Tek seferlik ağ hıçkırığı rozet çıkarmasın diye 1 değil.
+SOURCE_FAIL_THRESHOLD = 3
+
 # Kaynak yapılandırması bu aralıkta bir kez diskten okunur (saniye).
 # Arka plan döngüsü 4 sn'de bir dönüyor; her turda settings.json açmanın
 # anlamı yok.
@@ -79,6 +107,17 @@ class SmartPriceDiscoveryEngine:
         self._watchlist_ts = 0.0
         self._dex_last_fetch = {}   # { "SCMUSDT": timestamp }
 
+        # FAZ F1d — Kaynak sağlığı.
+        # Gate.io adaptörü ilk sürümden beri her turda 403 alıp sessizce boş
+        # dönüyordu; hata `logger.debug` ile yutulduğu için arayüzde HİÇ
+        # çalışmayan bir kaynakla "bu turda bir şey bulamadı" diyen kaynak
+        # birbirinden ayırt edilemiyordu. Sessiz başarısızlık en pahalı hata
+        # türüdür: kullanıcı kaynağı açık sanır ve neden fiyat gelmediğini
+        # anlayamaz.
+        # { "gateio": {"ok":bool,"fail_count":int,"last_error":str,
+        #              "last_ok_ts":float,"last_try_ts":float} }
+        self._source_health = {}
+
     # -----------------------------------------------------------------
     # Yaşam döngüsü
     # -----------------------------------------------------------------
@@ -104,14 +143,21 @@ class SmartPriceDiscoveryEngine:
                 logger.warning("Fiyat güncelleme döngüsünde hata: %s", e)
                 time.sleep(2)
 
-    def fetch_url_json(self, url, timeout=5):
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json"
-            }
-        )
+    def fetch_url_json(self, url, timeout=5, user_agent=BROWSER_UA):
+        """
+        JSON çeker. `user_agent=None` verilirse User-Agent başlığı HİÇ gönderilmez.
+
+        FAZ F1d — Bu parametre bir süsleme değil, zorunluluk: kaynaklar birbirine
+        zıt davranıyor.
+          - DexScreener çıplak urllib isteğini reddeder → tarayıcı UA'sı ŞART.
+          - Gate.io tarayıcı UA'sını reddeder (HTTP 403) → UA GÖNDERİLMEMELİ.
+        Tek bir ortak başlık kullanıldığı sürece bu ikisinden biri hep kırık
+        kalır; nitekim Gate.io adaptörü ilk sürümden beri hiç çalışmıyordu.
+        """
+        headers = {"Accept": "application/json"}
+        if user_agent:
+            headers["User-Agent"] = user_agent
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
@@ -178,16 +224,30 @@ class SmartPriceDiscoveryEngine:
         return [sid for sid, _ in rows]
 
     def describe_sources(self):
-        """Arayüzün ayarlar ekranı için kaynak listesi."""
+        """
+        Arayüzün ayarlar ekranı için kaynak listesi — sağlık bilgisiyle birlikte.
+
+        FAZ F1d: `healthy` alanı, kaynağın gerçekten yanıt verip vermediğini
+        söyler. Bir kaynağın "açık" olması çalıştığı anlamına gelmez; Gate.io
+        aylarca açık görünüp her turda 403 aldı ve kimse fark etmedi.
+        """
         cfg = self.load_config()
         out = []
         for sid, row in cfg["sources"].items():
+            h = self._source_health.get(sid) or {}
+            denendi = bool(h.get("last_try_ts"))
             out.append({
                 "id": sid,
                 "label": SOURCE_LABELS.get(sid, sid),
                 "enabled": bool(row.get("enabled")),
                 "order": int(row.get("order", 99)),
                 "kind": "dex" if sid == DEX_SOURCE_ID else "cex",
+                # None = henüz denenmedi (kapalı kaynak hiç denenmez).
+                "healthy": h.get("ok") if denendi else None,
+                "fail_count": int(h.get("fail_count", 0)),
+                "last_error": h.get("last_error"),
+                "last_ok_ts": h.get("last_ok_ts") or 0.0,
+                "last_try_ts": h.get("last_try_ts") or 0.0,
             })
         out.sort(key=lambda r: r["order"])
         return out
@@ -305,10 +365,12 @@ class SmartPriceDiscoveryEngine:
         prices, index = {}, []
         url = api_urls.get("gateio_ticker") or "https://api.gateio.ws/api/v4/spot/tickers"
         try:
-            data = self.fetch_url_json(url, timeout=6)
+            # Gate.io tarayıcı User-Agent'ını 403 ile reddediyor; başlıksız gider.
+            data = self.fetch_url_json(url, timeout=6,
+                                       user_agent=SOURCE_USER_AGENTS["gateio"])
         except Exception as e:
-            logger.debug("Gate.io kaynağı yanıt vermedi: %s", e)
-            return prices, index
+            logger.warning("Gate.io kaynağı yanıt vermedi: %s", e)
+            raise
         for item in data or []:
             if not isinstance(item, dict):
                 continue
@@ -335,6 +397,25 @@ class SmartPriceDiscoveryEngine:
                                   "exchange": "GATE.IO", "price": last_p})
         return prices, index
 
+    def _mark_source(self, source_id, ok, error=None):
+        """Kaynak sağlığını günceller. Arayüz bunu rozet olarak gösterir."""
+        h = self._source_health.setdefault(source_id, {
+            "ok": True, "fail_count": 0, "last_error": None,
+            "last_ok_ts": 0.0, "last_try_ts": 0.0,
+        })
+        h["last_try_ts"] = time.time()
+        if ok:
+            h["ok"] = True
+            h["fail_count"] = 0
+            h["last_error"] = None
+            h["last_ok_ts"] = h["last_try_ts"]
+        else:
+            h["fail_count"] += 1
+            h["last_error"] = str(error)[:200] if error else "yanıt yok"
+            # Tek seferlik ağ hıçkırığı kaynağı "ölü" ilan etmesin.
+            h["ok"] = h["fail_count"] < SOURCE_FAIL_THRESHOLD
+        return h
+
     def _run_adapter(self, source_id, api_urls):
         fn = {
             "binance": self._adapter_binance,
@@ -345,10 +426,16 @@ class SmartPriceDiscoveryEngine:
         if not fn:
             return {}, []
         try:
-            return fn(api_urls)
+            prices, index = fn(api_urls)
         except Exception as e:
-            logger.warning("Kaynak '%s' beklenmedik hata verdi: %s", source_id, e)
+            logger.warning("Kaynak '%s' hata verdi: %s", source_id, e)
+            self._mark_source(source_id, False, e)
             return {}, []
+        # Hatasız ama BOŞ dönmek de bir başarısızlıktır: kaynak ayakta ama
+        # kullanılabilir fiyat vermiyorsa kullanıcı bunu bilmeli.
+        self._mark_source(source_id, bool(prices),
+                          None if prices else "kaynak boş liste döndürdü")
+        return prices, index
 
     # -----------------------------------------------------------------
     # Zincir üstü arama
@@ -446,7 +533,12 @@ class SmartPriceDiscoveryEngine:
             base_url = (self.load_config().get("api_urls") or {}).get("dex_screener") \
                 or "https://api.dexscreener.com/latest/dex/search"
             url = f"{base_url}?q={urllib.parse.quote(clean)}"
-            data = self.fetch_url_json(url, timeout=5)
+            # DexScreener çıplak urllib isteğini reddediyor; tarayıcı UA'sı şart.
+            data = self.fetch_url_json(url, timeout=5,
+                                       user_agent=SOURCE_USER_AGENTS["dex"])
+            # İstek başarıyla döndü — sonuç boş olabilir (sembol o zincirde yok),
+            # bu bir kaynak arızası değildir. Sağlık yalnızca ulaşılabilirliği ölçer.
+            self._mark_source(DEX_SOURCE_ID, True)
             pairs = data.get("pairs", [])
             if not pairs:
                 # Arama boş döndü. Girilen değer bir HAVUZ adresi olabilir —
@@ -472,6 +564,7 @@ class SmartPriceDiscoveryEngine:
             return self._pair_to_price(valid_pairs[0])
         except Exception as e:
             logger.debug("DexScreener sorgusu başarısız (%s): %s", query, e)
+            self._mark_source(DEX_SOURCE_ID, False, e)
         return None
 
     # -----------------------------------------------------------------

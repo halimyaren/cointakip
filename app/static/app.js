@@ -221,6 +221,40 @@ function portfolioApp() {
       margin_usd: '', qty: '', entry_price: '', leverage: 2
     },
 
+    // Faz F3: Borsa mutabakatı (salt okunur)
+    reconcileReport: null,
+    reconcileBusy: false,
+    reconcileFilter: 'all',
+
+    // Faz F2: Arşiv (net varlık geçmişi)
+    archiveStatus: {},
+    archiveSeries: [],
+    archiveRange: 90,          // gün; 0 = tümü
+    archiveBusy: false,
+    netWorthChart: null,
+
+    // Faz F1c: Bilinen konumlar (borsa + kendi cüzdanların). Sunucudan gelir.
+    locations: [],
+    newLocationName: '',      // cüzdan modalındaki "konum ekle" alanı
+
+    // Faz F1: Değer kaybı yazımı (mezarlık) ve transfer
+    transfers: [],
+    writeOffs: [],
+    writeOffReasons: [],
+    showTransferForm: false,
+    transferBusy: false,
+    transferForm: {
+      pos_key: '', coin: '', from_exchange: '', available: 0,
+      to_exchange: '', qty: '', fee_qty: '', date: '', note: ''
+    },
+    showWriteOffForm: false,
+    writeOffBusy: false,
+    writeOffForm: {
+      pos_key: '', coin: '', exchange: '', qty: 0, invested: 0,
+      reason: 'delist', note: ''
+    },
+    showLedgerHistory: false,   // transfer + yazım geçmişi paneli
+
     // Faz B++: Fiyat Kaynağı Kayıt Defteri
     sourceRegistry: [],        // [{id, label, enabled, order, kind}]
     symbolSources: {},         // { "SCM": {type, source, market} }
@@ -312,6 +346,11 @@ function portfolioApp() {
       this.fetchSettings();
       this.fetchPriceSources();
       this.fetchRealizedMetrics();
+      // Transfer/yazım sayıları açılışta bilinmeli — "Defter Geçmişi" girişi
+      // buna göre görünür oluyor, yoksa geri alma yolu keşfedilemez.
+      this.fetchLedgerHistory();
+      // Arşiv durumu (kaç kayıt, boşluk var mı) açılışta bilinsin.
+      this.fetchArchive();
       this.checkAuthStatus();
       this.initInactivityListener();
       this.startBackgroundLoop();
@@ -367,6 +406,7 @@ function portfolioApp() {
         
         this.kpis = data.kpis || this.kpis;
         this.exchangeKpis = data.exchange_kpis || {};
+        this.locations = data.locations || this.locations;
         this.consolidatedCoins = data.consolidated_coins || [];
         this.transactions = data.transactions || [];
         this.simulations = data.simulations || [];
@@ -491,20 +531,243 @@ function portfolioApp() {
       return { invested, currentValue, pnl_usd, pnl_pct, dailyDiff, dailyDiffPct, txCount, shareTotal };
     },
 
+    // -------------------------------------------------------------
+    // FAZ F3: BORSA MUTABAKATI (SALT OKUNUR)
+    // -------------------------------------------------------------
+    // Bu ekran deftere HİÇBİR ŞEY YAZMAZ. Amaç içe aktarmak değil, farkı
+    // görmek. Maliyet tabanı kullanıcının girdiği hâliyle kalır.
+
+    // Durum etiketleri tek yerde: hem filtre düğmeleri hem tablo rozetleri
+    // aynı sözlükten besleniyor, böylece ikisi ayrışamaz.
+    reconcileStatusMeta: {
+      mismatch:           { label: 'Fark var',          badge: 'bg-rose-500/15 text-rose-300 border border-rose-700/50',       active: 'bg-rose-600 text-white border-transparent' },
+      only_exchange:      { label: 'Sadece borsada',    badge: 'bg-amber-500/15 text-amber-300 border border-amber-700/50',    active: 'bg-amber-600 text-white border-transparent' },
+      coverage_gap:       { label: 'Kapsam dışı',       badge: 'bg-slate-500/15 text-slate-300 border border-slate-600',       active: 'bg-slate-500 text-white border-transparent' },
+      off_exchange:       { label: 'Borsadan çekilmiş', badge: 'bg-sky-500/15 text-sky-300 border border-sky-700/50',          active: 'bg-sky-600 text-white border-transparent' },
+      only_ledger:        { label: 'Sadece defterde',   badge: 'bg-orange-500/15 text-orange-300 border border-orange-700/50', active: 'bg-orange-600 text-white border-transparent' },
+      uncovered_location: { label: 'Konum kapsanmıyor', badge: 'bg-indigo-500/15 text-indigo-300 border border-indigo-700/50', active: 'bg-indigo-600 text-white border-transparent' },
+      match:              { label: 'Eşleşiyor',         badge: 'bg-emerald-500/15 text-emerald-300 border border-emerald-700/50', active: 'bg-emerald-600 text-white border-transparent' },
+      closed:             { label: 'Kapanmış',          badge: 'bg-slate-700/40 text-slate-400 border border-slate-700',       active: 'bg-slate-600 text-white border-transparent' },
+      stablecoin:         { label: 'Nakit birimi',      badge: 'bg-slate-700/40 text-slate-400 border border-slate-700',       active: 'bg-slate-600 text-white border-transparent' },
+    },
+
+    // Filtre düğmelerinin sırası — en çok ilgi isteyen durum önde.
+    reconcileStatusOrder: ['mismatch', 'only_exchange', 'coverage_gap', 'off_exchange',
+                           'only_ledger', 'uncovered_location', 'match', 'closed', 'stablecoin'],
+
+    get filteredReconcileRows() {
+      if (!this.reconcileReport) return [];
+      const rows = this.reconcileReport.rows || [];
+      if (this.reconcileFilter === 'all') return rows;
+      return rows.filter(r => r.status === this.reconcileFilter);
+    },
+
+    async runReconcile() {
+      if (this.reconcileBusy) return;
+      this.reconcileBusy = true;
+      try {
+        const resp = await fetch('/api/reconcile');
+        if (!resp.ok) throw new Error('Mutabakat çalıştırılamadı.');
+        this.reconcileReport = await resp.json();
+        this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+      } catch (e) {
+        this.notify(e.message || 'Mutabakat çalıştırılamadı.', 'error', 5000);
+      } finally {
+        this.reconcileBusy = false;
+      }
+    },
+
+    // -------------------------------------------------------------
+    // FAZ F2: ARŞİV & NET VARLIK EĞRİSİ
+    // -------------------------------------------------------------
+    // Arşiv bir konfor katmanıdır, kritik yol değildir: burada bir şey
+    // ters giderse sessizce boş görünür, uygulamanın geri kalanı çalışır.
+
+    get archiveSizeLabel() {
+      const b = this.archiveStatus.file_size_bytes || 0;
+      if (b < 1024) return b + ' B';
+      if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
+      return (b / 1024 / 1024).toFixed(1) + ' MB';
+    },
+
+    async fetchArchive() {
+      try {
+        const resp = await fetch('/api/archive/networth?days=' + (this.archiveRange || 0));
+        if (!resp.ok) return;
+        const data = await resp.json();
+        this.archiveSeries = data.series || [];
+        this.archiveStatus = data.status || {};
+        this.$nextTick(() => this.renderNetWorthChart());
+      } catch (e) {
+        console.error('Arşiv okunamadı:', e);
+      }
+    },
+
+    async takeSnapshot() {
+      if (this.archiveBusy) return;
+      this.archiveBusy = true;
+      try {
+        const resp = await fetch('/api/archive/snapshot', { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || 'Fotoğraf alınamadı.');
+        this.notify('Arşiv fotoğrafı alındı.', 'success');
+        await this.fetchArchive();
+      } catch (e) {
+        this.notify(e.message || 'Fotoğraf alınamadı.', 'error', 5000);
+      } finally {
+        this.archiveBusy = false;
+      }
+    },
+
+    renderNetWorthChart() {
+      const el = document.getElementById('netWorthChart');
+      // Tek noktayla çizgi grafiği anlamsız; arayüz onun yerine
+      // "arşiv bugün başladı" mesajını gösteriyor.
+      if (!el || this.archiveSeries.length < 2 || !window.Chart) return;
+      if (this.netWorthChart) this.netWorthChart.destroy();
+
+      const seri = this.archiveSeries;
+      this.netWorthChart = new Chart(el, {
+        type: 'line',
+        data: {
+          labels: seri.map(r => r.taken_date),
+          datasets: [
+            {
+              label: 'Net Varlık ($)',
+              data: seri.map(r => r.total_equity_usd),
+              borderColor: '#38bdf8',
+              backgroundColor: 'rgba(56, 189, 248, 0.12)',
+              borderWidth: 2, pointRadius: 2, tension: 0.25, fill: true,
+            },
+            {
+              label: 'Spot Değer ($)',
+              data: seri.map(r => r.spot_value_usd),
+              borderColor: '#2dd4bf',
+              borderWidth: 1.5, pointRadius: 0, tension: 0.25, fill: false,
+              borderDash: [4, 3],
+            },
+            {
+              label: 'Maliyet ($)',
+              data: seri.map(r => r.spot_invested_usd),
+              borderColor: '#f59e0b',
+              borderWidth: 1.5, pointRadius: 0, tension: 0.25, fill: false,
+              borderDash: [2, 3],
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: {
+              labels: { color: '#94a3b8', font: { family: 'Inter', size: 10 },
+                        boxWidth: 12, padding: 12 },
+            },
+            tooltip: {
+              callbacks: {
+                label: (c) => c.dataset.label + ': $' + this.formatNum(c.parsed.y, 2),
+              },
+            },
+          },
+          scales: {
+            x: { ticks: { color: '#64748b', font: { family: 'Inter', size: 9 }, maxTicksLimit: 10 },
+                 grid: { display: false } },
+            y: { ticks: { color: '#64748b', font: { family: 'Inter', size: 9 },
+                          callback: (v) => '$' + this.formatNum(v, 0) },
+                 grid: { color: '#1e293b' } },
+          },
+        },
+      });
+    },
+
+    // -------------------------------------------------------------
+    // FAZ F1c: KONUM (BORSA / CÜZDAN) KAYNAĞI
+    // -------------------------------------------------------------
+    // Tek doğruluk kaynağı. Kasa sekmesi, cüzdan modalı, transfer hedefi ve
+    // dashboard filtresi hep buradan beslenir. Sunucu `locations` gönderir;
+    // gelmezse elimizdeki veriden türetiriz (eski sürümle uyum).
+    get knownLocations() {
+      const set = new Set(['BINANCE', 'MEXC', 'GATE.IO', 'DEX']);
+      (this.locations || []).forEach(l => set.add(String(l).toUpperCase()));
+      (this.consolidatedCoins || []).forEach(c =>
+        set.add(this.normalizeLocation(c.exchange)));
+      Object.keys((this.walletForm && this.walletForm.exchange_cash) || {})
+        .forEach(k => set.add(String(k).toUpperCase()));
+      (this.transfers || []).forEach(t => {
+        set.add(this.normalizeLocation(t.from_exchange));
+        set.add(this.normalizeLocation(t.to_exchange));
+      });
+      const varsayilan = ['BINANCE', 'MEXC', 'GATE.IO', 'DEX'];
+      const ekstra = Array.from(set).filter(x => !varsayilan.includes(x)).sort();
+      return varsayilan.concat(ekstra);
+    },
+
+    // Kasa sekmesinde gösterilecek konumlar: içinde varlık VEYA nakit olanlar.
+    // Boş konum sekmesi göstermek gürültü; ama varlığı olan hiçbir konum
+    // gizlenmemeli — asıl düzeltilen hata buydu.
+    get kasaLocationTabs() {
+      return this.knownLocations.filter(loc => {
+        const k = this.exchangeKpis[loc];
+        if (!k) return false;
+        return (k.active_coins_count || 0) > 0
+            || (k.spot_invested || 0) > 0
+            || (k.usdt_cash || 0) > 0;
+      });
+    },
+
+    // data_manager.normalize_location ile aynı kural — zincir üstü adlar tek
+    // "DEX" kovasında toplanır, diğer her ad olduğu gibi korunur.
+    normalizeLocation(name) {
+      const t = String(name || '').toUpperCase().trim();
+      if (!t) return 'BINANCE';
+      if (t.startsWith('DEX') || t.includes('PANCAKE') || t.includes('UNISWAP')) return 'DEX';
+      return t;
+    },
+
+    // Kullanıcının kendi eklediği konumlar için renk: adın hash'inden sabit bir
+    // palet rengi seçilir. Böylece METAMASK her ekranda aynı renkte görünür,
+    // ama yeni konum eklemek kod değişikliği gerektirmez.
+    _locationPaletteIndex(exch) {
+      const s = String(exch || '');
+      let h = 0;
+      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+      return h % 6;
+    },
+
     getExchangeActiveStyle(exch) {
       if (exch === 'BINANCE') return 'bg-yellow-600 text-white shadow-sm';
       if (exch === 'MEXC') return 'bg-blue-600 text-white shadow-sm';
       if (exch === 'GATE.IO') return 'bg-emerald-600 text-white shadow-sm';
-      if (exch.includes('DEX')) return 'bg-purple-600 text-white shadow-sm';
-      return 'bg-teal-600 text-white shadow-sm';
+      if (String(exch).includes('DEX')) return 'bg-purple-600 text-white shadow-sm';
+      return ['bg-teal-600', 'bg-orange-600', 'bg-pink-600',
+              'bg-indigo-600', 'bg-lime-600', 'bg-rose-600'
+             ][this._locationPaletteIndex(exch)] + ' text-white shadow-sm';
     },
 
     getExchangeDotColor(exch) {
       if (exch === 'BINANCE') return 'bg-yellow-400';
       if (exch === 'MEXC') return 'bg-blue-400';
       if (exch === 'GATE.IO') return 'bg-emerald-400';
-      if (exch.includes('DEX')) return 'bg-purple-400';
-      return 'bg-teal-400';
+      if (String(exch).includes('DEX')) return 'bg-purple-400';
+      return ['bg-teal-400', 'bg-orange-400', 'bg-pink-400',
+              'bg-indigo-400', 'bg-lime-400', 'bg-rose-400'
+             ][this._locationPaletteIndex(exch)];
+    },
+
+    // Pozisyon satırı ve işlem defterindeki küçük konum rozeti.
+    getExchangeBadgeStyle(exch) {
+      if (exch === 'BINANCE') return 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20';
+      if (exch === 'MEXC') return 'bg-blue-500/10 text-blue-400 border border-blue-500/20';
+      if (exch === 'GATE.IO') return 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+      if (String(exch).includes('DEX')) return 'bg-purple-500/10 text-purple-400 border border-purple-500/20';
+      return ['bg-teal-500/10 text-teal-400 border border-teal-500/20',
+              'bg-orange-500/10 text-orange-400 border border-orange-500/20',
+              'bg-pink-500/10 text-pink-400 border border-pink-500/20',
+              'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20',
+              'bg-lime-500/10 text-lime-400 border border-lime-500/20',
+              'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+             ][this._locationPaletteIndex(exch)];
     },
 
     // Filtered & Sorted Transactions for Ledger
@@ -1386,20 +1649,58 @@ function portfolioApp() {
     // BÖLÜM 10: CÜZDAN & KASA YÖNETİMİ
     // -------------------------------------------------------------
     openWalletModal() {
+      // Bilinen her konumun bir nakit kutusu olmalı. Kullanıcı transferle
+      // METAMASK yarattıysa cüzdan ekranında da yeri olsun; eksik anahtar
+      // yüzünden konum görünmez kalmasın.
+      this.knownLocations.forEach(loc => {
+        if (this.walletForm.exchange_cash[loc] === undefined) {
+          this.walletForm.exchange_cash[loc] = 0;
+        }
+      });
+      this.newLocationName = '';
       this.showWalletModal = true;
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
       });
     },
 
+    addLocation() {
+      const ad = this.normalizeLocation(this.newLocationName);
+      if (!ad || ad === 'BINANCE' && !this.newLocationName.trim()) return;
+      if (this.walletForm.exchange_cash[ad] !== undefined) {
+        this.notify(`${ad} zaten listede.`, 'info');
+        this.newLocationName = '';
+        return;
+      }
+      this.walletForm.exchange_cash[ad] = 0;
+      if (!this.locations.includes(ad)) this.locations = [...this.locations, ad];
+      this.newLocationName = '';
+      this.notify(`${ad} eklendi. Kaydedince kalıcı olur.`, 'success');
+    },
+
+    removeLocation(loc) {
+      // Varsayılan dördü ve varlık/nakit barındıran konumlar silinemez —
+      // silinirse o konumdaki pozisyon ekranda sahipsiz kalır.
+      if (['BINANCE', 'MEXC', 'GATE.IO', 'DEX'].includes(loc)) return;
+      if (this.countCoinsByExchange(loc) > 0) {
+        this.notify(`${loc} üzerinde açık pozisyon var, kaldırılamaz.`, 'warning', 4500);
+        return;
+      }
+      if (parseFloat(this.walletForm.exchange_cash[loc] || 0) !== 0) {
+        this.notify(`${loc} nakit bakiyesi sıfır değil, kaldırılamaz.`, 'warning', 4500);
+        return;
+      }
+      delete this.walletForm.exchange_cash[loc];
+      this.locations = this.locations.filter(l => l !== loc);
+    },
+
     async saveWallets() {
       try {
-        const exCash = {
-          'BINANCE': parseFloat(this.walletForm.exchange_cash.BINANCE || 0),
-          'MEXC': parseFloat(this.walletForm.exchange_cash.MEXC || 0),
-          'GATE.IO': parseFloat(this.walletForm.exchange_cash['GATE.IO'] || 0),
-          'DEX': parseFloat(this.walletForm.exchange_cash.DEX || 0)
-        };
+        // Sabit dört anahtar yerine formdaki tüm konumlar gönderilir.
+        const exCash = {};
+        for (const [loc, val] of Object.entries(this.walletForm.exchange_cash || {})) {
+          exCash[loc] = parseFloat(val || 0) || 0;
+        }
         const totalVal = Object.values(exCash).reduce((a, b) => a + b, 0);
 
         const res = await fetch('/api/wallets', {
@@ -1800,7 +2101,11 @@ function portfolioApp() {
 
     get exchangeCapitalList() {
       const totalPortfolio = (this.kpis.spot_current_value || 0) + (this.kpis.usdt_cash || 0);
-      const exList = ['BINANCE', 'MEXC', 'GATE.IO', 'DEX'];
+      // FAZ F1c — Bu liste eskiden koda gömülüydü: ['BINANCE','MEXC','GATE.IO','DEX'].
+      // Transfer özelliği kullanıcının kendi konumunu (METAMASK, LEDGER…)
+      // yaratmasına izin veriyor; sabit liste yüzünden varlık orada duruyor
+      // ama Kasa ekranında hiç görünmüyordu. Artık veriden türetiliyor.
+      const exList = this.knownLocations;
       const currentExchangeCash = (this.kpis && this.kpis.exchange_cash) ? this.kpis.exchange_cash : (this.walletForm ? this.walletForm.exchange_cash : {});
 
       return exList.map(ex => {
@@ -2015,6 +2320,216 @@ function portfolioApp() {
         this._confirmResolve(cevap);
         this._confirmResolve = null;
       }
+    },
+
+    // -------------------------------------------------------------
+    // FAZ F1: DEĞER KAYBI YAZIMI (MEZARLIK) VE TRANSFER
+    // -------------------------------------------------------------
+    // İki olay bilinçli olarak ayrı tutulur:
+    //   Yazım    → coin öldü, maliyet zarar yazılır, NAKİT GELMEZ.
+    //   Transfer → coin yaşıyor, yer değiştirdi, maliyet tabanı korunur.
+    // Arayüzün görevi bu ayrımı kullanıcıya net göstermek.
+
+    _applyLedgerSnapshot(body) {
+      if (!body) return;
+      if (body.kpis) this.kpis = body.kpis;
+      if (body.consolidated_coins) this.consolidatedCoins = body.consolidated_coins;
+      if (body.transfers) this.transfers = body.transfers;
+      if (body.write_offs) this.writeOffs = body.write_offs;
+    },
+
+    async fetchLedgerHistory() {
+      try {
+        const [tr, wo] = await Promise.all([
+          fetch('/api/transfers').then(r => r.json()),
+          fetch('/api/write-offs').then(r => r.json())
+        ]);
+        this.transfers = tr.transfers || [];
+        this.writeOffs = wo.write_offs || [];
+        this.writeOffReasons = wo.reasons || [];
+      } catch (e) {
+        this.notify('Transfer/yazım geçmişi yüklenemedi.', 'error');
+      }
+    },
+
+    // --- Transfer ---
+    openTransferForm(coin) {
+      this.transferForm = {
+        pos_key: coin.pos_key,
+        coin: coin.display_name || coin.symbol,
+        from_exchange: coin.exchange || 'BINANCE',
+        available: coin.total_qty || 0,
+        to_exchange: '',
+        qty: '',
+        fee_qty: '',
+        date: new Date().toISOString().slice(0, 10),
+        note: ''
+      };
+      this.showTransferForm = true;
+      if (!this.writeOffReasons.length) this.fetchLedgerHistory();
+    },
+
+    // Transfer hedefi olarak seçilebilecek konumlar — kaynağın kendisi hariç.
+    // Yaygın cüzdan adları da öneri olarak eklenir; kullanıcı hiç transfer
+    // yapmamışsa liste boş kalmasın.
+    get transferTargetOptions() {
+      const kaynak = this.normalizeLocation(this.transferForm.from_exchange);
+      const set = new Set(this.knownLocations);
+      ['METAMASK', 'TRUST WALLET', 'LEDGER', 'WHITEBIT'].forEach(x => set.add(x));
+      return Array.from(set).filter(x => x !== kaynak);
+    },
+
+    get transferReceived() {
+      const q = Number(this.transferForm.qty) || 0;
+      const f = Number(this.transferForm.fee_qty) || 0;
+      return Math.max(q - f, 0);
+    },
+
+    get transferValid() {
+      const f = this.transferForm;
+      const q = Number(f.qty) || 0;
+      const fee = Number(f.fee_qty) || 0;
+      return !!f.to_exchange.trim()
+        && f.to_exchange.trim().toUpperCase() !== (f.from_exchange || '').toUpperCase()
+        && q > 0 && q <= f.available + 1e-9 && fee >= 0 && fee < q;
+    },
+
+    async submitTransfer() {
+      if (!this.transferValid || this.transferBusy) return;
+      this.transferBusy = true;
+      try {
+        const resp = await fetch('/api/transfers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pos_key: this.transferForm.pos_key,
+            to_exchange: this.transferForm.to_exchange.trim().toUpperCase(),
+            qty: Number(this.transferForm.qty),
+            fee_qty: Number(this.transferForm.fee_qty) || 0,
+            date: this.transferForm.date,
+            note: this.transferForm.note
+          })
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Transfer kaydedilemedi.');
+
+        this._applyLedgerSnapshot(body);
+        this.showTransferForm = false;
+        const t = body.transfer;
+        this.notify(
+          `${this.formatNum(t.qty, 6)} ${t.coin} taşındı: ${t.from_exchange} → ${t.to_exchange}. ` +
+          `Maliyet tabanı korundu, nakit değişmedi.`, 'success', 5000
+        );
+        await this.fetchPortfolio();
+      } catch (e) {
+        this.notify(e.message || 'Transfer kaydedilemedi.', 'error', 5000);
+      } finally {
+        this.transferBusy = false;
+      }
+    },
+
+    async undoTransferRecord(kayit) {
+      const onay = await this.askConfirm({
+        title: 'Transferi geri al',
+        message: `${this.formatNum(kayit.qty, 6)} ${kayit.coin} transferi geri alınacak.`,
+        detail: `Hedefteki (${kayit.to_exchange}) lotlar silinecek ve varlık ` +
+                `${kayit.from_exchange} üzerinde eski hâline dönecek. ` +
+                `Transfer sonrası bu varlığı sattıysanız işlem reddedilir.`,
+        confirmText: 'Geri Al',
+        tone: 'danger'
+      });
+      if (!onay) return;
+      try {
+        const resp = await fetch(`/api/transfers/${kayit.id}`, { method: 'DELETE' });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Geri alınamadı.');
+        this._applyLedgerSnapshot(body);
+        this.notify('Transfer geri alındı.', 'success');
+        await this.fetchPortfolio();
+      } catch (e) {
+        this.notify(e.message || 'Geri alınamadı.', 'error', 6000);
+      }
+    },
+
+    // --- Değer kaybı yazımı ---
+    openWriteOffForm(coin) {
+      this.writeOffForm = {
+        pos_key: coin.pos_key,
+        coin: coin.display_name || coin.symbol,
+        exchange: coin.exchange || 'BINANCE',
+        qty: coin.total_qty || 0,
+        invested: coin.total_invested || 0,
+        reason: 'delist',
+        note: ''
+      };
+      this.showWriteOffForm = true;
+      if (!this.writeOffReasons.length) this.fetchLedgerHistory();
+    },
+
+    async submitWriteOff() {
+      if (this.writeOffBusy) return;
+      const f = this.writeOffForm;
+      const onay = await this.askConfirm({
+        title: `${f.coin} sıfırdan kapatılacak`,
+        message: `${this.formatNum(f.qty, 6)} ${f.coin} pozisyonu değersiz kabul edilip kapatılacak.`,
+        detail: `$${this.formatNum(f.invested, 2)} maliyetin tamamı GERÇEKLEŞMİŞ ZARAR olarak ` +
+                `yazılacak. Kasanıza nakit EKLENMEZ — bu bir satış değildir. ` +
+                `Toplam varlığınız bu pozisyonun değeri kadar düşecek. İşlem geri alınabilir.`,
+        confirmText: 'Zarar Yaz',
+        tone: 'danger'
+      });
+      if (!onay) return;
+
+      this.writeOffBusy = true;
+      try {
+        const resp = await fetch(
+          `/api/positions/${encodeURIComponent(f.pos_key)}/write-off`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: f.reason, note: f.note })
+          });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Yazım başarısız.');
+
+        this._applyLedgerSnapshot(body);
+        this.showWriteOffForm = false;
+        const r = body.result;
+        this.notify(
+          `${r.coin} kapatıldı — $${this.formatNum(r.realized_loss_usd, 2)} zarar yazıldı ` +
+          `(${r.lot_count} lot). Geri almak için Defter Geçmişi'ne bakın.`, 'warning', 6000
+        );
+        await this.fetchPortfolio();
+      } catch (e) {
+        this.notify(e.message || 'Yazım başarısız.', 'error', 5000);
+      } finally {
+        this.writeOffBusy = false;
+      }
+    },
+
+    async undoWriteOffRecord(kayit) {
+      const onay = await this.askConfirm({
+        title: 'Yazımı geri al',
+        message: `${kayit.coin} pozisyonu yeniden açılacak.`,
+        detail: 'Yazılan zarar iptal edilecek ve lotlar aktif duruma dönecek.',
+        confirmText: 'Geri Al',
+        tone: 'warning'
+      });
+      if (!onay) return;
+      try {
+        const resp = await fetch(`/api/write-offs/${kayit.id}/undo`, { method: 'POST' });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Geri alınamadı.');
+        this._applyLedgerSnapshot(body);
+        this.notify(`${kayit.coin} yeniden açıldı.`, 'success');
+        await this.fetchPortfolio();
+      } catch (e) {
+        this.notify(e.message || 'Geri alınamadı.', 'error', 6000);
+      }
+    },
+
+    writeOffReasonLabel(key) {
+      const bulunan = this.writeOffReasons.find(r => r.key === key);
+      return bulunan ? bulunan.label : (key || '—');
     },
 
     // -------------------------------------------------------------
@@ -2263,8 +2778,33 @@ function portfolioApp() {
         this.sourceRegistry = data.registry || this.sourceRegistry;
         this.notify('Fiyat kaynakları güncellendi.', 'success');
         this.fetchPortfolio();
+        // FAZ F1d — Yeni açılan bir kaynak henüz denenmemiştir; sağlık rozeti
+        // "denenmedi" olarak kalır. Motor 4 sn'de bir dönüyor, bir tur sonra
+        // rozetleri tazeleyip kaynağın gerçekten çalışıp çalışmadığını gösteriyoruz.
+        setTimeout(() => this.refreshSourceHealth(), 6000);
       } catch (e) {
         this.notify('Kaynaklar kaydedilemedi: ' + e.message, 'error');
+      }
+    },
+
+    // Yalnızca sağlık alanlarını tazeler. `enabled` ve sıralamaya DOKUNMAZ:
+    // kullanıcı o sırada listeyi düzenliyor olabilir ve yaptığı değişiklik
+    // sunucudaki eski değerle ezilmemeli.
+    async refreshSourceHealth() {
+      try {
+        const resp = await fetch('/api/price-sources');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const saglik = {};
+        (data.registry || []).forEach(r => { saglik[r.id] = r; });
+        this.sourceRegistry = this.sourceRegistry.map(row => {
+          const s = saglik[row.id];
+          if (!s) return row;
+          return { ...row, healthy: s.healthy, fail_count: s.fail_count,
+                   last_error: s.last_error, last_ok_ts: s.last_ok_ts };
+        });
+      } catch (e) {
+        /* sağlık rozeti tazelenemedi — sessiz geçilir, kritik değil */
       }
     },
 

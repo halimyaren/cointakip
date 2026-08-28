@@ -115,6 +115,17 @@ def _ensure_schema(data):
     if "next_hedge_id" not in data:
         mevcut = [int(h.get("id", 0) or 0) for h in data["hedges"]]
         data["next_hedge_id"] = (max(mevcut) + 1) if mevcut else 1
+
+    # FAZ F1 — Transferler de hedge gibi AYRI bir listede tutulur.
+    # `transactions` içine sahte bir "çıkış kaydı" yazmıyoruz; çünkü transfer
+    # ne bir satıştır ne de gerçekleşmiş bir K/Z'dir. Burada tutulan kayıt hem
+    # denetim izidir hem de geri almayı mümkün kılar (hangi lot ne kadar
+    # tüketildi bilgisi saklanır).
+    if "transfers" not in data or not isinstance(data.get("transfers"), list):
+        data["transfers"] = []
+    if "next_transfer_id" not in data:
+        mevcut_t = [int(t.get("id", 0) or 0) for t in data["transfers"]]
+        data["next_transfer_id"] = (max(mevcut_t) + 1) if mevcut_t else 1
     return data
 
 
@@ -210,7 +221,10 @@ def calculate_portfolio_metrics(data, live_prices):
     margin_balance = float(wallets.get("margin_balance", 0.0))
 
     active_txs = [t for t in transactions if t.get("status") == "Aktif"]
-    closed_txs = [t for t in transactions if t.get("status") == "Kapandı / İzleme"]
+    # FAZ F1 — Transferle taşınan ve yazımla silinen kayıtlar "izlenen eski
+    # pozisyon" değildir; bkz. _defter_artigi_mi().
+    closed_txs = [t for t in transactions
+                  if t.get("status") == "Kapandı / İzleme" and not _defter_artigi_mi(t)]
 
     # 1. Consolidated Active Coins Map grouped by (Symbol, Exchange)
     coins_map = {}
@@ -252,10 +266,11 @@ def calculate_portfolio_metrics(data, live_prices):
         daily_diff = (live_price - open_price) * qty
         total_24h_diff_usd += daily_diff
 
-        # Update exchange stats
-        ex_norm = tx_exchange
-        if "DEX" in ex_norm or "PANCAKE" in ex_norm or "UNI" in ex_norm:
-            ex_norm = "DEX"
+        # Update exchange stats.
+        # FAZ F1c — Eskiden buradaki kural `"UNI" in ex_norm` idi; içinde bu üç
+        # harf geçen her konumu (kullanıcının kendi cüzdan adı dahil) DEX
+        # kovasına atıyordu. Artık tek bir kanonik fonksiyon kullanılıyor.
+        ex_norm = normalize_location(tx_exchange)
         exchange_stats[ex_norm]["spot_invested"] += tot_cost
         exchange_stats[ex_norm]["spot_current_value"] += cur_val
         exchange_stats[ex_norm]["daily_diff_24h_usd"] += daily_diff
@@ -426,11 +441,18 @@ def calculate_portfolio_metrics(data, live_prices):
             # toplam kasa o pozisyonları maliyet üzerinden sayıyor demektir
             # ve arayüz bunu kullanıcıya bildirir.
             "no_source_count": sum(1 for c in consolidated_coins if c.get("no_source")),
+            # FAZ F1 — Yalnızca "kaç tane" demek yetmiyordu. Kullanıcı toplam
+            # kasasının ne kadarının doğrulanamamış fiyata dayandığını görmeli;
+            # bu tutar maliyet üzerinden sayılıyor, yani bir varsayım.
+            "no_source_value_usd": sum(c.get("current_value", 0.0)
+                                       for c in consolidated_coins if c.get("no_source")),
             "kasa_share_pct": 100.0
         }
     }
 
-    known_exchanges = set(list(exchange_stats.keys()) + ["BINANCE", "MEXC", "DEX", "GATE.IO"])
+    # Kullanıcının kendi konumları (METAMASK, LEDGER…) da KPI üretmeli;
+    # aksi halde varlık orada durur ama Kasa ekranında hiç görünmez.
+    known_exchanges = set(list(exchange_stats.keys()) + list(DEFAULT_LOCATIONS))
     for exch in known_exchanges:
         st = exchange_stats[exch]
         c_cash = float(exchange_cash.get(exch, 0.0))
@@ -554,6 +576,9 @@ def calculate_portfolio_metrics(data, live_prices):
     return {
         "kpis": exchange_kpis["ALL"],
         "exchange_kpis": exchange_kpis,
+        # Arayüzün konum listesi tek kaynaktan gelsin — Kasa sekmesi, cüzdan
+        # modalı ve transfer hedefi aynı listeyi kullanır.
+        "locations": known_locations(data),
         "consolidated_coins": consolidated_coins,
         "hedges": hedge_bilgi["hedges"],
         "hedge_kpis": hedge_bilgi["hedge_kpis"],
@@ -1065,7 +1090,11 @@ def execute_target_sale(pos_key: str, sell_price: float = None, sell_qty: float 
     cash_to_add = total_proceeds - fee_val_usd if fee_ast == "USDT" else total_proceeds
     wallets = data.get("wallets", {})
     exchange_cash = wallets.get("exchange_cash", {})
-    ex_norm = "BINANCE" if "BINANCE" in exch else ("MEXC" if "MEXC" in exch else ("DEX" if "DEX" in exch else ("GATE.IO" if "GATE" in exch else "BINANCE")))
+    # FAZ F1c — Eskiden bilinmeyen her konum "BINANCE"a düşüyordu. Transfer
+    # özelliğiyle birlikte kullanıcı artık METAMASK gibi kendi konumlarını
+    # yaratabiliyor; oradan yapılan bir satışın gelirini Binance'e yazmak
+    # nakit dağılımını sessizce bozardı. Konum artık olduğu gibi kullanılır.
+    ex_norm = normalize_location(exch)
     current_cash = float(exchange_cash.get(ex_norm, 0.0))
     exchange_cash[ex_norm] = current_cash + cash_to_add
     wallets["exchange_cash"] = exchange_cash
@@ -1086,6 +1115,487 @@ def execute_target_sale(pos_key: str, sell_price: float = None, sell_qty: float 
         "fee_usd": fee_val_usd,
         "pos_key": pos_key
     }
+
+
+# =====================================================================
+# FAZ F1: DEĞER KAYBI YAZIMI (MEZARLIK) VE TRANSFER KATMANI
+# =====================================================================
+# İki farklı gerçek olayı birbirinden ayırmak için var:
+#
+#   1. YAZIM (write-off) — Coin öldü. Delist edildi, proje çöktü ya da
+#      cüzdana erişim kayboldu. Ekonomik olarak zaten olan şey kayıttır:
+#      pozisyon 0'dan kapanır, maliyetin tamamı gerçekleşmiş ZARAR olur.
+#      KASAYA NAKİT EKLENMEZ — satış değildir, gelir yoktur.
+#
+#   2. TRANSFER — Coin yaşıyor, sadece yer değiştirdi (Binance → MetaMask).
+#      Bu bir satış DEĞİLDİR. Gerçekleşmiş K/Z üretmez, nakit hareketi
+#      yaratmaz ve MALİYET TABANI KORUNUR. Hedef borsada aynı maliyetle
+#      yeni lotlar açılır; her kaynak lot kendi maliyetiyle taşınır, böylece
+#      ileride FIFO hâlâ doğru çalışır.
+#
+# Bu ikisi karıştırılırsa portföy matematiği bozulur: transferi satış saymak
+# sahte kâr/zarar üretir, yazımı satış saymak da olmayan bir nakit yaratır.
+
+WRITE_OFF_REASONS = {
+    "delist": "Borsadan çıkarıldı (delist)",
+    "rug": "Proje çöktü / rug pull",
+    "lost": "Erişim kaybı (cüzdan veya anahtar)",
+    "worthless": "Değersizleşti",
+    "other": "Diğer",
+}
+
+CLOSED_STATUS = "Kapandı / İzleme"
+ACTIVE_STATUS = "Aktif"
+
+# Kutudan çıktığı hâliyle bilinen konumlar. Bu liste bir SINIR DEĞİL, yalnızca
+# arayüzün boş portföyde bile gösterebileceği başlangıç kümesidir; kullanıcı
+# transferle kendi konumunu (METAMASK, LEDGER, TRUST WALLET…) yaratabilir ve
+# sistemin her katmanı onu eşit vatandaş olarak görmelidir.
+DEFAULT_LOCATIONS = ("BINANCE", "MEXC", "GATE.IO", "DEX")
+
+
+def normalize_location(name: str) -> str:
+    """
+    Konum adını kanonik hâle getirir.
+
+    Zincir üstü işlemler için kullanılan çeşitli adlar tek bir "DEX" kovasında
+    toplanır (kullanıcının eski kayıtları "DEX", "PANCAKESWAP" gibi farklı
+    adlar taşıyor). Bunun dışındaki her ad OLDUĞU GİBİ korunur — bilinmeyeni
+    varsayılana düşürmek, kullanıcının kendi cüzdanını yok saymak demektir.
+    """
+    temiz = (name or "").upper().strip()
+    if not temiz:
+        return "BINANCE"
+    if temiz.startswith("DEX") or "PANCAKE" in temiz or "UNISWAP" in temiz:
+        return "DEX"
+    return temiz
+
+
+def known_locations(data=None) -> list:
+    """
+    Portföyde fiilen kullanılan tüm konumlar + varsayılanlar.
+
+    Arayüzün her yeri (Kasa sekmesi, cüzdan modalı, transfer hedefi) bu tek
+    kaynaktan beslenir; böylece bir yere eklenen konum diğerlerinde kaybolmaz.
+    """
+    if data is None:
+        data = load_portfolio()
+    bulunan = set(DEFAULT_LOCATIONS)
+    for tx in data.get("transactions", []):
+        if tx.get("status") == ACTIVE_STATUS:
+            bulunan.add(normalize_location(tx.get("exchange")))
+    for anahtar in (data.get("wallets", {}).get("exchange_cash") or {}):
+        bulunan.add(normalize_location(anahtar))
+    for t in data.get("transfers", []):
+        bulunan.add(normalize_location(t.get("from_exchange")))
+        bulunan.add(normalize_location(t.get("to_exchange")))
+
+    # Varsayılanlar bilinen sırayla önde, kullanıcının kendi konumları alfabetik.
+    ekstra = sorted(bulunan - set(DEFAULT_LOCATIONS))
+    return [x for x in DEFAULT_LOCATIONS if x in bulunan] + ekstra
+
+
+def _split_pos_key(pos_key: str):
+    """`BTCUSDT@BINANCE` → ("BTCUSDT", "BINANCE"). Eski `_` biçimini de kabul eder."""
+    pos_key = (pos_key or "").strip()
+    if "@" in pos_key:
+        symbol, exch = pos_key.split("@", 1)
+    elif "_" in pos_key:
+        symbol, exch = pos_key.rsplit("_", 1)
+    else:
+        symbol, exch = pos_key, "BINANCE"
+    return symbol.upper().strip(), exch.upper().strip()
+
+
+def _lot_matches(tx, symbol, exch):
+    """execute_target_sale ile aynı eşleştirme kuralı — davranış tutarlı kalsın."""
+    if tx.get("status") != ACTIVE_STATUS:
+        return False
+    tx_c = (tx.get("coin") or "").upper().strip()
+    tx_ex = (tx.get("exchange") or "BINANCE").upper().strip()
+    match_coin = (tx_c == symbol) or (tx_c.replace("USDT", "") == symbol.replace("USDT", ""))
+    match_exch = (tx_ex == exch) or (exch.startswith("DEX") and tx_ex.startswith("DEX"))
+    return match_coin and match_exch
+
+
+def _aktif_lotlar(data, pos_key):
+    symbol, exch = _split_pos_key(pos_key)
+    lots = [tx for tx in data.get("transactions", []) if _lot_matches(tx, symbol, exch)]
+    # FIFO anlamlı olsun diye eski lot önce gelir.
+    lots.sort(key=lambda t: (t.get("date", ""), int(t.get("id", 0) or 0)))
+    return symbol, exch, lots
+
+
+def _sonraki_tx_id(data):
+    return max((int(t.get("id", 0) or 0) for t in data.get("transactions", [])), default=0) + 1
+
+
+def _defter_artigi_mi(tx):
+    """
+    Bu kayıt "izlenen eski pozisyon" listesinde GÖRÜNMEMELİ mi?
+
+    Transferle taşınmış ya da yazımla silinmiş lotlar kapanmış olsalar da
+    simülasyon listesine ait değiller: ilki başka borsada hâlâ duruyor
+    (iki kez sayılırdı), ikincisi ise zaten sıfırlandı ve canlı fiyat
+    bulunamadığında maliyet üzerinden değerlenip "para hâlâ orada" izlenimi
+    verirdi. İkisi de gerçekleşmiş K/Z tarafında doğru şekilde görünüyor.
+    """
+    return bool(
+        tx.get("transfer_out_id")
+        or tx.get("write_off_ref")
+        or tx.get("close_reason") == "write_off"
+    )
+
+
+def write_off_position(pos_key: str, reason: str = "worthless", note: str = ""):
+    """
+    Bir pozisyonun tamamını 0 fiyattan kapatır ve maliyeti zarar olarak yazar.
+
+    Nakit eklenmez. Kapatılan lotlar silinmez — geri alınabilsin diye
+    `write_off_ref` ile özet kayda bağlanır.
+    """
+    data = load_portfolio()
+    symbol, exch, lots = _aktif_lotlar(data, pos_key)
+    if not lots:
+        raise ValueError(f"Bu varlığa ait aktif işlem bulunamadı: {pos_key}")
+
+    reason_key = reason if reason in WRITE_OFF_REASONS else "other"
+    tot_qty = sum(float(tx.get("qty") or 0.0) for tx in lots)
+    tot_invested = sum(float(tx.get("qty") or 0.0) * float(tx.get("cost") or 0.0) for tx in lots)
+    avg_cost = (tot_invested / tot_qty) if tot_qty > 0 else 0.0
+
+    new_id = _sonraki_tx_id(data)
+    affected_ids = []
+    for tx in lots:
+        tx["status"] = CLOSED_STATUS
+        tx["write_off_ref"] = new_id
+        affected_ids.append(int(tx.get("id", 0) or 0))
+
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    aciklama = WRITE_OFF_REASONS[reason_key]
+    kullanici_notu = f" | Not: {note.strip()}" if (note or "").strip() else ""
+
+    ozet = {
+        "id": new_id,
+        "date": date_str,
+        "coin": symbol,
+        "exchange": exch,
+        "qty": tot_qty,
+        "cost": round(avg_cost, 8),
+        "status": CLOSED_STATUS,
+        "type": "YAZIM",
+        "exit_price": 0.0,
+        "exit_date": date_str,
+        "exit_value": 0.0,
+        "realized_pnl_usd": -round(tot_invested, 2),
+        "fee_amount": 0.0,
+        "fee_asset": "USDT",
+        "fee_usd": 0.0,
+        "cost_method": "Değer Kaybı Yazımı",
+        # Vergi/raporlama tarafında yazımı gerçek satıştan ayırmayı sağlar.
+        "close_reason": "write_off",
+        "write_off_reason": reason_key,
+        "write_off_affected_ids": affected_ids,
+        "notes": f"Değer kaybı yazımı ({aciklama}) | {len(lots)} lot, "
+                 f"maliyet ${tot_invested:,.2f} zarar yazıldı{kullanici_notu}",
+        "category": lots[0].get("category", "Altcoin"),
+    }
+    data["transactions"].append(ozet)
+
+    if pos_key in data.get("targets", {}):
+        del data["targets"][pos_key]
+
+    save_portfolio(data)
+    return {
+        "write_off_id": new_id,
+        "pos_key": pos_key,
+        "coin": symbol,
+        "exchange": exch,
+        "qty": tot_qty,
+        "lot_count": len(lots),
+        "realized_loss_usd": round(tot_invested, 2),
+        "reason": reason_key,
+        "reason_label": aciklama,
+    }
+
+
+def undo_write_off(write_off_id: int):
+    """Yanlışlıkla yazılan bir pozisyonu geri açar."""
+    data = load_portfolio()
+    ozet = next((t for t in data.get("transactions", [])
+                 if int(t.get("id", 0) or 0) == int(write_off_id)
+                 and t.get("close_reason") == "write_off"), None)
+    if not ozet:
+        raise ValueError(f"Yazım kaydı bulunamadı: {write_off_id}")
+
+    geri_gelen = set(int(i) for i in ozet.get("write_off_affected_ids", []))
+    sayac = 0
+    for tx in data.get("transactions", []):
+        if int(tx.get("id", 0) or 0) in geri_gelen:
+            tx["status"] = ACTIVE_STATUS
+            tx.pop("write_off_ref", None)
+            sayac += 1
+
+    data["transactions"] = [t for t in data["transactions"]
+                            if int(t.get("id", 0) or 0) != int(write_off_id)]
+    save_portfolio(data)
+    return {"restored_lots": sayac, "write_off_id": int(write_off_id)}
+
+
+def validate_transfer_payload(payload: dict):
+    """(temiz_veri, hata_mesajı) döndürür."""
+    if not isinstance(payload, dict):
+        return None, "Geçersiz istek gövdesi."
+
+    pos_key = (payload.get("pos_key") or "").strip()
+    if not pos_key:
+        return None, "Kaynak pozisyon belirtilmedi."
+
+    to_exchange = (payload.get("to_exchange") or "").upper().strip()
+    if not to_exchange:
+        return None, "Hedef konum belirtilmedi."
+
+    _, from_exchange = _split_pos_key(pos_key)
+    if to_exchange == from_exchange:
+        return None, "Kaynak ve hedef konum aynı olamaz."
+
+    try:
+        qty = float(payload.get("qty") or 0.0)
+    except (TypeError, ValueError):
+        return None, "Miktar sayısal olmalı."
+    if qty <= 0:
+        return None, "Miktar sıfırdan büyük olmalı."
+
+    try:
+        fee_qty = float(payload.get("fee_qty") or 0.0)
+    except (TypeError, ValueError):
+        return None, "Ağ ücreti sayısal olmalı."
+    if fee_qty < 0:
+        return None, "Ağ ücreti negatif olamaz."
+    if fee_qty >= qty:
+        return None, "Ağ ücreti transfer miktarından küçük olmalı."
+
+    tarih = (payload.get("date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+
+    return {
+        "pos_key": pos_key,
+        "to_exchange": to_exchange,
+        "qty": qty,
+        "fee_qty": fee_qty,
+        "date": tarih,
+        "note": (payload.get("note") or "").strip(),
+    }, None
+
+
+def transfer_position(payload: dict):
+    """
+    Bir varlığı borsalar/cüzdanlar arasında taşır.
+
+    Satış DEĞİLDİR: nakit hareketi yok, gerçekleşmiş K/Z yok. Kaynak lotlar
+    FIFO sırasıyla tüketilir ve her biri hedefte KENDİ maliyetiyle yeniden
+    açılır. Ağ ücreti olarak yanan miktar gerçekten kaybedilmiş coindir; o
+    kadarlık maliyet ayrı bir yazım kaydıyla zarara geçer.
+    """
+    temiz, hata = validate_transfer_payload(payload)
+    if hata:
+        raise ValueError(hata)
+
+    data = load_portfolio()
+    symbol, from_exchange, lots = _aktif_lotlar(data, temiz["pos_key"])
+    if not lots:
+        raise ValueError(f"Bu varlığa ait aktif işlem bulunamadı: {temiz['pos_key']}")
+
+    mevcut_qty = sum(float(tx.get("qty") or 0.0) for tx in lots)
+    if temiz["qty"] > mevcut_qty + 1e-8:
+        raise ValueError(
+            f"Yetersiz bakiye: {from_exchange} üzerinde {mevcut_qty:.8f} {symbol} var, "
+            f"{temiz['qty']:.8f} transfer edilemez."
+        )
+
+    transfer_id = int(data.get("next_transfer_id", 1))
+    kalan = min(temiz["qty"], mevcut_qty)
+    transfer_qty = kalan
+    # Ücret oranı: her lottan aynı oranda yanar, böylece maliyet dağılımı bozulmaz.
+    ucret_orani = (temiz["fee_qty"] / transfer_qty) if transfer_qty > 0 else 0.0
+
+    tuketilen = []
+    olusan_ids = []
+    yanan_maliyet = 0.0
+    next_id = _sonraki_tx_id(data)
+
+    for tx in lots:
+        if kalan <= 1e-12:
+            break
+        lot_qty = float(tx.get("qty") or 0.0)
+        if lot_qty <= 0:
+            continue
+        lot_cost = float(tx.get("cost") or 0.0)
+        alinan = min(lot_qty, kalan)
+
+        tam_kapandi = (lot_qty - alinan) <= 1e-8
+        if tam_kapandi:
+            tx["status"] = CLOSED_STATUS
+            tx["transfer_out_id"] = transfer_id
+            tx["exit_date"] = temiz["date"]
+        else:
+            tx["qty"] = round(lot_qty - alinan, 12)
+
+        tuketilen.append({
+            "tx_id": int(tx.get("id", 0) or 0),
+            "qty": alinan,
+            "cost": lot_cost,
+            "closed": tam_kapandi,
+        })
+
+        varan = alinan * (1.0 - ucret_orani)
+        yanan_maliyet += (alinan - varan) * lot_cost
+
+        if varan > 0:
+            data["transactions"].append({
+                "id": next_id,
+                # Orijinal alım tarihi korunur — transfer yeni bir alım değildir,
+                # elde tutma süresi ve maliyet tabanı devam eder.
+                "date": tx.get("date", temiz["date"]),
+                "coin": symbol,
+                "exchange": temiz["to_exchange"],
+                "qty": varan,
+                "cost": lot_cost,
+                "status": ACTIVE_STATUS,
+                "type": "TRANSFER",
+                "transfer_in_id": transfer_id,
+                "cost_method": tx.get("cost_method", "Konsolide Ortalama"),
+                "notes": f"Transfer: {from_exchange} → {temiz['to_exchange']} "
+                         f"(kaynak lot #{tx.get('id')}, maliyet korundu)",
+                "category": tx.get("category", "Altcoin"),
+            })
+            olusan_ids.append(next_id)
+            next_id += 1
+
+        kalan -= alinan
+
+    ucret_tx_id = None
+    if temiz["fee_qty"] > 0 and yanan_maliyet > 0:
+        ucret_tx_id = next_id
+        data["transactions"].append({
+            "id": ucret_tx_id,
+            "date": temiz["date"],
+            "coin": symbol,
+            "exchange": from_exchange,
+            "qty": temiz["fee_qty"],
+            "cost": round(yanan_maliyet / temiz["fee_qty"], 8) if temiz["fee_qty"] > 0 else 0.0,
+            "status": CLOSED_STATUS,
+            "type": "YAZIM",
+            "exit_price": 0.0,
+            "exit_date": temiz["date"],
+            "exit_value": 0.0,
+            "realized_pnl_usd": -round(yanan_maliyet, 2),
+            "fee_amount": temiz["fee_qty"],
+            "fee_asset": symbol.replace("USDT", "") or symbol,
+            "fee_usd": round(yanan_maliyet, 4),
+            "cost_method": "Değer Kaybı Yazımı",
+            "close_reason": "write_off",
+            "write_off_reason": "other",
+            "write_off_affected_ids": [],
+            "transfer_fee_of": transfer_id,
+            "notes": f"Transfer ağ ücreti: {temiz['fee_qty']} {symbol} yandı "
+                     f"({from_exchange} → {temiz['to_exchange']})",
+            "category": lots[0].get("category", "Altcoin"),
+        })
+        next_id += 1
+
+    kayit = {
+        "id": transfer_id,
+        "date": temiz["date"],
+        "coin": symbol,
+        "from_exchange": from_exchange,
+        "to_exchange": temiz["to_exchange"],
+        "qty": transfer_qty,
+        "fee_qty": temiz["fee_qty"],
+        "received_qty": transfer_qty - temiz["fee_qty"],
+        "fee_cost_usd": round(yanan_maliyet, 4),
+        "note": temiz["note"],
+        "consumed": tuketilen,
+        "created_tx_ids": olusan_ids,
+        "fee_tx_id": ucret_tx_id,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    data["transfers"].append(kayit)
+    data["next_transfer_id"] = transfer_id + 1
+
+    # Kaynak pozisyon tamamen boşaldıysa oradaki hedef fiyat kaydı anlamsızlaşır.
+    if (mevcut_qty - transfer_qty) <= 1e-8:
+        eski_key = f"{symbol}@{from_exchange}"
+        if eski_key in data.get("targets", {}):
+            del data["targets"][eski_key]
+
+    save_portfolio(data)
+    return kayit
+
+
+def undo_transfer(transfer_id: int):
+    """Transferi geri alır: hedefteki lotları siler, kaynak lotları eski hâline getirir."""
+    data = load_portfolio()
+    kayit = next((t for t in data.get("transfers", [])
+                  if int(t.get("id", 0) or 0) == int(transfer_id)), None)
+    if not kayit:
+        raise ValueError(f"Transfer kaydı bulunamadı: {transfer_id}")
+
+    silinecek = set(int(i) for i in kayit.get("created_tx_ids", []))
+    if kayit.get("fee_tx_id"):
+        silinecek.add(int(kayit["fee_tx_id"]))
+
+    # Hedefte oluşan lotlar sonradan satıldıysa geri alma veriyi bozar.
+    kalanlar = {int(t.get("id", 0) or 0): t for t in data.get("transactions", [])}
+    for tx_id in kayit.get("created_tx_ids", []):
+        tx = kalanlar.get(int(tx_id))
+        if tx is None:
+            raise ValueError(
+                "Bu transfer geri alınamaz: hedefte oluşan lotlardan biri silinmiş."
+            )
+        if tx.get("status") != ACTIVE_STATUS:
+            raise ValueError(
+                "Bu transfer geri alınamaz: transfer edilen varlık hedefte "
+                "satılmış veya kapatılmış. Önce o işlemi geri alın."
+            )
+
+    data["transactions"] = [t for t in data.get("transactions", [])
+                            if int(t.get("id", 0) or 0) not in silinecek]
+
+    kalanlar = {int(t.get("id", 0) or 0): t for t in data["transactions"]}
+    for parca in kayit.get("consumed", []):
+        tx = kalanlar.get(int(parca.get("tx_id", 0) or 0))
+        if tx is None:
+            continue
+        if parca.get("closed"):
+            tx["status"] = ACTIVE_STATUS
+            tx.pop("transfer_out_id", None)
+            tx.pop("exit_date", None)
+        else:
+            tx["qty"] = round(float(tx.get("qty") or 0.0) + float(parca.get("qty") or 0.0), 12)
+
+    data["transfers"] = [t for t in data.get("transfers", [])
+                         if int(t.get("id", 0) or 0) != int(transfer_id)]
+    save_portfolio(data)
+    return {"transfer_id": int(transfer_id), "restored_lots": len(kayit.get("consumed", []))}
+
+
+def list_transfers(data=None):
+    """Transfer defterini yeniden eskiye doğru döndürür."""
+    if data is None:
+        data = load_portfolio()
+    kayitlar = list(data.get("transfers", []))
+    kayitlar.sort(key=lambda t: int(t.get("id", 0) or 0), reverse=True)
+    return kayitlar
+
+
+def list_write_offs(data=None):
+    """Yazım kayıtlarını yeniden eskiye doğru döndürür."""
+    if data is None:
+        data = load_portfolio()
+    kayitlar = [t for t in data.get("transactions", [])
+                if t.get("close_reason") == "write_off"]
+    kayitlar.sort(key=lambda t: int(t.get("id", 0) or 0), reverse=True)
+    return kayitlar
 
 
 # =====================================================================
@@ -1510,8 +2020,13 @@ def calculate_realized_metrics(data):
     
     best_trade = None
     worst_trade = None
+    # FAZ F1 — Yazımlar gerçek birer zarardır ve toplam gerçekleşmiş K/Z'ye
+    # dahildir. Ancak bir alım-satım kararının sonucu ile ölmüş bir coinin
+    # silinmesi aynı şey değil; kullanıcı ayrımı görebilsin diye ayrıca sayılır.
+    total_write_off_usd = 0.0
+    write_off_count = 0
     monthly_map = defaultdict(lambda: {"month": "", "pnl_usd": 0.0, "profit_usd": 0.0, "loss_usd": 0.0, "fees_usd": 0.0, "wins": 0, "total": 0})
-    
+
     for t in transactions:
         fee_usd = float(t.get("fee_usd") or 0.0)
 
@@ -1566,10 +2081,17 @@ def calculate_realized_metrics(data):
             "fee_asset": t.get("fee_asset", "USDT"),
             "fee_usd": round(fee_usd, 4),
             "cost_method": t.get("cost_method", "Konsolide Ortalama"),
+            "close_reason": t.get("close_reason"),
+            "write_off_reason": t.get("write_off_reason"),
+            "write_off_reason_label": WRITE_OFF_REASONS.get(t.get("write_off_reason") or ""),
             "notes": t.get("notes", "")
         }
         closed_txs.append(enriched_tx)
-        
+
+        if t.get("close_reason") == "write_off":
+            total_write_off_usd += pnl_usd
+            write_off_count += 1
+
         total_realized_pnl += pnl_usd
         if pnl_usd > 0:
             total_profit += pnl_usd
@@ -1618,6 +2140,10 @@ def calculate_realized_metrics(data):
         "total_profit_usd": round(total_profit, 2),
         "total_loss_usd": round(total_loss, 2),
         "total_fees_usd": round(total_fees_usd, 2),
+        # Yazımlar hariç, yalnızca alım-satım kararlarından gelen sonuç.
+        "total_write_off_usd": round(total_write_off_usd, 2),
+        "write_off_count": write_off_count,
+        "trading_realized_pnl_usd": round(total_realized_pnl - total_write_off_usd, 2),
         "closed_tx_count": total_closed,
         "winning_tx_count": win_count,
         "losing_tx_count": loss_count,

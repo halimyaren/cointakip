@@ -295,32 +295,21 @@
           <span class="font-mono-nums font-semibold px-1.5 py-0.2 rounded bg-black/30" x-text="formatUSD(exchangeKpis.ALL ? exchangeKpis.ALL.total_kasa : 0)"></span>
         </button>
 
-        <!-- 2. Binance Tab -->
-        <template x-if="exchangeKpis.BINANCE">
-          <button @click="selectedKasaExchange = 'BINANCE'" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-2" :class="selectedKasaExchange === 'BINANCE' ? 'bg-yellow-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700'">
-            <span class="w-2 h-2 rounded-full bg-yellow-400"></span>
-            <span>BINANCE</span>
-            <span class="font-mono-nums font-semibold px-1.5 py-0.2 rounded bg-black/30" x-text="formatUSD(exchangeKpis.BINANCE.total_kasa)"></span>
-            <span class="text-[10px] text-yellow-300 font-normal font-mono-nums" x-text="'(%' + formatNum(exchangeKpis.BINANCE.kasa_share_pct, 1) + ')'"></span>
-          </button>
-        </template>
-
-        <!-- 3. MEXC Tab -->
-        <template x-if="exchangeKpis.MEXC">
-          <button @click="selectedKasaExchange = 'MEXC'" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-2" :class="selectedKasaExchange === 'MEXC' ? 'bg-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700'">
-            <span class="w-2 h-2 rounded-full bg-blue-400"></span>
-            <span>MEXC</span>
-            <span class="font-mono-nums font-semibold px-1.5 py-0.2 rounded bg-black/30" x-text="formatUSD(exchangeKpis.MEXC.total_kasa)"></span>
-            <span class="text-[10px] text-blue-300 font-normal font-mono-nums" x-text="'(%' + formatNum(exchangeKpis.MEXC.kasa_share_pct, 1) + ')'"></span>
-          </button>
-        </template>
-
-        <!-- 4. DEX Tab -->
-        <template x-if="exchangeKpis.DEX && (exchangeKpis.DEX.spot_invested > 0 || exchangeKpis.DEX.active_coins_count > 0)">
-          <button @click="selectedKasaExchange = 'DEX'" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-2" :class="selectedKasaExchange === 'DEX' ? 'bg-purple-600 text-white shadow-md' : 'bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700'">
-            <span class="w-2 h-2 rounded-full bg-purple-400"></span>
-            <span>DEX (On-Chain)</span>
-            <span class="font-mono-nums font-semibold px-1.5 py-0.2 rounded bg-black/30" x-text="formatUSD(exchangeKpis.DEX.total_kasa)"></span>
+        <!-- 2. Konum sekmeleri.
+             FAZ F1c — Eskiden BINANCE / MEXC / DEX olarak üç ayrı blok hâlinde
+             koda gömülüydü. Kullanıcı transferle kendi konumunu yaratabildiği
+             için (METAMASK, LEDGER…) bu liste artık veriden geliyor; aksi hâlde
+             varlık orada duruyor ama Kasa ekranında hiç görünmüyordu. -->
+        <template x-for="loc in kasaLocationTabs" :key="'kasa' + loc">
+          <button @click="selectedKasaExchange = loc"
+                  class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-2"
+                  :class="selectedKasaExchange === loc ? getExchangeActiveStyle(loc) : 'bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700'">
+            <span class="w-2 h-2 rounded-full" :class="getExchangeDotColor(loc)"></span>
+            <span x-text="loc === 'DEX' ? 'DEX (On-Chain)' : loc"></span>
+            <span class="font-mono-nums font-semibold px-1.5 py-0.2 rounded bg-black/30"
+                  x-text="formatUSD(exchangeKpis[loc] ? exchangeKpis[loc].total_kasa : 0)"></span>
+            <span class="text-[10px] font-normal font-mono-nums opacity-80"
+                  x-text="'(%' + formatNum(exchangeKpis[loc] ? exchangeKpis[loc].kasa_share_pct : 0, 1) + ')'"></span>
           </button>
         </template>
       </div>
@@ -475,9 +464,22 @@
         </button>
       </nav>
 
-      <!-- Search Input -->
-      <div class="flex items-center space-x-2 flex-shrink-0 self-start sm:self-auto" x-show="activeTab === 'dashboard' || activeTab === 'ledger'">
-        <div class="relative">
+      <!-- Search Input + Defter Geçmişi -->
+      <div class="flex items-center space-x-2 flex-shrink-0 self-start sm:self-auto">
+        <!-- FAZ F1c — Defter Geçmişi girişi eskiden yalnızca Dashboard'daki
+             ince bir banttaydı; kullanıcı başka sekmedeyken transferi geri
+             almanın yolunu bulamıyordu. Artık her sekmeden erişilebilir. -->
+        <button x-show="transfers.length > 0 || writeOffs.length > 0"
+                @click="showLedgerHistory = true; fetchLedgerHistory()"
+                class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 transition flex items-center space-x-1.5"
+                title="Transfer ve zarar yazımı kayıtları — geri alma buradan">
+          <span>📒</span>
+          <span class="hidden sm:inline">Defter Geçmişi</span>
+          <span class="px-1.5 py-0.2 rounded-full text-[10px] font-mono-nums bg-slate-800 text-slate-400 border border-slate-700"
+                x-text="transfers.length + writeOffs.length"></span>
+        </button>
+
+        <div class="relative" x-show="activeTab === 'dashboard' || activeTab === 'ledger'">
           <i data-lucide="search" class="w-4 h-4 absolute left-3 top-2.5 text-slate-500"></i>
           <input type="text" x-model="searchQuery" placeholder="Coin ara (BTC, SOL...)" class="pl-9 pr-3 py-1.5 text-xs rounded-lg bg-slate-900 border border-slate-700 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500 w-44 sm:w-52 transition">
         </div>
@@ -497,13 +499,34 @@
           <span class="text-base">🔌</span>
           <span>
             <b x-text="kpis.no_source_count"></b>
-            pozisyonun fiyat kaynağı bulunamadı. Bu pozisyonlar toplam kasada
-            <b>maliyet değeriyle</b> sayılıyor, güncel fiyatla değil.
+            pozisyonun fiyat kaynağı bulunamadı. Toplam kasanızın
+            <b x-text="'$' + formatNum(kpis.no_source_value_usd || 0, 2)"></b>
+            kadarlık kısmı bu pozisyonlardan geliyor ve <b>güncel fiyatla değil,
+            maliyet değeriyle</b> sayılıyor — yani doğrulanmamış bir varsayım.
+            Coin hâlâ yaşıyorsa kaynak tanımlayın; öldüyse zarar yazın.
           </span>
         </div>
         <button @click="settingsTab = 'sources'; showSettingsModal = true; fetchPriceSources()"
                 class="px-2.5 py-1 rounded-lg bg-amber-900/70 hover:bg-amber-800 text-amber-100 text-[11px] font-bold transition flex-shrink-0">
           Kaynak Tanımla
+        </button>
+      </div>
+
+      <!-- FAZ F1 — Defter geçmişi girişi. Transfer ve yazım kayıtları
+           işlem defterinde görünmez (ikisi de alım-satım değildir), bu yüzden
+           kendi görünür yerleri olmalı; aksi halde geri alma yolu kalmaz. -->
+      <div x-show="transfers.length > 0 || writeOffs.length > 0"
+           class="flex items-center justify-between px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 font-sans">
+        <div class="flex items-center space-x-2.5 text-[11.5px] text-slate-400">
+          <span class="text-base">📒</span>
+          <span>
+            <b x-text="transfers.length"></b> transfer,
+            <b x-text="writeOffs.length"></b> zarar yazımı kayıtlı.
+          </span>
+        </div>
+        <button @click="showLedgerHistory = true; fetchLedgerHistory()"
+                class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition flex-shrink-0">
+          Defter Geçmişi
         </button>
       </div>
 
@@ -617,7 +640,7 @@
                     <div class="flex items-center space-x-2">
                       <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" :class="coin.pnl_usd >= 0 ? 'bg-emerald-400' : 'bg-rose-400'"></span>
                       <span x-text="coin.display_name" class="font-bold text-white tracking-wide text-sm"></span>
-                      <span class="px-1.5 py-0.5 rounded text-[9px] font-bold" :class="coin.exchange === 'BINANCE' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' : (coin.exchange === 'MEXC' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-purple-500/10 text-purple-400 border border-purple-500/20')" x-text="coin.exchange || 'BINANCE'"></span>
+                      <span class="px-1.5 py-0.5 rounded text-[9px] font-bold" :class="getExchangeBadgeStyle(coin.exchange || 'BINANCE')" x-text="coin.exchange || 'BINANCE'"></span>
                     </div>
                     <div class="mt-1 flex items-center space-x-1.5">
                       <span class="px-2 py-0.5 rounded text-[10px] font-medium" :class="getCategoryStyle(coin.category)" x-text="coin.category"></span>
@@ -640,6 +663,23 @@
                               title="Bu fiyat yalnızca sembol adına göre eşleştirildi. Aynı sembolü taşıyan başka bir zincirdeki token olabilir. Kesinleştirmek için kontrat adresi veya borsa market adı tanımlayın.">
                         <span>⚠️</span>
                         <span>Sembol Eşleşmesi</span>
+                      </button>
+                    </div>
+                    <!-- FAZ F1 — Defter eylemleri. Transfer ve yazım bilinçli olarak
+                         AYRI düğmelerdir: biri varlığı taşır (maliyet korunur),
+                         diğeri öldüğünü kabul eder (maliyet zarar yazılır). -->
+                    <div class="mt-1 flex items-center space-x-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
+                      <button @click="openTransferForm(coin)"
+                              class="text-[9.5px] text-slate-400 hover:text-sky-300 font-semibold px-1.5 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 border border-slate-700 transition flex items-center space-x-1"
+                              title="Bu varlığı başka bir borsaya veya cüzdana taşı. Satış değildir: nakit hareketi olmaz, maliyet tabanı korunur.">
+                        <span>🔀</span>
+                        <span>Transfer</span>
+                      </button>
+                      <button @click="openWriteOffForm(coin)"
+                              class="text-[9.5px] text-slate-400 hover:text-rose-300 font-semibold px-1.5 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 border border-slate-700 transition flex items-center space-x-1"
+                              title="Bu coin öldüyse (delist, rug, erişim kaybı) pozisyonu sıfırdan kapat. Maliyetin tamamı zarar yazılır, kasaya nakit eklenmez.">
+                        <span>🪦</span>
+                        <span>Zarar Yaz</span>
                       </button>
                     </div>
                   </td>
@@ -779,6 +819,27 @@
     <!-- ============================================================= -->
     <div x-show="activeTab === 'ledger'" class="space-y-4" x-transition:enter="transition ease-out duration-150">
       
+      <!-- FAZ F1 — Yazımlar toplam gerçekleşmiş K/Z'ye dahildir, ama bir
+           alım-satım kararının sonucu değildir. Ayrımı göstermezsek kullanıcı
+           kendi ticaret performansını olduğundan kötü okur. -->
+      <div x-show="(realizedMetrics?.write_off_count || 0) > 0"
+           class="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 font-sans mb-3">
+        <div class="flex items-center space-x-2.5 text-[11.5px] text-slate-300">
+          <span class="text-base">🪦</span>
+          <span>
+            Gerçekleşen K/Z'nin
+            <b class="text-rose-400" x-text="'-$' + formatNum(Math.abs(realizedMetrics?.total_write_off_usd || 0), 2)"></b>
+            kadarı <b x-text="realizedMetrics?.write_off_count"></b> adet zarar yazımından geliyor
+            (ölmüş pozisyonların kapatılması), alım-satımdan değil.
+          </span>
+        </div>
+        <div class="text-[11.5px] text-slate-400">
+          Yazımlar hariç ticaret sonucu:
+          <b class="font-mono-nums" :class="(realizedMetrics?.trading_realized_pnl_usd || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'"
+             x-text="formatUSD(realizedMetrics?.trading_realized_pnl_usd || 0)"></b>
+        </div>
+      </div>
+
       <!-- FAZ 7: İŞLEM KARNESİ & GERÇEKLEŞMİŞ K/Z KPI KARTLARI -->
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 font-sans">
         <!-- 1. Realized Net PnL -->
@@ -927,7 +988,7 @@
                   <td class="py-3 px-3.5 font-sans">
                     <div class="text-slate-300 font-mono-nums text-[11px]" x-text="tx.date"></div>
                     <div class="mt-0.5">
-                      <span class="px-1.5 py-0.2 rounded text-[9px] font-bold" :class="tx.exchange === 'BINANCE' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' : (tx.exchange === 'MEXC' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-purple-500/10 text-purple-400 border border-purple-500/20')" x-text="tx.exchange || 'BINANCE'"></span>
+                      <span class="px-1.5 py-0.2 rounded text-[9px] font-bold" :class="getExchangeBadgeStyle(tx.exchange || 'BINANCE')" x-text="tx.exchange || 'BINANCE'"></span>
                     </div>
                   </td>
 
@@ -1172,6 +1233,18 @@
             <i data-lucide="bar-chart-2" class="w-4 h-4"></i>
             <span>📊 Performans & Dağılım</span>
           </button>
+          <!-- FAZ F2 — Arşiv. Borsaların geçmiş penceresi kaydığı için
+               (Binance ~2 yıl, MEXC 1 ay) bugün kaydedilmeyen veri yarın
+               alınamıyor. Bu sekme, sistemin kendi tuttuğu geçmişi gösterir. -->
+          <button @click="tvSubTab = 'archive'; fetchArchive();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'archive' ? 'bg-gradient-to-r from-sky-600 to-blue-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
+            <i data-lucide="database" class="w-4 h-4"></i>
+            <span>🗄️ Arşiv & Net Varlık</span>
+          </button>
+          <!-- FAZ F3 — Borsa mutabakatı. SALT OKUNUR: deftere hiçbir şey yazmaz. -->
+          <button @click="tvSubTab = 'reconcile'; if (!reconcileReport) runReconcile();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'reconcile' ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
+            <i data-lucide="git-compare" class="w-4 h-4"></i>
+            <span>🔍 Borsa Mutabakatı</span>
+          </button>
         </div>
 
         <!-- Right: Fast Coin Selector for TV & Pro Link -->
@@ -1323,7 +1396,7 @@
               <!-- Top Row: Symbol & Exchange Badge -->
               <div class="flex items-center justify-between">
                 <span class="font-bold text-white tracking-wide" :class="coin.portfolio_share_pct >= 15 ? 'text-lg' : 'text-sm'" x-text="coin.display_name"></span>
-                <span class="px-1.5 py-0.2 rounded text-[9px] font-bold" :class="coin.exchange === 'BINANCE' ? 'bg-yellow-500/20 text-yellow-300' : (coin.exchange === 'MEXC' ? 'bg-blue-500/20 text-blue-300' : 'bg-purple-500/20 text-purple-300')" x-text="coin.exchange || 'BINANCE'"></span>
+                <span class="px-1.5 py-0.2 rounded text-[9px] font-bold" :class="getExchangeBadgeStyle(coin.exchange || 'BINANCE')" x-text="coin.exchange || 'BINANCE'"></span>
               </div>
 
               <!-- Value & Share -->
@@ -1443,6 +1516,244 @@
 
         </div>
 
+      </div>
+
+      <!-- ============================================================= -->
+      <!-- VIEW 6: 🔍 BORSA MUTABAKATI (FAZ F3) — SALT OKUNUR            -->
+      <!-- ============================================================= -->
+      <div x-show="tvSubTab === 'reconcile'" class="space-y-4" x-transition:enter="transition ease-out duration-150">
+
+        <div class="px-4 py-3 rounded-xl bg-violet-950/40 border border-violet-800/50 text-[11.5px] text-violet-200 leading-relaxed font-sans">
+          Borsadan indirdiğiniz dışa aktarım dosyalarını defterinizle karşılaştırır.
+          <b>Bu ekran deftere hiçbir şey yazmaz</b> — maliyet tabanınız sizin
+          girdiğiniz hâliyle kalır, borsa onu asla ezmez. Amaç içe aktarmak değil,
+          <b>farkı görmek</b>; ne yapacağınıza siz karar verirsiniz.
+          <span class="block mt-1.5 text-violet-300/80">
+            Dosyaları <code class="px-1 rounded bg-violet-900/50" x-text="reconcileReport ? reconcileReport.export_root : 'borsa_exports/'"></code>
+            klasörüne koyun. Bu klasör <code class="px-1 rounded bg-violet-900/50">.gitignore</code>'dadır, yayınlanmaz.
+          </span>
+        </div>
+
+        <!-- Kapsam ve özet -->
+        <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-900 border border-slate-800 rounded-xl p-3.5 font-sans">
+          <div class="flex flex-wrap items-center gap-4 text-[11.5px]">
+            <span class="text-slate-400">
+              <b class="text-slate-200" x-text="reconcileReport ? reconcileReport.files_found : 0"></b> dosya ·
+              <b class="text-slate-200" x-text="reconcileReport ? reconcileReport.event_count : 0"></b> kayıt
+            </span>
+            <template x-for="(w, ex) in (reconcileReport ? reconcileReport.coverage : {})" :key="ex">
+              <span class="px-2 py-1 rounded-lg bg-slate-800 text-slate-300 text-[11px] font-mono-nums">
+                <b x-text="ex"></b>: <span x-text="w.first + ' … ' + w.last"></span>
+              </span>
+            </template>
+          </div>
+          <button @click="runReconcile()" :disabled="reconcileBusy"
+                  class="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:bg-slate-800 disabled:text-slate-600 text-white text-xs font-bold transition">
+            <span x-text="reconcileBusy ? 'Karşılaştırılıyor…' : '↻ Yeniden Çalıştır'"></span>
+          </button>
+        </div>
+
+        <!-- Durum filtreleri -->
+        <div x-show="reconcileReport" class="flex flex-wrap items-center gap-2 font-sans">
+          <button @click="reconcileFilter = 'all'"
+                  class="px-3 py-1 rounded-lg text-[11px] font-bold transition"
+                  :class="reconcileFilter === 'all' ? 'bg-slate-200 text-slate-900' : 'bg-slate-800 text-slate-400 hover:text-white'">
+            Tümü (<span x-text="reconcileReport ? reconcileReport.rows.length : 0"></span>)
+          </button>
+          <template x-for="d in reconcileStatusOrder" :key="d">
+            <button x-show="(reconcileReport.status_counts[d] || 0) > 0"
+                    @click="reconcileFilter = d"
+                    class="px-3 py-1 rounded-lg text-[11px] font-bold transition border"
+                    :class="reconcileFilter === d ? reconcileStatusMeta[d].active : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'">
+              <span x-text="reconcileStatusMeta[d].label"></span>
+              <span class="ml-1 opacity-80 font-mono-nums" x-text="'(' + (reconcileReport.status_counts[d] || 0) + ')'"></span>
+            </button>
+          </template>
+        </div>
+
+        <!-- Sonuç tablosu -->
+        <div x-show="reconcileReport" class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-xs font-mono-nums min-w-[860px]">
+              <thead class="bg-slate-800 text-slate-400 text-[10.5px] uppercase font-sans">
+                <tr>
+                  <th class="py-2.5 px-3 text-left">Varlık</th>
+                  <th class="py-2.5 px-3 text-right">Alınan</th>
+                  <th class="py-2.5 px-3 text-right">Satılan</th>
+                  <th class="py-2.5 px-3 text-right">Çekilen</th>
+                  <th class="py-2.5 px-3 text-right">Borsada Kalan</th>
+                  <th class="py-2.5 px-3 text-right">Defterde</th>
+                  <th class="py-2.5 px-3 text-right">Fark</th>
+                  <th class="py-2.5 px-3 text-right">Maliyet (borsa / defter)</th>
+                  <th class="py-2.5 px-3 text-left">Durum</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/80">
+                <template x-for="r in filteredReconcileRows" :key="r.asset">
+                  <tr class="hover:bg-slate-800/50 align-top">
+                    <td class="py-2.5 px-3">
+                      <div class="font-bold text-white font-sans" x-text="r.asset"></div>
+                      <div class="text-[10px] text-slate-500 font-sans" x-text="[...(r.exchanges||[]), ...(r.locations||[])].join(' · ')"></div>
+                    </td>
+                    <td class="py-2.5 px-3 text-right text-slate-300" x-text="formatNum(r.bought_qty, 4)"></td>
+                    <td class="py-2.5 px-3 text-right text-slate-400" x-text="formatNum(r.sold_qty, 4)"></td>
+                    <td class="py-2.5 px-3 text-right text-slate-400" x-text="r.withdrawn_qty > 0 ? formatNum(r.withdrawn_qty, 4) : '—'"></td>
+                    <td class="py-2.5 px-3 text-right text-teal-300 font-bold" x-text="formatNum(r.on_exchange_qty, 4)"></td>
+                    <td class="py-2.5 px-3 text-right text-cyan-300 font-bold" x-text="formatNum(r.ledger_qty, 4)"></td>
+                    <td class="py-2.5 px-3 text-right font-bold"
+                        :class="Math.abs(r.diff_qty) < 1e-8 ? 'text-slate-600' : (r.status === 'mismatch' ? 'text-rose-400' : 'text-amber-400')"
+                        x-text="Math.abs(r.diff_qty) < 1e-8 ? '—' : formatNum(r.diff_qty, 4)"></td>
+                    <td class="py-2.5 px-3 text-right text-[11px]">
+                      <span class="text-slate-300" x-text="r.exchange_avg_cost > 0 ? '$' + formatPrice(r.exchange_avg_cost) : '—'"></span>
+                      <span class="text-slate-600 mx-1">/</span>
+                      <span class="text-slate-400" x-text="r.ledger_avg_cost > 0 ? '$' + formatPrice(r.ledger_avg_cost) : '—'"></span>
+                    </td>
+                    <td class="py-2.5 px-3 font-sans max-w-xs">
+                      <span class="px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap"
+                            :class="reconcileStatusMeta[r.status].badge"
+                            x-text="reconcileStatusMeta[r.status].label"></span>
+                      <div x-show="r.note" class="text-[10.5px] text-slate-500 mt-1 leading-snug" x-text="r.note"></div>
+                    </td>
+                  </tr>
+                </template>
+                <tr x-show="filteredReconcileRows.length === 0">
+                  <td colspan="9" class="py-8 text-center text-slate-500 text-xs font-sans">Bu filtrede kayıt yok.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div x-show="reconcileReport && reconcileReport.files_found === 0"
+             class="px-4 py-8 rounded-xl bg-slate-900 border border-slate-800 text-center font-sans">
+          <div class="text-3xl mb-2 opacity-40">📂</div>
+          <div class="text-sm text-slate-300 font-semibold">Dışa aktarım dosyası bulunamadı</div>
+          <div class="text-[11.5px] text-slate-500 mt-1.5 leading-relaxed max-w-lg mx-auto">
+            Borsanızın web arayüzünden işlem geçmişinizi indirin ve
+            <code class="px-1 rounded bg-slate-800" x-text="reconcileReport ? reconcileReport.export_root : 'borsa_exports/'"></code>
+            klasörüne koyun. Binance için CSV, MEXC için XLSX destekleniyor.
+          </div>
+        </div>
+
+        <div x-show="reconcileReport && reconcileReport.warnings && reconcileReport.warnings.length > 0"
+             class="px-4 py-2.5 rounded-xl bg-amber-950/40 border border-amber-800/60 text-[11px] text-amber-200 font-sans">
+          <b x-text="reconcileReport.warnings.length + ' satır okunamadı:'"></b>
+          <template x-for="w in reconcileReport.warnings.slice(0, 3)" :key="w">
+            <div class="text-amber-300/80 mt-0.5" x-text="w"></div>
+          </template>
+        </div>
+      </div>
+
+      <!-- ============================================================= -->
+      <!-- VIEW 5: 🗄️ ARŞİV & NET VARLIK EĞRİSİ (FAZ F2)                  -->
+      <!-- ============================================================= -->
+      <div x-show="tvSubTab === 'archive'" class="space-y-4" x-transition:enter="transition ease-out duration-150">
+
+        <!-- Neden var? Kullanıcı bu ekranın amacını bilmeli. -->
+        <div class="px-4 py-3 rounded-xl bg-sky-950/40 border border-sky-800/50 text-[11.5px] text-sky-200 leading-relaxed font-sans">
+          Borsalar geçmişi süresiz saklamıyor ve pencereleri <b>kayıyor</b>
+          (Binance ~2 yıl, MEXC 1 ay). Yani bugün kaydedilmeyen veri yarın
+          alınamıyor. Bu arşiv, uygulama her açıldığında portföyünüzün o günkü
+          hâlini kendi veritabanına yazar — böylece borsanın sildiği geçmiş
+          sizde kalır. <b>Kayıtlar yalnızca uygulama çalışırken oluşur.</b>
+        </div>
+
+        <!-- Durum şeridi -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 font-sans">
+          <div class="bg-slate-900 rounded-xl p-3.5 border border-slate-800">
+            <div class="text-slate-400 text-xs font-medium">KAYIT SAYISI</div>
+            <div class="mt-1.5 text-xl font-bold text-sky-300 font-mono-nums" x-text="archiveStatus.snapshot_count || 0"></div>
+            <div class="text-[10.5px] text-slate-500 mt-0.5"
+                 x-text="archiveStatus.first_date ? (archiveStatus.first_date + ' →  ' + archiveStatus.last_date) : 'henüz kayıt yok'"></div>
+          </div>
+          <div class="bg-slate-900 rounded-xl p-3.5 border border-slate-800">
+            <div class="text-slate-400 text-xs font-medium">SON KAYIT</div>
+            <div class="mt-1.5 text-xl font-bold font-mono-nums"
+                 :class="(archiveStatus.days_since_last || 0) > 1 ? 'text-amber-400' : 'text-emerald-400'"
+                 x-text="archiveStatus.days_since_last === null || archiveStatus.days_since_last === undefined ? '—' : (archiveStatus.days_since_last === 0 ? 'bugün' : archiveStatus.days_since_last + ' gün önce')"></div>
+          </div>
+          <div class="bg-slate-900 rounded-xl p-3.5 border border-slate-800">
+            <div class="text-slate-400 text-xs font-medium">EKSİK GÜN</div>
+            <div class="mt-1.5 text-xl font-bold font-mono-nums"
+                 :class="(archiveStatus.missing_days_total || 0) > 0 ? 'text-amber-400' : 'text-emerald-400'"
+                 x-text="archiveStatus.missing_days_total || 0"></div>
+            <div class="text-[10.5px] text-slate-500 mt-0.5" x-text="(archiveStatus.gap_count || 0) + ' boşluk'"></div>
+          </div>
+          <div class="bg-slate-900 rounded-xl p-3.5 border border-slate-800">
+            <div class="text-slate-400 text-xs font-medium">ARŞİV BOYUTU</div>
+            <div class="mt-1.5 text-xl font-bold text-slate-300 font-mono-nums" x-text="archiveSizeLabel"></div>
+            <button @click="takeSnapshot()" :disabled="archiveBusy"
+                    class="mt-1 text-[10.5px] text-sky-400 hover:text-sky-300 font-bold disabled:text-slate-600">
+              <span x-text="archiveBusy ? 'alınıyor…' : '+ Şimdi fotoğraf al'"></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Boşluk uyarısı — sessizce eksik veriyle devam etmek, hiç veri
+             olmamasından kötüdür. -->
+        <div x-show="(archiveStatus.gap_count || 0) > 0"
+             class="px-4 py-2.5 rounded-xl bg-amber-950/40 border border-amber-800/60 text-[11.5px] text-amber-200 font-sans">
+          ⚠️ Arşivde <b x-text="archiveStatus.missing_days_total"></b> günlük boşluk var
+          (uygulama o günlerde çalışmamış). Kapatılamaz — o günlerin fiyatları geçti.
+          <template x-for="g in (archiveStatus.gaps || [])" :key="g.from">
+            <span class="ml-1.5 px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-100 text-[10.5px] font-mono-nums"
+                  x-text="g.from + '…' + g.to"></span>
+          </template>
+        </div>
+
+        <!-- Net varlık eğrisi -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <div class="flex items-center justify-between mb-3 font-sans">
+            <h3 class="text-sm font-bold text-white">Net Varlık Eğrisi</h3>
+            <div class="flex space-x-1.5">
+              <template x-for="d in [30, 90, 365, 0]" :key="'r' + d">
+                <button @click="archiveRange = d; fetchArchive()"
+                        class="px-2.5 py-1 rounded-lg text-[11px] font-bold transition"
+                        :class="archiveRange === d ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                        x-text="d === 0 ? 'Tümü' : d + 'g'"></button>
+              </template>
+            </div>
+          </div>
+          <div x-show="archiveSeries.length >= 2" class="h-64"><canvas id="netWorthChart"></canvas></div>
+          <div x-show="archiveSeries.length < 2" class="py-10 text-center text-slate-500 text-xs font-sans">
+            <div class="text-3xl mb-2 opacity-40">📈</div>
+            Eğri için en az iki günlük kayıt gerekiyor.
+            <div class="text-[11px] text-slate-600 mt-1">
+              Arşiv bugün başladı — grafik yarından itibaren şekillenecek.
+            </div>
+          </div>
+        </div>
+
+        <!-- Kayıt tablosu -->
+        <div x-show="archiveSeries.length > 0" class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+          <div class="overflow-x-auto max-h-72 overflow-y-auto">
+            <table class="w-full text-xs font-mono-nums">
+              <thead class="bg-slate-800 text-slate-400 text-[10.5px] uppercase sticky top-0 font-sans">
+                <tr>
+                  <th class="py-2 px-3 text-left">Tarih</th>
+                  <th class="py-2 px-3 text-right">Net Varlık</th>
+                  <th class="py-2 px-3 text-right">Spot Değer</th>
+                  <th class="py-2 px-3 text-right">Nakit</th>
+                  <th class="py-2 px-3 text-right">Gerçekleşen K/Z</th>
+                  <th class="py-2 px-3 text-center">Pozisyon</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/80">
+                <template x-for="r in [...archiveSeries].reverse()" :key="r.taken_date">
+                  <tr class="hover:bg-slate-800/50">
+                    <td class="py-2 px-3 text-slate-300" x-text="r.taken_date"></td>
+                    <td class="py-2 px-3 text-right font-bold text-teal-300" x-text="'$' + formatNum(r.total_equity_usd, 2)"></td>
+                    <td class="py-2 px-3 text-right text-slate-300" x-text="'$' + formatNum(r.spot_value_usd, 2)"></td>
+                    <td class="py-2 px-3 text-right text-slate-400" x-text="'$' + formatNum(r.cash_usd, 2)"></td>
+                    <td class="py-2 px-3 text-right" :class="(r.realized_pnl_usd || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'"
+                        x-text="((r.realized_pnl_usd || 0) >= 0 ? '+$' : '-$') + formatNum(Math.abs(r.realized_pnl_usd || 0), 2)"></td>
+                    <td class="py-2 px-3 text-center text-slate-400" x-text="r.position_count"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       <!-- ============================================================= -->
@@ -2721,13 +3032,19 @@
   <!-- ============================================================= -->
   <!-- MODAL: EDIT WALLET CASH BALANCE (MULTI-EXCHANGE NAKİT YÖNETİMİ) -->
   <!-- ============================================================= -->
+  <!-- FAZ F1c — Panelin kendi yükseklik sınırı ve kaydırması var. Konum sayısı
+       artık sabit değil (kullanıcı kendi cüzdanını ekleyebiliyor); sınır olmadan
+       liste uzadıkça alt kısım ekran dışında kalıyor ve son eklenen konum
+       görünmüyordu. Dış kapsayıcı ortalarken taşan içeriğe erişilemiyor. -->
   <div x-show="showWalletModal" class="fixed inset-0 z-50 overflow-y-auto bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" style="display: none;">
-    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4" @click.away="showWalletModal = false">
-      
-      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto" @click.away="showWalletModal = false">
+
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3 sticky -top-6 -mt-6 pt-6 bg-slate-900 z-10">
         <h3 class="text-base font-bold text-white flex items-center space-x-2">
           <i data-lucide="coins" class="w-5 h-5 text-emerald-400"></i>
           <span>Borsa Nakit & Kasa Yönetimi</span>
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700 font-mono-nums"
+                x-text="knownLocations.length + ' konum'"></span>
         </h3>
         <button @click="showWalletModal = false" class="text-slate-400 hover:text-white">
           <i data-lucide="x" class="w-5 h-5"></i>
@@ -2736,31 +3053,45 @@
 
       <form @submit.prevent="saveWallets()" class="space-y-3.5 text-xs font-sans">
         
-        <!-- Binance Cash -->
-        <div>
-          <label class="block text-slate-400 font-semibold mb-1 flex items-center space-x-1.5">
-            <span class="w-2 h-2 rounded-full bg-yellow-400"></span>
-            <span>BINANCE SERBEST NAKİT (USDT)</span>
-          </label>
-          <input type="number" step="any" x-model="walletForm.exchange_cash.BINANCE" required class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white font-mono-nums font-bold focus:border-emerald-500">
-        </div>
+        <!-- Konum başına serbest nakit.
+             FAZ F1c — Eskiden BINANCE / MEXC / GATE.IO için üç sabit kutu vardı
+             ve DEX'in kendi kutusu bile yoktu. Kullanıcı transferle kendi
+             konumunu yaratabildiği için liste artık veriden üretiliyor. -->
+        <template x-for="loc in knownLocations" :key="'cash' + loc">
+          <div>
+            <label class="block text-slate-400 font-semibold mb-1 flex items-center justify-between">
+              <span class="flex items-center space-x-1.5">
+                <span class="w-2 h-2 rounded-full" :class="getExchangeDotColor(loc)"></span>
+                <span x-text="loc + ' SERBEST NAKİT (USDT)'"></span>
+              </span>
+              <button type="button"
+                      x-show="!['BINANCE','MEXC','GATE.IO','DEX'].includes(loc)"
+                      @click="removeLocation(loc)"
+                      class="text-[10px] text-slate-500 hover:text-rose-400 font-bold transition"
+                      title="Bu konumu listeden kaldır (yalnızca boşsa)">✕ kaldır</button>
+            </label>
+            <input type="number" step="any" x-model="walletForm.exchange_cash[loc]"
+                   class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white font-mono-nums font-bold focus:border-emerald-500">
+          </div>
+        </template>
 
-        <!-- MEXC Cash -->
-        <div>
-          <label class="block text-slate-400 font-semibold mb-1 flex items-center space-x-1.5">
-            <span class="w-2 h-2 rounded-full bg-blue-400"></span>
-            <span>MEXC SERBEST NAKİT (USDT)</span>
-          </label>
-          <input type="number" step="any" x-model="walletForm.exchange_cash.MEXC" required class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white font-mono-nums font-bold focus:border-emerald-500">
-        </div>
-
-        <!-- Gate.io Cash -->
-        <div>
-          <label class="block text-slate-400 font-semibold mb-1 flex items-center space-x-1.5">
-            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-            <span>GATE.IO / DEX NAKİT (USDT)</span>
-          </label>
-          <input type="number" step="any" x-model="walletForm.exchange_cash['GATE.IO']" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white font-mono-nums font-bold focus:border-emerald-500">
+        <!-- Yeni konum ekleme -->
+        <div class="pt-2 border-t border-slate-800">
+          <label class="block text-slate-400 font-semibold mb-1">Yeni Konum Ekle</label>
+          <div class="flex space-x-2">
+            <input type="text" x-model="newLocationName"
+                   @keydown.enter.prevent="addLocation()"
+                   placeholder="METAMASK, LEDGER, WHITEBIT…"
+                   class="flex-1 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs uppercase focus:border-emerald-500">
+            <button type="button" @click="addLocation()"
+                    class="px-3.5 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold transition flex-shrink-0">
+              + Ekle
+            </button>
+          </div>
+          <p class="text-[10.5px] text-slate-500 mt-1 leading-relaxed">
+            Kendi cüzdanlarını buraya ekleyebilirsin. Transfer yaptığın konumlar
+            zaten otomatik olarak listeye giriyor.
+          </p>
         </div>
 
         <!-- Calculated Total Cash Preview -->
@@ -2800,6 +3131,274 @@
           <button type="submit" class="px-4 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold shadow-md">Kaydet & Güncelle</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- MODAL: TRANSFER (FAZ F1)                                       -->
+  <!-- Varlığı borsalar/cüzdanlar arasında taşır. SATIŞ DEĞİLDİR.     -->
+  <!-- ============================================================= -->
+  <div x-show="showTransferForm" class="fixed inset-0 z-50 overflow-y-auto bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+       x-transition:enter="transition ease-out duration-150" style="display: none;"
+       @keydown.escape.window="showTransferForm = false">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 font-sans max-h-[90vh] overflow-y-auto">
+
+      <div class="flex items-start justify-between">
+        <div class="flex items-start space-x-3">
+          <div class="p-2 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex-shrink-0">
+            <span class="text-lg">🔀</span>
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-white tracking-tight">Varlık Transferi</h3>
+            <p class="text-xs text-slate-400 mt-0.5">
+              <b x-text="transferForm.coin"></b> —
+              <span x-text="transferForm.from_exchange"></span> üzerinde
+              <b x-text="formatNum(transferForm.available, 8)"></b> adet var.
+            </p>
+          </div>
+        </div>
+        <button @click="showTransferForm = false" class="text-slate-500 hover:text-white transition text-lg leading-none">✕</button>
+      </div>
+
+      <div class="px-3 py-2.5 rounded-lg bg-sky-950/40 border border-sky-800/50 text-[11.5px] text-sky-200 leading-relaxed">
+        Transfer bir <b>satış değildir</b>: nakit bakiyeniz değişmez, gerçekleşmiş
+        kâr/zarar oluşmaz ve <b>maliyet tabanınız korunur</b>. Her lot kendi
+        maliyetiyle taşınır, böylece ileride FIFO doğru çalışmaya devam eder.
+      </div>
+
+      <!-- Hedef seçimi. Eskiden <datalist> kullanılıyordu; tarayıcılar bunu
+           ancak yazmaya başlayınca açtığı için kullanıcı seçenekleri hiç
+           göremiyor, yanlış girdiğinde de düzeltemiyordu. Artık seçenekler
+           görünür ve tıklanabilir. -->
+      <div>
+        <label class="block text-[11px] font-semibold text-slate-400 mb-1.5">Hedef Konum</label>
+        <div class="flex flex-wrap gap-1.5 mb-2">
+          <template x-for="loc in transferTargetOptions" :key="'tt' + loc">
+            <button type="button" @click="transferForm.to_exchange = loc"
+                    class="px-2.5 py-1 rounded-lg text-[11px] font-bold border transition"
+                    :class="transferForm.to_exchange.trim().toUpperCase() === loc
+                            ? getExchangeActiveStyle(loc) + ' border-transparent'
+                            : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'">
+              <span x-text="loc"></span>
+            </button>
+          </template>
+        </div>
+        <input type="text" x-model="transferForm.to_exchange"
+               placeholder="…veya yeni bir konum adı yazın"
+               class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs focus:border-sky-500 focus:outline-none uppercase">
+        <p x-show="transferForm.to_exchange.trim() && transferForm.to_exchange.trim().toUpperCase() === (transferForm.from_exchange || '').toUpperCase()"
+           class="text-[11px] text-rose-400 mt-1">Hedef, kaynakla aynı olamaz.</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3 text-xs">
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-400 mb-1">Tarih</label>
+          <input type="date" x-model="transferForm.date"
+                 class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:border-sky-500 focus:outline-none">
+        </div>
+        <div></div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-400 mb-1 flex items-center justify-between">
+            <span>Miktar</span>
+            <button @click="transferForm.qty = transferForm.available"
+                    class="text-[10px] text-sky-400 hover:text-sky-300 font-bold">TÜMÜ</button>
+          </label>
+          <input type="number" step="any" x-model="transferForm.qty" placeholder="0.00"
+                 class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono-nums focus:border-sky-500 focus:outline-none">
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-slate-400 mb-1">Ağ Ücreti (coin)</label>
+          <input type="number" step="any" x-model="transferForm.fee_qty" placeholder="0"
+                 class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono-nums focus:border-sky-500 focus:outline-none">
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-[11px] font-semibold text-slate-400 mb-1">Not (isteğe bağlı)</label>
+        <input type="text" x-model="transferForm.note" placeholder="Örn: Binance delist etti, cüzdana çektim"
+               class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs focus:border-sky-500 focus:outline-none">
+      </div>
+
+      <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-950/60 border border-slate-800 text-xs">
+        <span class="text-slate-400">Hedefe ulaşacak miktar</span>
+        <span class="font-bold text-sky-300 font-mono-nums" x-text="formatNum(transferReceived, 8) + ' ' + transferForm.coin"></span>
+      </div>
+      <p x-show="Number(transferForm.fee_qty) > 0" class="text-[11px] text-amber-300/90 -mt-2">
+        ⚠️ Ağ ücreti olarak yanan coin gerçekten kaybedilmiştir; o kadarlık maliyet
+        ayrı bir zarar kaydı olarak yazılacak.
+      </p>
+
+      <div class="flex space-x-2 pt-1">
+        <button @click="showTransferForm = false"
+                class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition">
+          Vazgeç
+        </button>
+        <button @click="submitTransfer()" :disabled="!transferValid || transferBusy"
+                class="flex-1 px-4 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-white text-xs font-bold transition">
+          <span x-text="transferBusy ? 'Kaydediliyor…' : 'Transferi Kaydet'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- MODAL: DEĞER KAYBI YAZIMI (FAZ F1)                             -->
+  <!-- ============================================================= -->
+  <div x-show="showWriteOffForm" class="fixed inset-0 z-50 overflow-y-auto bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+       x-transition:enter="transition ease-out duration-150" style="display: none;"
+       @keydown.escape.window="showWriteOffForm = false">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 font-sans max-h-[90vh] overflow-y-auto">
+
+      <div class="flex items-start justify-between">
+        <div class="flex items-start space-x-3">
+          <div class="p-2 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex-shrink-0">
+            <span class="text-lg">🪦</span>
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-white tracking-tight">Zarar Yaz (Pozisyonu Sıfırla)</h3>
+            <p class="text-xs text-slate-400 mt-0.5">
+              <b x-text="writeOffForm.coin"></b> —
+              <span x-text="writeOffForm.exchange"></span> ·
+              <span x-text="formatNum(writeOffForm.qty, 6)"></span> adet ·
+              maliyet <b x-text="'$' + formatNum(writeOffForm.invested, 2)"></b>
+            </p>
+          </div>
+        </div>
+        <button @click="showWriteOffForm = false" class="text-slate-500 hover:text-white transition text-lg leading-none">✕</button>
+      </div>
+
+      <div class="px-3 py-2.5 rounded-lg bg-rose-950/40 border border-rose-800/50 text-[11.5px] text-rose-200 leading-relaxed">
+        Bu işlem pozisyonu <b>0 fiyattan kapatır</b> ve maliyetin tamamını
+        gerçekleşmiş zarara yazar. <b>Kasanıza nakit eklenmez</b> — satış değildir.
+        Toplam varlığınız bu pozisyonun değeri kadar düşer, yani şişkin görünen
+        rakam düzelir. Yanlışlıkla yaparsanız geri alabilirsiniz.
+      </div>
+
+      <div>
+        <label class="block text-[11px] font-semibold text-slate-400 mb-1">Gerekçe</label>
+        <select x-model="writeOffForm.reason"
+                class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs focus:border-rose-500 focus:outline-none">
+          <template x-for="r in writeOffReasons" :key="r.key">
+            <option :value="r.key" x-text="r.label"></option>
+          </template>
+        </select>
+      </div>
+
+      <div>
+        <label class="block text-[11px] font-semibold text-slate-400 mb-1">Not (isteğe bağlı)</label>
+        <input type="text" x-model="writeOffForm.note" placeholder="Örn: 2024'te delist edildi, DEX'te de likidite yok"
+               class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs focus:border-rose-500 focus:outline-none">
+      </div>
+
+      <div class="px-3 py-2 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between">
+        <span class="text-slate-400">Yazılacak zarar</span>
+        <span class="font-bold text-rose-400 font-mono-nums" x-text="'-$' + formatNum(writeOffForm.invested, 2)"></span>
+      </div>
+
+      <p class="text-[11px] text-slate-500 leading-relaxed">
+        💡 Coin hâlâ yaşıyor ama sadece başka bir yerdeyse bunu kullanmayın —
+        <button @click="showWriteOffForm = false; openTransferForm(consolidatedCoins.find(c => c.pos_key === writeOffForm.pos_key))"
+                class="text-sky-400 hover:text-sky-300 font-semibold underline">Transfer</button>
+        seçeneği maliyetinizi korur.
+      </p>
+
+      <div class="flex space-x-2 pt-1">
+        <button @click="showWriteOffForm = false"
+                class="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition">
+          Vazgeç
+        </button>
+        <button @click="submitWriteOff()" :disabled="writeOffBusy"
+                class="flex-1 px-4 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:bg-slate-800 disabled:text-slate-600 text-white text-xs font-bold transition">
+          <span x-text="writeOffBusy ? 'Yazılıyor…' : 'Zarar Yaz'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- MODAL: DEFTER GEÇMİŞİ — TRANSFERLER & YAZIMLAR (FAZ F1)        -->
+  <!-- ============================================================= -->
+  <div x-show="showLedgerHistory" class="fixed inset-0 z-50 overflow-y-auto bg-black/70 backdrop-blur-sm flex items-start justify-center p-4 pt-16"
+       x-transition:enter="transition ease-out duration-150" style="display: none;"
+       @keydown.escape.window="showLedgerHistory = false">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-5 font-sans max-h-[85vh] overflow-y-auto">
+
+      <div class="flex items-start justify-between">
+        <div>
+          <h3 class="text-base font-bold text-white tracking-tight">📒 Defter Geçmişi</h3>
+          <p class="text-xs text-slate-400 mt-0.5">
+            Transferler ve zarar yazımları alım-satım değildir, bu yüzden işlem
+            defterinde görünmezler. Geri alma yolu burasıdır.
+          </p>
+        </div>
+        <button @click="showLedgerHistory = false" class="text-slate-500 hover:text-white transition text-lg leading-none">✕</button>
+      </div>
+
+      <!-- Transferler -->
+      <div>
+        <h4 class="text-[11px] font-bold text-sky-400 uppercase tracking-wider mb-2">🔀 Transferler</h4>
+        <p x-show="transfers.length === 0" class="text-xs text-slate-500 italic px-3 py-3">Henüz transfer kaydı yok.</p>
+        <div x-show="transfers.length > 0" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+          <template x-for="t in transfers" :key="'tr' + t.id">
+            <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-950/60 border border-slate-800 text-xs">
+              <div class="min-w-0">
+                <div class="font-semibold text-white">
+                  <span class="font-mono-nums" x-text="formatNum(t.qty, 6)"></span>
+                  <span x-text="t.coin"></span>
+                  <span class="text-slate-500 mx-1">·</span>
+                  <span class="text-slate-400" x-text="t.from_exchange + ' → ' + t.to_exchange"></span>
+                </div>
+                <div class="text-[10.5px] text-slate-500 mt-0.5">
+                  <span x-text="t.date"></span>
+                  <template x-if="t.fee_qty > 0">
+                    <span x-text="' · ağ ücreti ' + formatNum(t.fee_qty, 6) + ' (-$' + formatNum(t.fee_cost_usd, 2) + ')'"></span>
+                  </template>
+                  <template x-if="t.note">
+                    <span x-text="' · ' + t.note"></span>
+                  </template>
+                </div>
+              </div>
+              <button @click="undoTransferRecord(t)"
+                      class="px-2 py-1 rounded-md bg-slate-800 hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 text-[10.5px] font-bold transition flex-shrink-0 ml-3">
+                Geri Al
+              </button>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Yazımlar -->
+      <div>
+        <h4 class="text-[11px] font-bold text-rose-400 uppercase tracking-wider mb-2">🪦 Zarar Yazımları</h4>
+        <p x-show="writeOffs.length === 0" class="text-xs text-slate-500 italic px-3 py-3">Henüz yazım kaydı yok.</p>
+        <div x-show="writeOffs.length > 0" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+          <template x-for="w in writeOffs" :key="'wo' + w.id">
+            <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-950/60 border border-slate-800 text-xs">
+              <div class="min-w-0">
+                <div class="font-semibold text-white">
+                  <span x-text="w.coin"></span>
+                  <span class="text-slate-500 mx-1">·</span>
+                  <span class="text-slate-400" x-text="w.exchange"></span>
+                  <span class="text-rose-400 font-mono-nums ml-2" x-text="'-$' + formatNum(Math.abs(w.realized_pnl_usd || 0), 2)"></span>
+                </div>
+                <div class="text-[10.5px] text-slate-500 mt-0.5">
+                  <span x-text="w.exit_date || w.date"></span>
+                  <span x-text="' · ' + writeOffReasonLabel(w.write_off_reason)"></span>
+                </div>
+              </div>
+              <button @click="undoWriteOffRecord(w)"
+                      class="px-2 py-1 rounded-md bg-slate-800 hover:bg-emerald-900/60 text-slate-400 hover:text-emerald-300 text-[10.5px] font-bold transition flex-shrink-0 ml-3">
+                Geri Al
+              </button>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <button @click="showLedgerHistory = false"
+              class="w-full px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition">
+        Kapat
+      </button>
     </div>
   </div>
 
@@ -2940,6 +3539,20 @@
                 <span class="text-slate-600 font-mono text-[11px] w-5" x-text="i + 1"></span>
                 <input type="checkbox" x-model="src.enabled" class="accent-cyan-500 w-3.5 h-3.5">
                 <span class="flex-1 font-semibold" :class="src.enabled ? 'text-slate-200' : 'text-slate-600 line-through'" x-text="src.label"></span>
+                <!-- FAZ F1d — Sağlık rozeti. Bir kaynağın "açık" olması çalıştığı
+                     anlamına gelmiyordu: Gate.io aylarca açık görünüp her turda
+                     403 aldı ve hata sessizce yutulduğu için kimse fark etmedi. -->
+                <span x-show="src.enabled && src.healthy === false"
+                      class="text-[10px] px-1.5 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-800/70 font-bold cursor-help"
+                      :title="'Bu kaynak yanıt vermiyor (' + src.fail_count + ' başarısız deneme). Son hata: ' + (src.last_error || 'bilinmiyor')">
+                  ⛔ yanıt yok
+                </span>
+                <span x-show="src.enabled && src.healthy === true"
+                      class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/70"
+                      title="Kaynak çalışıyor ve fiyat döndürüyor.">✓ çalışıyor</span>
+                <span x-show="src.enabled && src.healthy === null"
+                      class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-500"
+                      title="Bu kaynak henüz denenmedi.">— denenmedi</span>
                 <span class="text-[10px] px-1.5 py-0.5 rounded" :class="src.kind === 'dex' ? 'bg-purple-950 text-purple-300' : 'bg-slate-800 text-slate-400'" x-text="src.kind === 'dex' ? 'zincir üstü' : 'borsa'"></span>
                 <button @click="moveSource(i, -1)" :disabled="i === 0" class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30">↑</button>
                 <button @click="moveSource(i, 1)" :disabled="i === sourceRegistry.length - 1" class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30">↓</button>

@@ -175,7 +175,7 @@ def test_motor_ayarlardaki_api_adresini_kullanir(motor, monkeypatch):
 
     istenen = {}
 
-    def sahte_getir(url, timeout=5):
+    def sahte_getir(url, timeout=5, user_agent=None):
         istenen["url"] = url
         return {"SCM_USDT": {"last_price": "0.000003", "change": "1.0", "isFrozen": False}}
 
@@ -198,7 +198,7 @@ def test_bozuk_ayar_dosyasinda_motor_varsayilanlara_duser(motor, monkeypatch):
 # ===========================================================================
 
 def test_whitebit_adaptoru_market_adini_normalize_eder(motor, monkeypatch):
-    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5: {
+    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5, user_agent=None: {
         "SCM_USDT": {"last_price": "0.000003499", "change": "-1.05", "isFrozen": False},
         "DONMUS_USDT": {"last_price": "1.0", "change": "0", "isFrozen": True},
     })
@@ -214,7 +214,7 @@ def test_whitebit_adaptoru_market_adini_normalize_eder(motor, monkeypatch):
 
 
 def test_gateio_adaptoru_currency_pair_okur(motor, monkeypatch):
-    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5: [
+    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5, user_agent=None: [
         {"currency_pair": "BTC_USDT", "last": "78000", "change_percentage": "2.5"},
         {"currency_pair": "BOS_USDT", "last": "0", "change_percentage": "0"},
     ])
@@ -225,7 +225,7 @@ def test_gateio_adaptoru_currency_pair_okur(motor, monkeypatch):
 
 
 def test_adaptor_coktugunde_digerleri_calismaya_devam_eder(motor, monkeypatch):
-    def sahte_getir(url, timeout=5):
+    def sahte_getir(url, timeout=5, user_agent=None):
         if "whitebit" in url:
             raise OSError("WhiteBIT kapalı")
         if "binance" in url:
@@ -263,7 +263,7 @@ def test_havuz_adresi_arama_bos_donunce_ozel_uctan_cozulur(motor, monkeypatch):
     """
     cagrilan = []
 
-    def sahte_getir(url, timeout=5):
+    def sahte_getir(url, timeout=5, user_agent=None):
         cagrilan.append(url)
         if "/dex/search" in url:
             return {"pairs": []}
@@ -283,7 +283,7 @@ def test_havuz_adresi_arama_bos_donunce_ozel_uctan_cozulur(motor, monkeypatch):
 def test_adres_olmayan_sorgu_icin_havuz_ucu_denenmez(motor, monkeypatch):
     cagrilan = []
 
-    def sahte_getir(url, timeout=5):
+    def sahte_getir(url, timeout=5, user_agent=None):
         cagrilan.append(url)
         return {"pairs": []}
 
@@ -312,7 +312,7 @@ def test_pair_to_price_sifir_fiyati_reddeder(motor):
 # ===========================================================================
 
 def _sadece_binance_ve_whitebit(monkeypatch, motor, binance, whitebit):
-    def sahte_getir(url, timeout=5):
+    def sahte_getir(url, timeout=5, user_agent=None):
         if "binance" in url:
             return binance
         if "whitebit" in url:
@@ -360,7 +360,7 @@ def test_sembol_tanimi_kademe_sonucunu_ezer(motor, monkeypatch):
     data_manager.set_symbol_source("RDNT", {"type": "dex", "query": "RDNT"})
     motor.invalidate_config()
 
-    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5: (
+    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5, user_agent=None: (
         [{"symbol": "RDNTUSDT", "lastPrice": "0.00328", "volume": "1000",
           "openPrice": "0.0033", "priceChangePercent": "-1.0"}]
         if "binance" in url else (_ for _ in ()).throw(OSError("kapalı"))
@@ -382,7 +382,7 @@ def test_sembolle_bulunan_dex_fiyati_isaretlenir(motor, monkeypatch, kayitli_por
     "Social Capital Markets" tokenını buluyor ve fiyat makul göründüğü için
     hata fark edilmiyor. Eşleşmenin nasıl kurulduğu işaretlenmeli.
     """
-    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5: [])
+    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5, user_agent=None: [])
     monkeypatch.setattr(motor, "fetch_dex_screener", lambda q: {
         "price": 3.76e-06, "open_price": 3.7e-06, "change_pct": 1.0,
         "source": "DEX (SOLANA Pumpswap)", "is_dex": True, "base_symbol": "SCM",
@@ -453,7 +453,7 @@ def test_borsada_bulunan_ciplak_sembol_dex_taramasina_dusmez(motor, monkeypatch,
     dex_cagrilari = []
     monkeypatch.setattr(motor, "fetch_dex_screener",
                         lambda q: dex_cagrilari.append(q) or None)
-    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5: (
+    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5, user_agent=None: (
         [{"symbol": "BNBUSDT", "lastPrice": "701.56", "volume": "5000",
           "openPrice": "700", "priceChangePercent": "0.2"}]
         if "binance" in url else (_ for _ in ()).throw(OSError("kapalı"))
@@ -466,7 +466,7 @@ def test_borsada_bulunan_ciplak_sembol_dex_taramasina_dusmez(motor, monkeypatch,
 
 
 def test_hicbir_kaynakta_bulunamayan_sembol_kaynak_yok_doner(motor, monkeypatch):
-    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5: [])
+    monkeypatch.setattr(motor, "fetch_url_json", lambda url, timeout=5, user_agent=None: [])
     monkeypatch.setattr(motor, "fetch_dex_screener", lambda q: None)
 
     sonuc = motor.get_price_for_symbol("YOKBOYLECOIN")

@@ -34,6 +34,17 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
 - **Sembole özel kaynak tanımı** — bir coin hiçbir kademede bulunamazsa kaynağı
   arayüzden sabitlersiniz. Kod değiştirmeye gerek yok.
 - **DCA / maliyet ortalaması** — konsolide ortalama veya FIFO ile kısmi satış.
+- **Transfer satış değildir** — bir coini borsadan kendi cüzdanınıza taşımak maliyet
+  tabanınızı korur; nakit hareketi ve gerçekleşmiş kâr/zarar oluşturmaz. Her lot kendi
+  maliyetiyle taşındığı için sonrasında FIFO doğru çalışmaya devam eder.
+- **Kendi konumlarınız** — dört hazır borsanın yanına istediğiniz cüzdanı
+  ekleyebilirsiniz (MetaMask, Ledger, başka bir borsa). Konumlar veriden türetilir:
+  eklediğiniz her yer Kasa ekranında kendi sekmesini, nakit kutusunu ve rengini alır.
+- **Ölü pozisyonlar için zarar yazımı** — delist edilmiş, çökmüş veya erişimi kaybolmuş
+  coinler sıfırdan kapatılabilir. Maliyetin tamamı gerçekleşmiş zarara geçer ve
+  **kasaya nakit eklenmez**; böylece toplam varlığınız gerçekte değersiz olan
+  pozisyonlarla şişmeyi bırakır. Yazımlar ticaret sonucundan ayrı raporlanır;
+  hem yazımlar hem transferler geri alınabilir.
 - **Hedge takibi** — borsada açtığınız kaldıraçlı pozisyonu kaydeder, net
   maruziyetinizi ve korunma oranınızı gösterir, "fiyat %20 düşerse" senaryosunu
   hesaplar.
@@ -41,6 +52,16 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
 - **Yapay zekâ danışmanı** — Gemini API anahtarınızı girerseniz portföy analizi
   üretir. Anahtar girmezseniz yerel kural motoruna düşer.
 - **PIN koruması** — SHA-256 + kuruluma özel salt, kurtarma anahtarı ile sıfırlama.
+- **Net varlık arşivi** — borsalar geçmişi süresiz saklamaz ve pencereleri kayar
+  (Binance ~2 yıl, MEXC 1 ay). Uygulama her çalıştığında portföyünüzün o günkü
+  hâlini yerel bir SQLite arşivine yazar; böylece borsanın sildiği geçmiş sizde
+  kalır ve zamanla gerçek bir net varlık eğrisi oluşur. Kayıt bulunmayan günler
+  gizlenmez, açıkça bildirilir.
+- **Borsa mutabakatı** — borsanızın web arayüzünden indirdiğiniz işlem geçmişi
+  dosyalarını (Binance CSV, MEXC XLSX) defterinizle karşılaştırır ve farkları
+  gösterir. **Deftere hiçbir şey yazmaz**; maliyet tabanınız sizin girdiğiniz
+  hâliyle kalır. Rapor, gerçek bir tutarsızlığı "dosya o kadar geriye gitmiyor"
+  durumundan ayırt eder.
 - **Excel dışa aktarım**, günlük otomatik yedekleme, gizlilik modu.
 
 ---
@@ -89,6 +110,7 @@ yüklenir. Bu, tam çevrimdışı çalışma anlamına gelmez — CDN bağımlı
 data/
 ├── portfolio.json      İşlemleriniz, hedefleriniz, hedge kayıtlarınız
 ├── settings.json       PIN hash'i, API anahtarları, tercihler
+├── archive.db          Günlük net varlık ve fiyat arşivi (SQLite)
 ├── backups/            Günlük otomatik yedekler
 └── logs/               Uygulama günlükleri
 ```
@@ -109,7 +131,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-210 test, yaklaşık 6 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
+360 test, yaklaşık 14 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
 veri yolları geçici bir klasöre yönlendirilir, tüm dış çağrılar taklit edilir ve
 hiçbir test yapay zekâ API'sine istek atmaz.
 
@@ -122,6 +144,8 @@ app/
 ├── main.py           FastAPI sunucusu ve REST uçları
 ├── data_manager.py   Finansal motor: maliyet hesabı, FIFO, hedge, PIN, Excel
 ├── price_service.py  Çok kademeli fiyat keşfi ve kaynak kayıt defteri
+├── archive.py        SQLite net varlık / fiyat arşivi (kritik yolda değildir)
+├── reconcile.py      Borsa dışa aktarımı ↔ defter mutabakatı (salt okunur)
 ├── ai_service.py     Gemini entegrasyonu + yerel yedek motor
 └── static/           Alpine.js tek sayfa arayüz + paketlenmiş kütüphaneler
 ```

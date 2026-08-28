@@ -13,6 +13,21 @@
 data/
 *.json.tmp
 
+# =====================================================================
+# BORSA DIŞA AKTARIMLARI — ASLA YAYINLANMAZ
+# =====================================================================
+# Borsaların web arayüzünden indirilen işlem geçmişi dosyaları.
+# İçinde her alım-satımın tarihi, fiyatı, miktarı ve pozisyon büyüklükleri var;
+# yani portföyün tamamı. data/ ile aynı hassasiyette tutulur.
+# Klasör adları kullanıcıya göre değişebileceği için birkaç yaygın kalıp:
+BinanceData/
+MexcData/
+*Data/
+borsa_exports/
+exchange_exports/
+*-export*.csv
+*_export*.csv
+
 # Uygulama günlükleri ve yedekler (data/ altında ama açıkça belirtiyoruz)
 data/logs/
 data/backups/

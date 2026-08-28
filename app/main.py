@@ -22,9 +22,13 @@ from data_manager import (
     initialize_portfolio_if_missing, DEFAULT_CATEGORIES, DATA_FILE, BACKUP_DIR,
     get_symbol_sources, set_symbol_source, delete_symbol_source,
     set_price_sources, validate_source_spec, normalize_symbol_key,
-    open_hedge, close_hedge, delete_hedge, hedge_scenario
+    open_hedge, close_hedge, delete_hedge, hedge_scenario,
+    write_off_position, undo_write_off, transfer_position, undo_transfer,
+    list_transfers, list_write_offs, WRITE_OFF_REASONS
 )
 from price_service import price_service
+import archive
+import reconcile
 from log_config import get_logger, LOG_FILE
 
 logger = get_logger("main")
@@ -122,7 +126,102 @@ def get_portfolio():
     metrics["last_update_ts"] = price_service.last_update_ts
     metrics["wallets"] = data.get("wallets", {"usdt_cash": 500.0})
     metrics["settings"] = data.get("settings", {})
+
+    # FAZ F2 — Günlük arşiv fotoğrafı.
+    # Ayrı bir zamanlayıcı thread'i yerine buraya bağlandı: arayüz zaten
+    # düzenli olarak bu ucu çağırıyor, yani uygulama açıkken kayıt kendiliğinden
+    # oluşuyor. Kontrol tek indeksli sorgu; fonksiyon kendi hatasını yutar ve
+    # ASLA bu ucu düşürmez — arşiv konfor katmanıdır, kritik yol değildir.
+    archive.maybe_write_daily_snapshot(
+        metrics, live_prices,
+        wallets=data.get("wallets") or {},
+        realized_pnl_usd=(calculate_realized_metrics(data) or {}).get("total_realized_pnl_usd", 0.0),
+    )
     return metrics
+
+
+# -------------------------------------------------------------
+# FAZ F2: ARŞİV UÇLARI
+# -------------------------------------------------------------
+@app.get("/api/archive/status")
+def get_archive_status():
+    """Arşiv özeti: kaç kayıt, hangi aralık, hangi günler eksik."""
+    return archive.archive_status()
+
+
+@app.get("/api/archive/networth")
+def get_archive_networth(days: int = 0):
+    """Net varlık eğrisi. days=0 → tüm geçmiş."""
+    return {
+        "series": archive.net_worth_series(days or None),
+        "status": archive.archive_status(),
+    }
+
+
+@app.get("/api/archive/locations")
+def get_archive_locations(days: int = 0):
+    """Konum bazlı değerin zaman içindeki seyri."""
+    return {"series": archive.location_series(days or None)}
+
+
+@app.get("/api/archive/price-history/{symbol}")
+def get_archive_price_history(symbol: str, days: int = 0):
+    """
+    Arşivlenmiş fiyat geçmişi.
+
+    Delist olmuş coinler için bu zamanla hiçbir API'nin veremeyeceği
+    tek kaynak hâline gelir — arşivin asıl varlık sebebi.
+    """
+    return {"symbol": symbol.upper(), "history": archive.symbol_price_history(symbol, days or None)}
+
+
+# -------------------------------------------------------------
+# FAZ F3: BORSA MUTABAKATI (DOSYA TABANLI, SALT OKUNUR)
+# -------------------------------------------------------------
+@app.get("/api/reconcile/files")
+def list_reconcile_files():
+    """Hangi dışa aktarım dosyaları bulundu — mutabakattan önce görünürlük."""
+    dosyalar = reconcile.discover_export_files()
+    return {
+        "root": reconcile.export_root(),
+        "files": [{"name": d["name"], "exchange": d["exchange"], "kind": d["kind"]}
+                  for d in dosyalar],
+        "count": len(dosyalar),
+    }
+
+
+@app.get("/api/reconcile")
+def run_reconcile():
+    """
+    Borsa dışa aktarımlarını defterle karşılaştırır.
+
+    **SALT OKUNURDUR — deftere hiçbir şey yazmaz.** Maliyet tabanı kullanıcının
+    elle girdiği hâliyle kalır; bu uç yalnızca farkları raporlar.
+    """
+    return reconcile.reconcile(load_portfolio())
+
+
+@app.post("/api/archive/snapshot")
+def create_archive_snapshot():
+    """Elle fotoğraf al. Bugünün kaydı varsa üzerine yazar."""
+    data = load_portfolio()
+    live_prices = price_service.get_prices()
+    if not live_prices:
+        raise HTTPException(
+            status_code=400,
+            detail="Canlı fiyat yok; fotoğraf portföyü kaynaksız hâlde donduracağı için alınmadı."
+        )
+    metrics = calculate_portfolio_metrics(data, live_prices)
+    sid = archive.write_snapshot(
+        metrics,
+        wallets=data.get("wallets") or {},
+        realized_pnl_usd=(calculate_realized_metrics(data) or {}).get("total_realized_pnl_usd", 0.0),
+        source="manual",
+    )
+    if sid is None:
+        raise HTTPException(status_code=500, detail="Arşiv kaydı yazılamadı.")
+    logger.info("Elle arşiv fotoğrafı alındı (#%s).", sid)
+    return {"success": True, "snapshot_id": sid, "status": archive.archive_status()}
 
 # -------------------------------------------------------------
 # FAZ E: HEDGE / KALDIRAÇLI POZİSYON UÇLARI
@@ -191,6 +290,94 @@ def get_hedge_scenario(move_pct: float = -20.0):
     """'Fiyat %X hareket ederse ne olur?' — spot ve hedge etkisi ayrı ayrı."""
     data, live_prices, metrics = _hedge_snapshot()
     return hedge_scenario(data, live_prices, metrics.get("consolidated_coins", []), move_pct)
+
+
+# -------------------------------------------------------------
+# FAZ F1: DEĞER KAYBI YAZIMI (MEZARLIK) VE TRANSFER UÇLARI
+# -------------------------------------------------------------
+def _f1_snapshot():
+    """Yazım/transfer sonrası arayüzün tazelenmesi için ortak anlık görüntü."""
+    data = load_portfolio()
+    metrics = calculate_portfolio_metrics(data, price_service.get_prices())
+    return {
+        "kpis": metrics.get("kpis", {}),
+        "consolidated_coins": metrics.get("consolidated_coins", []),
+        "transfers": list_transfers(data),
+        "write_offs": list_write_offs(data),
+    }
+
+
+@app.get("/api/write-offs")
+def get_write_offs():
+    """Yazım kayıtları ve seçilebilir gerekçe listesi."""
+    return {
+        "write_offs": list_write_offs(),
+        "reasons": [{"key": k, "label": v} for k, v in WRITE_OFF_REASONS.items()],
+    }
+
+
+@app.post("/api/positions/{pos_key:path}/write-off")
+def api_write_off(pos_key: str, payload: dict = Body(None)):
+    """
+    Ölmüş bir pozisyonu 0'dan kapatır ve maliyetini zarar yazar.
+
+    Nakit eklenmez — bu bir satış değildir. İşlem geri alınabilir.
+    """
+    payload = payload or {}
+    try:
+        sonuc = write_off_position(
+            pos_key,
+            reason=payload.get("reason", "worthless"),
+            note=payload.get("note", ""),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    logger.info("Yazım: %s — %s lot, $%.2f zarar (%s)",
+                pos_key, sonuc["lot_count"], sonuc["realized_loss_usd"], sonuc["reason"])
+    return {"success": True, "result": sonuc, **_f1_snapshot()}
+
+
+@app.post("/api/write-offs/{write_off_id}/undo")
+def api_undo_write_off(write_off_id: int):
+    try:
+        sonuc = undo_write_off(write_off_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    logger.info("Yazım geri alındı: #%s (%s lot)", write_off_id, sonuc["restored_lots"])
+    return {"success": True, "result": sonuc, **_f1_snapshot()}
+
+
+@app.get("/api/transfers")
+def get_transfers():
+    return {"transfers": list_transfers()}
+
+
+@app.post("/api/transfers")
+def api_create_transfer(payload: dict = Body(...)):
+    """
+    Varlığı borsalar/cüzdanlar arasında taşır. Satış DEĞİLDİR:
+    nakit hareketi yok, gerçekleşmiş K/Z yok, maliyet tabanı korunur.
+    """
+    try:
+        kayit = transfer_position(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    logger.info("Transfer #%s: %s %s  %s → %s",
+                kayit["id"], kayit["qty"], kayit["coin"],
+                kayit["from_exchange"], kayit["to_exchange"])
+    return {"success": True, "transfer": kayit, **_f1_snapshot()}
+
+
+@app.delete("/api/transfers/{transfer_id}")
+def api_undo_transfer(transfer_id: int):
+    try:
+        sonuc = undo_transfer(transfer_id)
+    except ValueError as e:
+        # "Bulunamadı" 404, "geri alınamaz" 400 olmalı.
+        kod = 404 if "bulunamadı" in str(e).lower() else 400
+        raise HTTPException(status_code=kod, detail=str(e))
+    logger.info("Transfer geri alındı: #%s", transfer_id)
+    return {"success": True, "result": sonuc, **_f1_snapshot()}
 
 
 @app.get("/api/transactions")
