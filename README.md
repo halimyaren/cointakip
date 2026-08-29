@@ -60,19 +60,29 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   day's portfolio state into a local SQLite archive, so the history the exchange
   deletes stays with you and a real net-worth curve builds up over time. Days with
   no record are reported, not hidden.
-- **Exchange reconciliation** — compares the trade-history files you download from
-  your exchange (Binance CSV, MEXC XLSX) against your ledger and shows the
-  differences. The comparison **writes nothing to the ledger**. The report
-  distinguishes a genuine discrepancy from "the export does not reach back that far".
-- **Reconciliation repair** — replays the trades in those files through FIFO and
-  rebuilds the lots you should be holding today, **with their real purchase dates
-  and real prices**. You do not have to remember which trade you forgot to record;
-  the file already knows. Repairs are applied **one position at a time**, require
-  explicit approval and can be undone — there is no bulk import. No proposal is
-  offered for a position whose coverage cannot be proven. The realised P&L of past
+- **Exchange reconciliation** — compares the export files you download from your
+  exchange (Binance CSV, MEXC XLSX) against your ledger and shows the differences.
+  The comparison **writes nothing to the ledger**. The report distinguishes a
+  genuine discrepancy from "the export does not reach back that far". Binance's
+  full account ledger is read too, not just spot trades: airdrops, Launchpool,
+  Convert, dust-to-BNB conversions and wallet transfers never appear in a trade
+  history, and a balance rebuilt without them is wrong.
+- **Reconciliation repair** — replays those events through FIFO and rebuilds the
+  lots you should be holding today, **with their real purchase dates and real
+  prices**. You do not have to remember which trade you forgot to record; the file
+  already knows. Repairs are applied **one position at a time**, require explicit
+  approval and can be undone — there is no bulk import. The realised P&L of past
   round-trips — invisible until now if your ledger has no sale records — is booked
   as a single summary entry; without it a repair would cheapen the position and
   make your results look better than they are.
+- **No repair without corroboration** — files alone cannot say which side is
+  right. A coin bought before the export window and never sold leaves no trace at
+  all, so the rebuild reads it as "recorded in error" and offers to delete it.
+  Every repair therefore asks for your **current balance on the exchange** before
+  it will write anything: if that number matches the rebuild, your ledger is
+  corrected; if it matches your ledger, the export is the incomplete one and
+  **your ledger is left untouched**. There is no green "ready to apply" badge,
+  because nothing earns one from a file.
 - **Excel export**, daily automatic backups, privacy mode.
 
 ---
@@ -141,7 +151,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-407 tests, about 16 seconds. The suite **never touches your real data and never hits
+427 tests, about 16 seconds. The suite **never touches your real data and never hits
 the network**: data paths are redirected to a temporary directory, all external calls
 are mocked, and no test calls the AI API.
 

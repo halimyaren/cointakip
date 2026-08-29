@@ -57,18 +57,27 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   hâlini yerel bir SQLite arşivine yazar; böylece borsanın sildiği geçmiş sizde
   kalır ve zamanla gerçek bir net varlık eğrisi oluşur. Kayıt bulunmayan günler
   gizlenmez, açıkça bildirilir.
-- **Borsa mutabakatı** — borsanızın web arayüzünden indirdiğiniz işlem geçmişi
-  dosyalarını (Binance CSV, MEXC XLSX) defterinizle karşılaştırır ve farkları
-  gösterir. Karşılaştırma **deftere hiçbir şey yazmaz**. Rapor, gerçek bir
-  tutarsızlığı "dosya o kadar geriye gitmiyor" durumundan ayırt eder.
-- **Mutabakat düzeltmesi** — dosyalardaki işlemler FIFO ile yürütülerek bugün
-  elinizde kalması gereken lotlar **gerçek alım tarihleri ve gerçek fiyatlarıyla**
-  yeniden kurulur. Hangi işlemi kaydetmeyi unuttuğunuzu hatırlamanız gerekmez;
-  dosya zaten biliyor. Düzeltme **pozisyon başınadır**, açık onay ister ve geri
-  alınabilir — toplu içe aktarma yoktur. Kapsamı kanıtlanamayan bir pozisyon için
-  öneri verilmez. Geçmiş satışların o ana kadar hiçbir yerde görünmeyen
-  gerçekleşmiş kâr/zararı da tek bir özet kayıt olarak deftere geçer; yoksa
-  düzeltme pozisyonu ucuzlatır ve tabloyu olduğundan iyi gösterirdi.
+- **Borsa mutabakatı** — borsanızın web arayüzünden indirdiğiniz dosyaları
+  (Binance CSV, MEXC XLSX) defterinizle karşılaştırır ve farkları gösterir.
+  Karşılaştırma **deftere hiçbir şey yazmaz**. Rapor, gerçek bir tutarsızlığı
+  "dosya o kadar geriye gitmiyor" durumundan ayırt eder. Binance'in yalnızca
+  alım-satımı değil **hesabın tam defteri** de okunur: airdrop, Launchpool,
+  Convert, toz bakiyelerin BNB'ye eritilmesi ve cüzdanlar arası taşımalar işlem
+  geçmişinde hiç görünmez, ve onlarsız kurulan bakiye yanlış çıkar.
+- **Mutabakat düzeltmesi** — bu hareketler FIFO ile yürütülerek bugün elinizde
+  kalması gereken lotlar **gerçek alım tarihleri ve gerçek fiyatlarıyla** yeniden
+  kurulur. Hangi işlemi kaydetmeyi unuttuğunuzu hatırlamanız gerekmez; dosya
+  zaten biliyor. Düzeltme **pozisyon başınadır**, açık onay ister ve geri
+  alınabilir — toplu içe aktarma yoktur. Geçmiş satışların o ana kadar hiçbir
+  yerde görünmeyen gerçekleşmiş kâr/zararı da tek bir özet kayıt olarak deftere
+  geçer; yoksa düzeltme pozisyonu ucuzlatır ve tabloyu olduğundan iyi gösterirdi.
+- **Kanıtsız düzeltme yok** — dosyalar hangi tarafın haklı olduğunu tek başına
+  söyleyemez. Dışa aktarım penceresinden önce alınıp hiç satılmamış bir coin
+  hiçbir iz bırakmaz; yeniden kurulum onu "yanlışlıkla girilmiş" sanıp silmeyi
+  önerir. Bu yüzden her düzeltme, deftere bir şey yazmadan önce **borsadaki
+  güncel bakiyenizi** sorar: rakam hesaplananla uyuşuyorsa defteriniz düzeltilir,
+  defterinizle uyuşuyorsa eksik olan dosyadır ve **defterinize dokunulmaz**.
+  Yeşil "uygulanabilir" rozeti yoktur; bir dosya onu hak edemez.
 - **Excel dışa aktarım**, günlük otomatik yedekleme, gizlilik modu.
 
 ---
@@ -138,7 +147,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-407 test, yaklaşık 16 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
+427 test, yaklaşık 16 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
 veri yolları geçici bir klasöre yönlendirilir, tüm dış çağrılar taklit edilir ve
 hiçbir test yapay zekâ API'sine istek atmaz.
 

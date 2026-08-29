@@ -96,9 +96,11 @@ class TestBinanceOkuyucu:
         ])
         olaylar, _ = rc.load_binance_trades(
             os.path.join(dizin, "Binance-Spot-Trade-History-test-part1-of1.csv"))
-        assert olaylar[0]["qty"] == pytest.approx(0.01)
-        assert olaylar[1]["qty"] == pytest.approx(-0.004)
-        assert olaylar[0]["usd_known"] is True
+        # Komisyonlar ayrı FEE olayı olarak da çıkar; burada alım-satım aranıyor.
+        islemler = [o for o in olaylar if o["kind"] == "TRADE"]
+        assert islemler[0]["qty"] == pytest.approx(0.01)
+        assert islemler[1]["qty"] == pytest.approx(-0.004)
+        assert islemler[0]["usd_known"] is True
 
     def test_komisyon_coinin_kendisindense_miktardan_dusulur(self, dizin):
         """

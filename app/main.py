@@ -224,6 +224,10 @@ def api_apply_rebuild(pos_key: str, payload: dict = Body(None)):
     Nakit hareketi yok, gerçekleşmiş K/Z yok — bu bir kayıt düzeltmesidir.
     İşlem geri alınabilir. İstemcinin gönderdiği lotlara güvenilmez: sunucu
     planı yeniden üretir ve yalnızca imza uyuşursa uygular.
+
+    `verified_qty` — kullanıcının borsa ekranından okuduğu güncel bakiye —
+    zorunludur. Kararı sunucu verir: bakiye öneriyle uyuşuyorsa uygulanır,
+    defterle uyuşuyorsa eksik olan dosyadır ve deftere DOKUNULMAZ.
     """
     payload = payload or {}
     try:
@@ -231,6 +235,7 @@ def api_apply_rebuild(pos_key: str, payload: dict = Body(None)):
             pos_key,
             signature=payload.get("signature"),
             note=payload.get("note", ""),
+            verified_qty=payload.get("verified_qty"),
         )
     except ValueError as e:
         kod = 404 if "önerisi yok" in str(e).lower() else 400

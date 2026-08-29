@@ -61,6 +61,75 @@ QTY_TOLERANCE_PCT = 0.5
 QTY_TOLERANCE_ABS = 1e-8
 
 
+# ---------------------------------------------------------------------
+# FAZ F5b — Binance hesap defteri (Transaction History) işlem sınıfları
+# ---------------------------------------------------------------------
+"""
+Alım-satım dosyası hesabın TAMAMI DEĞİLDİR. Coin hesaba yalnızca satın alarak
+girmez: airdrop, Launchpool, Convert, toz bakiye eritme, cüzdanlar arası taşıma
+kanallarının hiçbiri `Spot Trade History` dosyasında görünmez. Bunlar okunmadığı
+sürece yeniden kurulan bakiye gerçeği anlatmaz — ve daha kötüsü, anlattığını
+sanır.
+
+`Binance-Transaction-History-*.csv` hesabın tam defteridir; her bakiye hareketi
+bir satırdır. Aşağıdaki tablolar hangi `Operation` değerinin ne anlama geldiğini
+söyler. Tanınmayan bir işlem SESSİZCE ATLANMAZ, uyarı olarak rapora çıkar:
+sessiz atlama tam da bu fazın düzelttiği hatanın kaynağıydı.
+"""
+
+# Bedelsiz girişler. Maliyetleri sıfırdır ve bu BİLİNEN bir sıfırdır —
+# "maliyeti bilinmiyor" ile karıştırılmamalı, ikisi farklı şeydir.
+TH_REWARD_OPS = {
+    "earn - airdrop distribution",
+    "launchpool airdrop - user claim distribution",
+    "launchpool airdrop - system distribution",
+    "airdrop assets", "distribution", "crypto box", "cash voucher",
+    "campaign related reward", "mission reward distribution",
+    "commission rebate", "referral kickback", "referral commission",
+    "staking rewards", "eth 2.0 staking rewards", "bnb vault rewards",
+    "simple earn flexible interest", "simple earn locked rewards",
+    "savings interest", "savings distribution", "liquid swap rewards",
+}
+
+# İki (veya daha fazla) bacaklı dönüşümler: aynı zaman damgasında bir taraf
+# eksi, bir taraf artı. Bacaklar eşleştirilerek maliyet çıkarılır.
+TH_CONVERT_OPS = {
+    "binance convert", "small assets exchange bnb", "bnb convert",
+    "large otc trading", "stablecoins auto-conversion", "asset recovery",
+    "token swap - redenomination/rebranding",
+}
+
+# Bakiyeyi değiştiren ama alım/satım olmayan taşımalar. Maliyet taşımazlar.
+TH_TRANSFER_OPS = {
+    "thirdparty wallet transfer", "inter-wallet transfer",
+    "transfer between spot and um futures", "transfer between spot and cm futures",
+    "transfer between spot and funding", "transfer between main and funding account",
+    "transfer between main account and margin account",
+    "launchpool subscription/redemption",
+    "simple earn flexible subscription", "simple earn flexible redemption",
+    "simple earn locked subscription", "simple earn locked redemption",
+    "staking purchase", "staking redemption", "eth 2.0 staking",
+    "isolated margin loan", "isolated margin repayment",
+}
+
+# Spot alım-satımının ayakları. `Spot Trade History` dosyası varsa bunlar
+# ATLANIR — ikisini birden almak her işlemi iki kez saydırır. Dosya yoksa
+# buradan üretilirler; o zaman tek kaynak budur.
+TH_TRADE_OPS = {
+    "transaction buy", "transaction sold", "transaction spend",
+    "transaction revenue", "transaction related", "buy", "sell",
+}
+TH_FEE_OP = "transaction fee"
+
+# Ayrı `Deposit-History` / `Withdraw-History` dosyaları varsa bunlar atlanır.
+TH_DEPOSIT_OPS = {"deposit", "fiat deposit"}
+TH_WITHDRAW_OPS = {"withdraw", "fiat withdraw"}
+
+# Vadeli/margin hesabındaki hareketler spot bakiyeyi ilgilendirmez. Hesap
+# sütunu bunu zaten ayırıyor; yalnızca 'Spot' satırları okunur.
+TH_SPOT_ACCOUNT = "spot"
+
+
 def export_root():
     """Dışa aktarım klasörü — proje kökündeki `borsa_exports/`."""
     from data_manager import BASE_DIR
@@ -112,7 +181,8 @@ def _olay(exchange, zaman, kind, asset, qty, **ek):
     olay = {
         "exchange": exchange,
         "time": str(zaman or "")[:19],
-        "kind": kind,                    # TRADE | DEPOSIT | WITHDRAW
+        # TRADE | DEPOSIT | WITHDRAW | REWARD | FEE
+        "kind": kind,
         "asset": normalize_asset(asset),
         "qty": float(qty or 0.0),        # işaretli: + giriş, − çıkış
         "quote_asset": "",
@@ -122,6 +192,9 @@ def _olay(exchange, zaman, kind, asset, qty, **ek):
         "fee_qty": 0.0,
         "usd_value": 0.0,
         "usd_known": False,
+        # Bedelsiz giriş: maliyeti sıfır ve bu BİLİNEN bir sıfır.
+        "zero_cost": False,
+        "operation": "",
         "source": "",
     }
     olay.update(ek)
@@ -149,7 +222,8 @@ def load_binance_trades(path):
                 # o kadar azalır. Binance'in "Executed" sütunu komisyon
                 # düşülmeden önceki dolum miktarıdır.
                 net = miktar
-                if isaret > 0 and kom_varlik and normalize_asset(kom_varlik) == normalize_asset(taban):
+                kom_varlik = normalize_asset(kom_varlik)
+                if isaret > 0 and kom_varlik and kom_varlik == normalize_asset(taban):
                     net = miktar - komisyon
 
                 olaylar.append(_olay(
@@ -161,6 +235,17 @@ def load_binance_trades(path):
                     usd_known=kot in STABLE_QUOTES,
                     source=os.path.basename(path),
                 ))
+
+                # Komisyon BAŞKA bir coinden ödendiyse (Binance'te çoğunlukla
+                # BNB) o coinin bakiyesi azalır. Yukarıdaki satır yalnızca işlem
+                # yapılan varlığı anlatır; komisyon coini ayrı bir çıkış olarak
+                # yazılmazsa BNB bakiyesi olduğundan yüksek yeniden kurulur.
+                # Komisyon işlem varlığının kendisindense zaten `net`ten düşüldü.
+                if komisyon > 0 and kom_varlik and kom_varlik != normalize_asset(taban):
+                    olaylar.append(_olay(
+                        "BINANCE", satir.get("Time"), "FEE", kom_varlik, -komisyon,
+                        operation="Trade Fee", source=os.path.basename(path),
+                    ))
             except Exception as e:
                 uyarilar.append(f"Binance işlem satırı okunamadı: {e}")
     return olaylar, uyarilar
@@ -192,6 +277,130 @@ def load_binance_deposits(path):
 
 def load_binance_withdrawals(path):
     return _binance_transfer(path, "WITHDRAW", -1.0)
+
+
+def _cok_bacakli_hareket(zaman, kalemler, kaynak, operasyon):
+    """
+    Aynı zaman damgasını paylaşan çok bacaklı bir hareketi olaylara çevirir.
+
+    Convert, toz eritme ve (alım-satım dosyası yoksa) spot dolumları hep aynı
+    şekli taşır: bir tarafta çıkan varlık, diğer tarafta giren varlık, aynı
+    saniyede. Dolar karşılığı ancak bacaklardan biri dolara sabitliyse
+    BİLİNİR; değilse uydurmak yerine "bilinmiyor" denir.
+
+    Aynı damgada birden fazla dolum olabilir (kısmi dolumlar tek emirdendir).
+    Giren varlık tekse toplam stabil çıkış o dolumlara miktarları oranında
+    dağıtılır — ağırlıklı ortalama maliyet doğru çıkar.
+    """
+    artilar = [(v, d) for v, d in kalemler if d > 0]
+    eksiler = [(v, d) for v, d in kalemler if d < 0]
+    stabil_giren = sum(d for v, d in artilar if v in STABLE_QUOTES)
+    stabil_cikan = sum(-d for v, d in eksiler if v in STABLE_QUOTES)
+    arti_varliklar = {v for v, _ in artilar if v not in STABLE_QUOTES}
+    eksi_varliklar = {v for v, _ in eksiler if v not in STABLE_QUOTES}
+    alinan_toplam = sum(d for v, d in artilar if v not in STABLE_QUOTES)
+    verilen_toplam = sum(-d for v, d in eksiler if v not in STABLE_QUOTES)
+
+    olaylar = []
+    for varlik, degisim in artilar:
+        if varlik in STABLE_QUOTES:
+            tutar, bilinir = abs(degisim), True
+        elif len(arti_varliklar) == 1 and stabil_cikan > 0 and alinan_toplam > 0:
+            tutar, bilinir = stabil_cikan * (degisim / alinan_toplam), True
+        else:
+            tutar, bilinir = 0.0, False
+        olaylar.append(_olay("BINANCE", zaman, "TRADE", varlik, degisim,
+                             usd_value=tutar, usd_known=bilinir,
+                             operation=operasyon, source=kaynak))
+    for varlik, degisim in eksiler:
+        if varlik in STABLE_QUOTES:
+            tutar, bilinir = abs(degisim), True
+        elif len(eksi_varliklar) == 1 and stabil_giren > 0 and verilen_toplam > 0:
+            tutar, bilinir = stabil_giren * (-degisim / verilen_toplam), True
+        else:
+            tutar, bilinir = 0.0, False
+        olaylar.append(_olay("BINANCE", zaman, "TRADE", varlik, degisim,
+                             usd_value=tutar, usd_known=bilinir,
+                             operation=operasyon, source=kaynak))
+    return olaylar
+
+
+def load_binance_transaction_history(path, skip_ops=frozenset()):
+    """
+    Binance hesap defteri — her bakiye hareketinin tek satır olduğu tam kayıt.
+
+    NEDEN GEREKLİ
+    -------------
+    Alım-satım dosyası yalnızca spot emirleri anlatır. Airdrop, Launchpool,
+    Convert, toz bakiye eritme ve cüzdanlar arası taşımalar orada YOKTUR; bu
+    kanallardan gelen coinler görülmediği için yeniden kurulan bakiye eksik,
+    bu kanallardan çıkanlar görülmediği için fazla çıkar. Gerçek veride
+    ölçüldü: 21 önerinin 10'u bu yüzden yanlıştı.
+
+    MÜKERRER TEHLİKESİ
+    ------------------
+    Bu dosya spot alım-satımları da içerir (`Transaction Buy/Sold/Spend/
+    Revenue/Fee`) ve para yatırma/çekmeyi de. Kendi dosyaları varken bunları
+    da almak her işlemi İKİ KEZ saydırır. `skip_ops` hangi işlem türünün
+    başka bir dosyadan geldiğini söyler; kalanlar buradan üretilir. Böylece
+    kullanıcı yalnızca bu dosyayı indirmişse de mutabakat çalışır.
+    """
+    olaylar, uyarilar = [], []
+    gruplar = {}
+    bilinmeyen = {}
+    kaynak = os.path.basename(path)
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for satir in csv.DictReader(f):
+            if str(satir.get("Account") or "").strip().lower() != TH_SPOT_ACCOUNT:
+                continue
+            ham_op = str(satir.get("Operation") or "").strip()
+            op = ham_op.lower()
+            if op in skip_ops:
+                continue
+            try:
+                degisim = float(str(satir.get("Change") or 0).replace(",", ""))
+            except (TypeError, ValueError):
+                uyarilar.append(f"Binance hesap defteri satırı okunamadı "
+                                f"({ham_op}): {satir.get('Change')!r}")
+                continue
+            if abs(degisim) < 1e-15:
+                continue
+            varlik = normalize_asset(satir.get("Coin"))
+            zaman = str(satir.get("Time") or "")[:19]
+
+            if op in TH_REWARD_OPS:
+                # Bedelsiz geldi: maliyet sıfır ve bu bilinen bir sıfır.
+                olaylar.append(_olay("BINANCE", zaman, "REWARD", varlik, degisim,
+                                     usd_value=0.0, usd_known=True, zero_cost=True,
+                                     operation=ham_op, source=kaynak))
+            elif op == TH_FEE_OP:
+                olaylar.append(_olay("BINANCE", zaman, "FEE", varlik, -abs(degisim),
+                                     operation=ham_op, source=kaynak))
+            elif op in TH_TRANSFER_OPS or op in TH_DEPOSIT_OPS or op in TH_WITHDRAW_OPS:
+                kind = "DEPOSIT" if degisim > 0 else "WITHDRAW"
+                olaylar.append(_olay("BINANCE", zaman, kind, varlik, degisim,
+                                     operation=ham_op, source=kaynak))
+            elif op in TH_CONVERT_OPS:
+                gruplar.setdefault(("convert", zaman), []).append((varlik, degisim))
+            elif op in TH_TRADE_OPS:
+                gruplar.setdefault(("trade", zaman), []).append((varlik, degisim))
+            else:
+                # Tanınmayan işlem sessizce atlanmaz. Sessiz atlama F5b'de
+                # düzeltilen hatanın ta kendisiydi.
+                bilinmeyen[ham_op] = bilinmeyen.get(ham_op, 0) + 1
+
+    for (tur, zaman) in sorted(gruplar):
+        olaylar.extend(_cok_bacakli_hareket(
+            zaman, gruplar[(tur, zaman)], kaynak,
+            "Binance Convert" if tur == "convert" else "Spot Trade"))
+
+    for ham_op, adet in sorted(bilinmeyen.items(), key=lambda kv: -kv[1]):
+        uyarilar.append(
+            f"Binance hesap defterinde tanınmayan işlem türü: '{ham_op}' "
+            f"({adet} satır). Bu satırlar hesaba KATILMADI; bakiye eksik veya "
+            "fazla çıkabilir."
+        )
+    return olaylar, uyarilar
 
 
 # ---------------------------------------------------------------------
@@ -277,6 +486,8 @@ FILE_PATTERNS = [
     ("*Spot-Trade-History*.csv", "BINANCE", "trades", load_binance_trades),
     ("*Deposit-History*.csv", "BINANCE", "deposits", load_binance_deposits),
     ("*Withdraw-History*.csv", "BINANCE", "withdrawals", load_binance_withdrawals),
+    ("*Transaction-History*.csv", "BINANCE", "transactions",
+     load_binance_transaction_history),
     ("*Trade History*.xlsx", "MEXC", "trades", load_mexc_trades),
     ("*Statement*.xlsx", "MEXC", "statement", load_mexc_statement),
 ]
@@ -299,12 +510,37 @@ def discover_export_files(root=None):
     return bulunan
 
 
+def _hesap_defteri_atlanacaklar(dosyalar):
+    """
+    Binance hesap defterinin hangi işlem türlerini ATLAMASI gerektiği.
+
+    Bir hareketin tek bir kaynağı olmalı. Alım-satım, para yatırma ve çekme
+    için ayrı dosyalar varsa onlar esastır (fiyat, pariteler ve durum bilgisi
+    orada); hesap defteri o türleri atlar. Dosyalar yoksa atlama olmaz ve
+    hesap defteri tek kaynak olarak devreye girer.
+    """
+    mevcut = {(d["exchange"], d["kind"]) for d in dosyalar}
+    atla = set()
+    if ("BINANCE", "trades") in mevcut:
+        atla |= TH_TRADE_OPS | {TH_FEE_OP}
+    if ("BINANCE", "deposits") in mevcut:
+        atla |= TH_DEPOSIT_OPS
+    if ("BINANCE", "withdrawals") in mevcut:
+        atla |= TH_WITHDRAW_OPS
+    return atla
+
+
 def load_all_events(root=None):
     """(olaylar, kaynak_bilgisi, uyarilar)"""
     olaylar, kaynaklar, uyarilar = [], [], []
-    for dosya in discover_export_files(root):
+    dosyalar = discover_export_files(root)
+    atlanacak = _hesap_defteri_atlanacaklar(dosyalar)
+    for dosya in dosyalar:
         try:
-            yeni, uy = dosya["_loader"](dosya["path"])
+            if dosya["kind"] == "transactions":
+                yeni, uy = dosya["_loader"](dosya["path"], atlanacak)
+            else:
+                yeni, uy = dosya["_loader"](dosya["path"])
         except Exception as e:
             uyarilar.append(f"{dosya['name']} okunamadı: {e}")
             logger.warning("Mutabakat dosyası okunamadı (%s): %s", dosya["name"], e)
@@ -352,6 +588,7 @@ def build_asset_summary(olaylar):
         s = ozet.setdefault(a, {
             "asset": a, "bought_qty": 0.0, "sold_qty": 0.0,
             "deposited_qty": 0.0, "withdrawn_qty": 0.0,
+            "reward_qty": 0.0, "fee_qty": 0.0,
             "buy_cost_usd": 0.0, "buy_qty_usd_known": 0.0,
             "sell_proceeds_usd": 0.0, "trade_count": 0,
             "exchanges": set(), "first": None, "last": None,
@@ -382,12 +619,19 @@ def build_asset_summary(olaylar):
             s["deposited_qty"] += o["qty"]
         elif o["kind"] == "WITHDRAW":
             s["withdrawn_qty"] += -o["qty"]
+        elif o["kind"] == "REWARD":
+            # Bedelsiz giriş. Alım değildir — ortalama maliyeti bozmasın diye
+            # `buy_cost_usd`'ye girmez, ama bakiyeyi artırır.
+            s["reward_qty"] += o["qty"]
+        elif o["kind"] == "FEE":
+            s["fee_qty"] += -o["qty"]
 
     for s in ozet.values():
         s["exchanges"] = sorted(s["exchanges"])
         s["on_exchange_qty"] = (s["bought_qty"] - s["sold_qty"]
-                                + s["deposited_qty"] - s["withdrawn_qty"])
-        s["acquired_qty"] = s["bought_qty"] + s["deposited_qty"]
+                                + s["deposited_qty"] - s["withdrawn_qty"]
+                                + s["reward_qty"] - s["fee_qty"])
+        s["acquired_qty"] = s["bought_qty"] + s["deposited_qty"] + s["reward_qty"]
         s["exchange_avg_cost"] = (s["buy_cost_usd"] / s["buy_qty_usd_known"]
                                   if s["buy_qty_usd_known"] > 0 else 0.0)
     return ozet
@@ -521,6 +765,8 @@ def reconcile(data, root=None):
             "sold_qty": b["sold_qty"] if b else 0.0,
             "deposited_qty": b["deposited_qty"] if b else 0.0,
             "withdrawn_qty": b["withdrawn_qty"] if b else 0.0,
+            "reward_qty": b["reward_qty"] if b else 0.0,
+            "fee_qty": b["fee_qty"] if b else 0.0,
             "on_exchange_qty": b_kalan,
             "acquired_qty": b["acquired_qty"] if b else 0.0,
             "ledger_qty": d_qty,
@@ -587,6 +833,19 @@ DÜRÜSTLÜK KURALI (F3'ten devam)
 Kapsamı kanıtlanamayan bir pozisyon için öneri VERİLMEZ. Yanlış bir maliyet
 tabanı, eksik bir maliyet tabanından daha zararlıdır: kullanıcı ona güvenir.
 Öneriyi engelleyen üç durum var ve üçü de rapora ayrı ayrı yazılır.
+
+F5b DÜZELTMESİ — KANIT TEK YÖNLÜYDÜ
+-----------------------------------
+İlk sürüm "bakiye hiç eksiye düşmüyorsa dosya geçmişi kapsıyordur" diyordu ve
+engeli olmayan satırları yeşil `ready` rozetiyle gösteriyordu. Bu çıkarım
+geçersizdi: negatif bakiyenin imkânsızlığı yalnızca *görünmeyen bir satış
+olmadığını* söyler, *görünmeyen bir alım olmadığını* söylemez. Pencereden önce
+alınıp hiç satılmamış bir bakiye hiçbir iz bırakmaz.
+
+İki düzeltme yapıldı. Birincisi, Binance hesap defteri (`Transaction History`)
+okunmaya başlandı: airdrop, Launchpool, Convert ve toz eritme kanalları artık
+görünüyor. İkincisi, `ready` durumu kaldırıldı — hiçbir satır kullanıcı
+borsadaki gerçek bakiyeyi girmeden uygulanamaz (`evaluate_verified_qty`).
 """
 
 # Yeniden kurulmuş lotların defterdeki maliyet yöntemi etiketi.
@@ -638,6 +897,11 @@ def _birim_maliyet(olay):
     ödemişsinizdir. Ham `price` sütunu bunu kaçırır. Kotasyon dolara sabitli
     değilse maliyet BİLİNMİYOR sayılır — uydurmak yerine söylemek doğrudur.
     """
+    # Bedelsiz giriş (airdrop, Launchpool, kupon): maliyeti gerçekten sıfır.
+    # Bu "bilinmiyor" değildir — ikisini karıştırmak ya sahte kâr yazdırır
+    # ya da bilinen bir maliyeti engel sanıp öneriyi boşuna bloke eder.
+    if olay.get("zero_cost"):
+        return 0.0, True
     if not olay.get("usd_known"):
         return 0.0, False
     qty = float(olay.get("qty") or 0.0)
@@ -678,6 +942,9 @@ def fifo_rebuild(olaylar):
     fazla_satis = 0.0
     cekilen = 0.0
     cekilen_maliyet = 0.0
+    komisyon_qty = 0.0
+    komisyon_maliyet = 0.0
+    odul_qty = 0.0
     yatirilan = 0.0
     satilan_qty = 0.0
     satis_hasilati = 0.0
@@ -696,6 +963,8 @@ def fifo_rebuild(olaylar):
                 yatirilan += qty
                 maliyet, bilinir = 0.0, False
             else:
+                if o.get("kind") == "REWARD":
+                    odul_qty += qty
                 maliyet, bilinir = _birim_maliyet(o)
             lotlar.append({"date": tarih, "qty": qty, "cost": maliyet,
                            "cost_known": bilinir, "kind": o.get("kind")})
@@ -726,6 +995,12 @@ def fifo_rebuild(olaylar):
                     satis_hasilati += abs(float(o.get("usd_value") or 0.0))
                 else:
                     kz_bilinmeyen += 1
+            elif o.get("kind") == "FEE":
+                # Komisyon bir satış değildir; hasılatı yoktur. Çekim de
+                # değildir — coin başka bir konuma gitmedi, harcandı. Ayrı
+                # tutulmazsa kullanıcıya olmayan bir transfer uyarısı çıkar.
+                komisyon_qty += -qty
+                komisyon_maliyet += tuketilen_maliyet
             else:
                 cekilen += -qty
                 cekilen_maliyet += tuketilen_maliyet
@@ -735,8 +1010,13 @@ def fifo_rebuild(olaylar):
         "oversold_qty": fazla_satis,
         "withdrawn_qty": cekilen,
         "withdrawn_cost_usd": cekilen_maliyet,
+        "fee_qty": komisyon_qty,
+        "fee_cost_usd": komisyon_maliyet,
+        "reward_qty": odul_qty,
         "deposited_qty": yatirilan,
         "unknown_cost_qty": sum(l["qty"] for l in lotlar if not l["cost_known"]),
+        "zero_cost_qty": sum(l["qty"] for l in lotlar
+                             if l["cost_known"] and l["cost"] <= 0),
         "event_count": len(sirali),
         "realized_qty": satilan_qty,
         "realized_proceeds_usd": satis_hasilati,
@@ -781,6 +1061,80 @@ def _kz_zaten_defterde(data, varlik, borsa):
         if tx.get("exit_price") is not None or tx.get("realized_pnl_usd") is not None:
             return True
     return False
+
+
+def evaluate_verified_qty(satir, verified_qty):
+    """
+    Kullanıcının borsa ekranından okuyup girdiği GERÇEK bakiyeyi hakem yapar.
+
+    NEDEN VAR (FAZ F5b)
+    -------------------
+    F5'in kapsam kanıtı şuydu: "bakiye hiç eksiye düşmüyorsa dosya geçmişi
+    kapsıyordur." Bu çıkarım GEÇERSİZ. Negatif bakiyenin imkânsızlığı yalnızca
+    *"dosyada görünmeyen bir SATIŞ yok"* der; *"dosyada görünmeyen bir ALIM
+    yok"* demez. Dosya penceresinden önce alınmış ve hiç satılmamış bir bakiye
+    hiçbir iz bırakmaz — ve sistem onu "fazladan girilmiş" sanıp silmeyi
+    önerir. Kullanıcının MEXC'teki 562.66 BCCOIN'i tam olarak böyle 238.78'e
+    düşürülmek istendi.
+
+    Dosyalar tek başına hangi tarafın haklı olduğunu ASLA söyleyemez. Söyleyen
+    tek şey borsadaki güncel gerçek bakiyedir; kullanıcı onu ekrandan okuyup
+    girebilir. Karar kuralı basit:
+
+    - gerçek ≈ önerilen  → defter yanlış, düzeltme uygulanabilir
+    - gerçek ≈ defter    → dosya eksik, **dokunulmaz**
+    - ikisi de değil     → üçüncü bir eksik var, önce o bulunmalı
+
+    Mutlak bir tolerans yerine "hangisine daha yakın" ölçütü kullanılır: iki
+    aday birbirine yakınsa sabit bir yüzde ikisini de kabul eder ve doğrulama
+    hükmünü yitirirdi.
+    """
+    try:
+        v = float(verified_qty)
+    except (TypeError, ValueError):
+        return {"ok": False, "verdict": "invalid",
+                "message": "Girilen bakiye bir sayı değil."}
+    if v < 0:
+        return {"ok": False, "verdict": "invalid",
+                "message": "Bakiye negatif olamaz."}
+
+    onerilen = float(satir.get("proposed_qty") or 0.0)
+    defterde = float(satir.get("ledger_qty") or 0.0)
+    varlik = satir.get("asset", "")
+
+    # Miktarlar zaten örtüşüyorsa (fark yalnızca maliyet tabanındaysa)
+    # doğrulama tek bir soruya iner: miktar gerçekten bu mu?
+    if _yakin(onerilen, defterde):
+        if _yakin(v, onerilen):
+            return {"ok": True, "verdict": "matches_proposal",
+                    "message": f"Borsadaki bakiye ({v:,.8f} {varlik}) öneriyle uyuşuyor."}
+        return {"ok": False, "verdict": "matches_neither",
+                "message": (f"Girilen bakiye ({v:,.8f}) ne defterdeki ne de hesaplanan "
+                            f"miktarla ({onerilen:,.8f}) uyuşuyor. Düzeltme uygulanmadı.")}
+
+    oneriye_uzaklik = abs(v - onerilen)
+    deftere_uzaklik = abs(v - defterde)
+
+    if oneriye_uzaklik < deftere_uzaklik and _yakin(v, onerilen):
+        return {"ok": True, "verdict": "matches_proposal",
+                "message": (f"Borsadaki gerçek bakiye ({v:,.8f} {varlik}) borsa "
+                            f"kayıtlarından hesaplanan miktarla uyuşuyor; fark defterden "
+                            "kaynaklanıyor. Düzeltme uygulanabilir.")}
+
+    if deftere_uzaklik < oneriye_uzaklik:
+        return {"ok": False, "verdict": "matches_ledger",
+                "message": (f"Borsadaki gerçek bakiye ({v:,.8f} {varlik}) DEFTERDEKİ "
+                            f"miktarla uyuşuyor — yani defteriniz doğru, eksik olan dosya. "
+                            f"Bu {varlik} muhtemelen dışa aktarım penceresinden "
+                            f"({satir.get('coverage_start') or 'dosya başlangıcı'}) önce "
+                            "alınmış ve hiç satılmamış; öyle bir bakiye hiçbir dosyada iz "
+                            "bırakmaz. Düzeltme UYGULANMADI — defteriniz olduğu gibi kaldı.")}
+
+    return {"ok": False, "verdict": "matches_neither",
+            "message": (f"Girilen bakiye ({v:,.8f} {varlik}) ne defterdeki "
+                        f"({defterde:,.8f}) ne de hesaplanan ({onerilen:,.8f}) miktarla "
+                        "uyuşuyor. Üçüncü bir kaynak eksik olabilir (başka bir cüzdan, "
+                        "kilitli bakiye, kapsam dışı bir borsa). Düzeltme uygulanmadı.")}
 
 
 def build_rebuild_plan(data, root=None):
@@ -870,6 +1224,29 @@ def build_rebuild_plan(data, root=None):
             etkiler.append("Borsa kayıtlarına göre bu pozisyondan tamamen çıkılmış. "
                            "Düzeltme defterdeki kaydı kapatır, nakit üretmez.")
 
+        fark_qty = onerilen_qty - defter_qty
+        if fark_qty < -1e-9:
+            # Küçültme yönü TEHLİKELİ yöndür. Dosya penceresinden önce alınmış
+            # ve hiç satılmamış bir bakiye hiçbir dosyada iz bırakmaz; hesaba
+            # da girmez ve burada "fazladan girilmiş" gibi görünür.
+            ikazlar.append(
+                f"Öneri pozisyonu {abs(fark_qty):,.8f} adet KÜÇÜLTÜYOR. Dosya "
+                f"{kapsam_basi or 'bilinmeyen bir tarihte'} başlıyor; o tarihten önce "
+                f"alınmış ve hiç satılmamış bir bakiye dosyada görünmez ve bu hesaba "
+                f"girmez. Uygulamadan önce borsadaki gerçek {varlik} bakiyesine bakın."
+            )
+        if tani.get("zero_cost_qty", 0.0) > 1e-9:
+            ikazlar.append(
+                f"Kalan lotların {tani['zero_cost_qty']:,.8f} adedi bedelsiz geldi "
+                "(airdrop, Launchpool, kupon). Maliyeti sıfır yazılacak — bu doğrudur, "
+                "ama satıldığında tutarın tamamı kâr sayılır."
+            )
+        if tani.get("fee_qty", 0.0) > 1e-9:
+            etkiler.append(
+                f"{tani['fee_qty']:,.8f} adet işlem komisyonu olarak ödenmiş "
+                f"(taşıdığı maliyet ${tani.get('fee_cost_usd', 0.0):,.2f}); "
+                "hesaptan düşüldü."
+            )
         if tani["withdrawn_qty"] > 1e-9:
             ikazlar.append(
                 f"Bu borsadan {tani['withdrawn_qty']:,.8f} adet çekilmiş "
@@ -890,13 +1267,20 @@ def build_rebuild_plan(data, root=None):
                 "deftere yazılmayacak — açık lotlar yine de düzeltilir."
             )
 
-        fark_qty = onerilen_qty - defter_qty
         # "Aynı" demek için açık lotların tutması yetmez: deftere geçmemiş bir
         # gerçekleşmiş K/Z varsa uygulanacak bir şey hâlâ vardır.
         ayni = (d is not None and _yakin(onerilen_qty, defter_qty)
                 and abs(onerilen_maliyet - defter_maliyet) < 0.01
                 and not yazilacak_kz)
 
+        # FAZ F5b — DOĞRULANMAMIŞ HİÇBİR SATIR "UYGULANABİLİR" DEĞİLDİR.
+        #
+        # Eskiden engeli olmayan her satır yeşil `ready` rozetiyle çıkıyordu.
+        # O rozet, dosyaların geçmişi kapsadığı KANITLANMIŞ gibi bir güven
+        # veriyordu; oysa kanıt tek yönlüydü (bkz. `evaluate_verified_qty`).
+        # Artık uygulanabilirliğin tek kanıtı kullanıcının borsa ekranından
+        # okuyup girdiği gerçek bakiyedir. `ready` durumu bu yüzden plandan
+        # tamamen kaldırıldı — üretilebilseydi yine hak edilmemiş olurdu.
         if engeller:
             durum = "blocked"
         elif ayni:
@@ -904,7 +1288,8 @@ def build_rebuild_plan(data, root=None):
         elif ikazlar:
             durum = "caution"
         else:
-            durum = "ready"
+            durum = "needs_check"
+        dogrulama_gerekli = durum in ("caution", "needs_check")
 
         satirlar.append({
             "asset": varlik,
@@ -927,6 +1312,10 @@ def build_rebuild_plan(data, root=None):
             "trade_count": tani["event_count"],
             "withdrawn_qty": tani["withdrawn_qty"],
             "withdrawn_cost_usd": tani["withdrawn_cost_usd"],
+            "fee_qty": tani.get("fee_qty", 0.0),
+            "fee_cost_usd": tani.get("fee_cost_usd", 0.0),
+            "reward_qty": tani.get("reward_qty", 0.0),
+            "zero_cost_qty": tani.get("zero_cost_qty", 0.0),
             "realized_qty": tani["realized_qty"],
             "realized_proceeds_usd": tani["realized_proceeds_usd"],
             "realized_cost_usd": tani["realized_cost_usd"],
@@ -939,10 +1328,19 @@ def build_rebuild_plan(data, root=None):
             "blockers": engeller,
             "warnings": ikazlar,
             "effects": etkiler,
+            # Uygulama için borsadaki gerçek bakiye şart mı? Şu an her
+            # uygulanabilir satır için şarttır; alan, ileride salt-okunur API
+            # bakiyeyi kendisi getirdiğinde anlamını koruyabilsin diye var.
+            "verify_required": dogrulama_gerekli,
+            "verify_prompt": (
+                f"{borsa} hesabınızdaki güncel {varlik} bakiyesini yazın. "
+                "Dosyalar hangi tarafın haklı olduğunu tek başına söyleyemez; "
+                "bunu yalnızca borsadaki gerçek bakiye söyler."
+            ),
             "signature": lot_signature(lotlar),
         })
 
-    sira = {"ready": 0, "caution": 1, "blocked": 2, "identical": 3}
+    sira = {"needs_check": 0, "caution": 1, "blocked": 2, "identical": 3}
     satirlar.sort(key=lambda r: (sira.get(r["status"], 4), -abs(r["diff_invested"]), r["asset"]))
 
     sayim = {}

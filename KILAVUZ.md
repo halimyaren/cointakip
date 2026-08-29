@@ -232,11 +232,29 @@ rakamlar ise hafızaya dayanır. Bir işlemi kaydetmeyi unutmak olağandır.
 | Binance | Order History → Export | CSV | ~2023'e kadar |
 | MEXC | Export History | XLSX | 540 gün |
 
-Binance için **Spot Trade History**, ayrıca varsa **Deposit History** ve
-**Withdraw History**. MEXC için **Trade History** ve **Statement**.
+Binance için **Spot Trade History**, ayrıca varsa **Deposit History**,
+**Withdraw History** ve — aşağıdaki uyarıyı okuyun — **Transaction History**.
+MEXC için **Trade History** ve **Statement**.
 
 > "Order History" ile "Trade History" farklıdır: ilki verdiğiniz emirleri, ikincisi
 > gerçekleşen dolumları içerir. Sistem doğru olanı seçer, ikisini de koyabilirsiniz.
+
+> ### ⚠️ Binance'te hesap defterini de indirin
+>
+> **Wallet → Transaction History → Export.** Alım-satım dosyası hesabınızın
+> **tamamı değildir.** Coin hesabınıza yalnızca satın alarak girmez:
+>
+> - **Earn / Launchpool airdrop'ları** — her gün damla damla gelir
+> - **Convert** — "0.005 BTC'yi USDT'ye çevir" bir spot emri değildir
+> - **Small Assets Exchange BNB** — toz bakiyelerin BNB'ye eritilmesi
+> - **Cüzdanlar arası taşımalar** — vadeli hesap, Funding, üçüncü taraf cüzdan
+>
+> Bunların **hiçbiri** Spot Trade History'de görünmez. Hesap defteri olmadan
+> hesaplanan bakiye yanlış çıkar. Gerçek veriyle ölçüldü: bu dosya okunmadığında
+> 21 önerinin 10'u hatalıydı.
+>
+> Bu dosyayı koyduğunuzda alımlarınız **iki kez sayılmaz** — sistem hangi
+> hareketin hangi dosyadan geleceğini bilir.
 
 ### Adım 2 — Klasöre koyun
 
@@ -278,14 +296,35 @@ kaydetmeyi unuttuğunuzu hatırlamanız gerekmez — dosya zaten biliyor.
 
 | Etiket | Ne yapmalısınız |
 |:---|:---|
-| **Uygulanabilir** | Dosya bu varlığın geçmişini baştan sona kapsıyor. Öneri güvenilir. |
-| **Önce uyarıyı oku** | Öneri hesaplandı ama bilmeniz gereken bir şey var — genelde o borsadan coin çekmiş olmanız. Satırdaki ⚠ cümlesini okuyun. |
+| **Bakiye sorulacak** | Öneri hesaplandı. Uygulamadan önce borsadaki gerçek bakiyeniz sorulacak. |
+| **Önce uyarıyı oku** | Öneri hesaplandı ama bilmeniz gereken bir şey var — coin çekmiş olmanız ya da önerinin pozisyonu küçültmesi gibi. Satırdaki ⚠ cümlesini okuyun. |
 | **Kapsam yetersiz** | Öneri **verilmiyor**. Uydurmaktansa susmayı tercih ediyor. |
 | **Zaten uyumlu** | Yapılacak bir şey yok. |
 
-**Bu Pozisyonu Düzelt** düğmesi bir onay penceresi açar: defterdekiyle borsanın
-dediği yan yana, ne olacağı ve neye dikkat etmeniz gerektiği ayrı ayrı, ve deftere
-yazılacak alımların tam dökümü.
+**İncele ve Düzelt** düğmesi bir onay penceresi açar: defterdekiyle borsanın
+dediği yan yana, ne olacağı ve neye dikkat etmeniz gerektiği ayrı ayrı, deftere
+yazılacak alımların tam dökümü — ve son adımda borsadaki gerçek bakiyeniz.
+
+### Adım 5 — Borsadaki gerçek bakiyeyi girin
+
+Onay penceresinin son bölümü sizden **borsanızın cüzdan ekranındaki güncel
+bakiyeyi** ister. Bu adım atlanamaz.
+
+**Neden?** Çünkü dosyalar hangi tarafın haklı olduğunu tek başına söyleyemez.
+Dışa aktarım pencerenizden **önce** alıp **hiç satmadığınız** bir coin hiçbir
+dosyada iz bırakmaz: ne alışı görünür, ne satışı. Sistem onu göremediği için
+"fazladan girilmiş" sanar ve silmeyi önerir — oysa coin gerçekten sizdedir.
+
+Girdiğiniz rakam kararı verir:
+
+| Girdiğiniz bakiye | Sonuç |
+|:---|:---|
+| **Hesaplananla** uyuşuyor | Defteriniz eksik/yanlış. Düzeltme uygulanır. |
+| **Defterinizle** uyuşuyor | Eksik olan dosya. **Defterinize dokunulmaz.** |
+| İkisiyle de uyuşmuyor | Üçüncü bir kaynak eksik (başka cüzdan, kilitli bakiye, kapsam dışı borsa). Uygulanmaz. |
+
+> Kutu bilerek **boş** açılır ve öneriyle doldurulmaz. Doldurulsaydı borsaya
+> bakmadan onaylardınız ve doğrulama bir tiyatroya dönerdi.
 
 ### Düzeltme neyi değiştirir?
 
@@ -384,6 +423,14 @@ Hayır. Gemini anahtarı girmezseniz yerel kural motoru devreye girer.
 **Aynı coini iki borsada tutuyorum, neden iki satır görüyorum?**
 Bilerek. Ayrı maliyet tabanları ayrı takip edilir. Konsolide görünüm için Kasa
 sekmesindeki toplamlara bakın.
+
+**Mutabakat, borsada gerçekten duran bir coini silmek istiyor. Ne oluyor?**
+Dosya o coinin alımını görmüyor demektir — büyük ihtimalle dosya penceresinden
+önce alıp hiç satmamışsınız, ya da airdrop/Convert gibi bir kanaldan gelmiş ve o
+dosyayı klasöre koymamışsınız (Binance'te **Transaction History**). Onay
+penceresinde borsadaki gerçek bakiyenizi yazın: rakam defterinizle uyuşuyorsa
+sistem düzeltmeyi **reddeder** ve defterinize dokunmaz. Doğru davranış budur;
+eksik olan sizin kaydınız değil, dosyadır.
 
 **Bir işlemi yanlış girdim.**
 İşlem defterinden silebilir veya düzenleyebilirsiniz. Transfer, zarar yazımı ve

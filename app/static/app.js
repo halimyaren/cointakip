@@ -235,7 +235,10 @@ function portfolioApp() {
     rebuilds: [],
     // Uygulama onayı kendi modalını kullanır: karşılaştırma tablosu, etki/uyarı
     // ayrımı ve alım dökümü düz metne sığmıyor.
-    rebuildConfirm: { open: false, row: null },
+    // FAZ F5b: `verifyQty` kullanıcının borsa ekranından okuyup girdiği güncel
+    // bakiyedir. Kararı sunucu verir; buradaki değerlendirme sadece kullanıcı
+    // yazarken ne olacağını göstermek içindir.
+    rebuildConfirm: { open: false, row: null, verifyQty: '' },
     showReconcileHelp: false,
 
     // Faz F2: Arşiv (net varlık geçmişi)
@@ -597,15 +600,21 @@ function portfolioApp() {
     // tabanını değiştirir ve kullanıcının onu tek tek görmesi gerekir.
     // Etiketler kullanıcının sorduğu soruyu cevaplamalı: "ne yapmalıyım?"
     // Önceki "Dikkatli bak" etiketi neyin dikkat gerektirdiğini söylemiyordu.
+    // FAZ F5b — 'Uygulanabilir' (yeşil) rozeti KALDIRILDI. Dosyalar hangi
+    // tarafın haklı olduğunu tek başına söyleyemez; söyleyen tek şey borsadaki
+    // gerçek bakiyedir. Yeşil rozet hak edilmemiş bir güven veriyordu.
     rebuildStatusMeta: {
-      ready: {
-        label: 'Uygulanabilir', badge: 'bg-emerald-500/15 text-emerald-300 border border-emerald-700/50',
-        help: 'Dosya bu varlığın geçmişini baştan sona kapsıyor. Öneri güvenilir.'
+      needs_check: {
+        label: 'Bakiye sorulacak', badge: 'bg-sky-500/15 text-sky-300 border border-sky-700/50',
+        help: 'Öneri hesaplandı ama tek başına yeterli değil. Borsa ekranınızdaki ' +
+              'güncel bakiyeyi soracak; öneriyle uyuşursa uygulanır, defterinizle ' +
+              'uyuşursa eksik olan dosyadır ve defterinize DOKUNULMAZ.'
       },
       caution: {
         label: 'Önce uyarıyı oku', badge: 'bg-amber-500/15 text-amber-300 border border-amber-700/50',
         help: 'Öneri hesaplanabildi ama bilmeniz gereken bir şey var — genelde ' +
-              'o borsadan coin çekmiş olmanız. Satırdaki ⚠ ile başlayan cümleyi okuyun.'
+              'o borsadan coin çekmiş olmanız ya da önerinin pozisyonu küçültmesi. ' +
+              'Satırdaki ⚠ ile başlayan cümleyi okuyun. Burada da bakiye sorulur.'
       },
       blocked: {
         label: 'Kapsam yetersiz', badge: 'bg-slate-500/15 text-slate-400 border border-slate-600',
@@ -623,7 +632,7 @@ function portfolioApp() {
       const rows = this.rebuildPlan.rows || [];
       if (this.rebuildFilter === 'all') return rows;
       if (this.rebuildFilter === 'actionable') {
-        return rows.filter(r => r.status === 'ready' || r.status === 'caution');
+        return rows.filter(r => r.status === 'needs_check' || r.status === 'caution');
       }
       return rows.filter(r => r.status === this.rebuildFilter);
     },
@@ -643,18 +652,64 @@ function portfolioApp() {
     },
 
     openRebuildConfirm(r) {
-      this.rebuildConfirm = { open: true, row: r };
+      // Kutu bilerek BOŞ açılır. Öneriyle doldurulsaydı kullanıcı borsaya
+      // bakmadan onaylardı ve doğrulama bir tiyatroya dönerdi.
+      this.rebuildConfirm = { open: true, row: r, verifyQty: '' };
+    },
+
+    // Girilen bakiye hangi tarafı destekliyor? Sunucudaki `evaluate_verified_qty`
+    // ile aynı ölçüt: "hangi adaya daha yakın". Buradaki yalnızca önizlemedir;
+    // uygulamayı reddetme yetkisi sunucudadır.
+    get rebuildVerifyVerdict() {
+      const r = this.rebuildConfirm.row;
+      const ham = String(this.rebuildConfirm.verifyQty || '').trim().replace(',', '.');
+      if (!r || ham === '') return null;
+      const v = Number(ham);
+      if (!isFinite(v) || v < 0) {
+        return { ok: false, tone: 'error', text: 'Geçerli bir bakiye yazın.' };
+      }
+      const yakin = (a, b) => {
+        const fark = Math.abs(a - b);
+        if (fark <= 1e-8) return true;
+        const olcek = Math.max(Math.abs(a), Math.abs(b));
+        return olcek > 0 && (fark / olcek * 100) <= 0.5;
+      };
+      const oneri = Number(r.proposed_qty || 0);
+      const defter = Number(r.ledger_qty || 0);
+      if (yakin(oneri, defter)) {
+        return yakin(v, oneri)
+          ? { ok: true, tone: 'ok', text: 'Miktar teyit edildi. Düzeltme maliyet tabanını güncelleyecek.' }
+          : { ok: false, tone: 'error', text: 'Girilen bakiye bu pozisyonun miktarıyla uyuşmuyor.' };
+      }
+      const dOneri = Math.abs(v - oneri), dDefter = Math.abs(v - defter);
+      if (dOneri < dDefter && yakin(v, oneri)) {
+        return { ok: true, tone: 'ok',
+                 text: 'Borsa kayıtlarıyla uyuşuyor — fark defterden kaynaklanıyor. Düzeltme uygulanabilir.' };
+      }
+      if (dDefter < dOneri) {
+        return { ok: false, tone: 'warn',
+                 text: 'Bu rakam DEFTERİNİZLE uyuşuyor: defteriniz doğru, eksik olan dosya. ' +
+                       'Bu coin muhtemelen dosya penceresinden önce alınmış ve hiç satılmamış. ' +
+                       'Düzeltme uygulanmayacak — defteriniz olduğu gibi kalacak.' };
+      }
+      return { ok: false, tone: 'error',
+               text: 'Bu rakam ne defterdeki ne de hesaplanan miktarla uyuşuyor. ' +
+                     'Üçüncü bir kaynak eksik olabilir (başka cüzdan, kilitli bakiye, kapsam dışı borsa).' };
     },
 
     async applyRebuild(r) {
       if (this.rebuildApplying) return;
+      const bakiye = String(this.rebuildConfirm.verifyQty || '').trim().replace(',', '.');
       this.rebuildConfirm.open = false;
       this.rebuildApplying = r.pos_key;
       try {
         const resp = await fetch('/api/reconcile/rebuild/' + encodeURI(r.pos_key), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ signature: r.signature })
+          body: JSON.stringify({
+            signature: r.signature,
+            verified_qty: bakiye === '' ? null : Number(bakiye)
+          })
         });
         const body = await resp.json();
         if (!resp.ok) throw new Error(body.detail || 'Düzeltme uygulanamadı.');

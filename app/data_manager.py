@@ -1652,11 +1652,18 @@ def get_rebuild_plan(data=None, root=None):
     return reconcile.build_rebuild_plan(data, root)
 
 
-def apply_rebuild(pos_key: str, signature: str = None, note: str = "", root=None):
+def apply_rebuild(pos_key: str, signature: str = None, note: str = "", root=None,
+                  verified_qty=None):
     """
     Bir pozisyonun lotlarını borsa kayıtlarından kurulmuş hâliyle değiştirir.
 
     Nakit hareketi yok, gerçekleşmiş K/Z yok. Geri alınabilir.
+
+    `verified_qty` ZORUNLUDUR (FAZ F5b): kullanıcının borsa ekranından okuduğu
+    güncel gerçek bakiye. Dosyalar hangi tarafın haklı olduğunu tek başlarına
+    söyleyemez — pencereden önce alınmış ve hiç satılmamış bir bakiye hiçbir
+    dosyada iz bırakmaz, ve düzeltme onu sessizce siler. Bu kontrol sunucuda
+    yapılır; istemcinin "doğruladım" demesi yeterli sayılmaz.
     """
     import reconcile
     data = load_portfolio()
@@ -1673,6 +1680,16 @@ def apply_rebuild(pos_key: str, signature: str = None, note: str = "", root=None
     if signature and signature != satir["signature"]:
         raise ValueError("Öneri değişmiş — dışa aktarım dosyaları güncellenmiş olabilir. "
                          "Listeyi yenileyip yeniden bakın.")
+
+    if satir.get("verify_required", True):
+        if verified_qty is None or str(verified_qty).strip() == "":
+            raise ValueError(
+                "Düzeltme uygulanmadan önce borsadaki güncel gerçek bakiye girilmelidir. "
+                + satir.get("verify_prompt", "")
+            )
+        hakem = reconcile.evaluate_verified_qty(satir, verified_qty)
+        if not hakem["ok"]:
+            raise ValueError(hakem["message"])
 
     symbol, exch, eski_lotlar = _aktif_lotlar(data, pos_key)
     rid = int(data.get("next_rebuild_id", 1))
@@ -1791,6 +1808,11 @@ def apply_rebuild(pos_key: str, signature: str = None, note: str = "", root=None
         "closed_tx_ids": kapatilan_ids,
         "created_tx_ids": olusan_ids,
         "signature": satir["signature"],
+        # Kullanıcının borsa ekranından okuyup girdiği bakiye. Denetim izinin
+        # parçası: düzeltmenin neye dayanarak uygulandığı sonradan görülebilsin.
+        "verified_qty": (float(verified_qty)
+                         if verified_qty is not None and str(verified_qty).strip() != ""
+                         else None),
         "coverage_start": satir.get("coverage_start"),
         "applied_warnings": satir.get("warnings", []),
         "sources": [k["name"] for k in plan.get("sources", [])],
