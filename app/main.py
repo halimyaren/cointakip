@@ -25,11 +25,14 @@ from data_manager import (
     open_hedge, close_hedge, delete_hedge, hedge_scenario,
     write_off_position, undo_write_off, transfer_position, undo_transfer,
     list_transfers, list_write_offs, WRITE_OFF_REASONS,
-    get_rebuild_plan, apply_rebuild, undo_rebuild, list_rebuilds
+    get_rebuild_plan, apply_rebuild, undo_rebuild, list_rebuilds,
+    known_locations, symbol_for_location, run_pending_migrations
 )
 from price_service import price_service
 import archive
 import reconcile
+import connections
+import keyvault
 from log_config import get_logger, LOG_FILE
 
 logger = get_logger("main")
@@ -53,6 +56,8 @@ app.add_middleware(
 logger.info("=" * 62)
 logger.info("CoinTakip başlatılıyor — log dosyası: %s", LOG_FILE)
 initialize_portfolio_if_missing()
+# Bir kez uygulanacak veri düzeltmeleri. Sessizce değil, loglayarak.
+run_pending_migrations()
 price_service.start_background_updater()
 logger.info("Sunucu hazır: http://127.0.0.1:8000")
 
@@ -263,6 +268,148 @@ def api_undo_rebuild(rebuild_id: int):
     return {"success": True, "result": sonuc, **_f1_snapshot()}
 
 
+# -------------------------------------------------------------
+# FAZ F6: ANAHTAR KASASI VE BAĞLANTILAR
+# -------------------------------------------------------------
+@app.get("/api/vault/status")
+def api_vault_status():
+    """Kasanın durumu. İçerik DÖNMEZ, yalnızca durum bilgisi."""
+    return keyvault.status()
+
+
+@app.post("/api/vault/unlock")
+def api_vault_unlock(payload: dict = Body(...)):
+    try:
+        sonuc = keyvault.unlock(str((payload or {}).get("pin") or ""))
+    except keyvault.VaultError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    logger.info("Anahtar kasası açıldı.")
+    return {"success": True, **sonuc, **keyvault.status()}
+
+
+@app.post("/api/vault/lock")
+def api_vault_lock():
+    keyvault.lock()
+    return {"success": True, **keyvault.status()}
+
+
+@app.post("/api/vault/secret/{name}")
+def api_vault_put(name: str, payload: dict = Body(...)):
+    """Kasaya sır yazar. Yazılan değer bir daha OKUNMAK ÜZERE dönmez."""
+    try:
+        keyvault.put(name, str((payload or {}).get("value") or ""))
+    except keyvault.VaultLocked as e:
+        raise HTTPException(status_code=423, detail=str(e))
+    except keyvault.VaultError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "name": name, "stored": keyvault.has(name)}
+
+
+@app.delete("/api/vault/secret/{name}")
+def api_vault_forget(name: str):
+    keyvault.forget(name)
+    return {"success": True, "name": name, "stored": keyvault.has(name)}
+
+
+@app.get("/api/connections")
+def api_list_connections():
+    """
+    Bağlantı kayıt defteri + desteklenen zincirler.
+
+    Adresler herkese açık veridir; gizli bir şey döndürülmez. Kasa sırları
+    bu uçtan ASLA çıkmaz.
+    """
+    return {
+        "connections": connections.list_connections(),
+        "chains": connections.supported_chains(),
+        "locations": connections.location_suggestions(),
+        "warnings": connections.duplicate_address_warnings(),
+        "vault": keyvault.status(),
+        "provider_key_set": keyvault.has(connections.ETHERSCAN_KEY_NAME),
+    }
+
+
+# Konum ve zincir artık YOLDA taşınmıyor, gövdede geliyor. Sebep: yol
+# parametresi kullanıldığında `{location:path}` açgözlülüğü `.../PHANTOM/test`
+# isteğini kaydetme ucuna düşürdü ve kullanıcı farkında olmadan sahte bir
+# bağlantı kaydedildi. Sabit yollar bu sınıf hatayı tamamen ortadan kaldırıyor.
+@app.post("/api/connections/test")
+def api_test_connection(payload: dict = Body(...)):
+    """
+    Bağlantıyı dener. **Hiçbir şey kaydetmez.**
+    Ağ hatası 500 değil, `ok:false` olarak döner — kullanıcı sebebi görmeli.
+    """
+    spec, hata = connections.validate_connection(payload or {})
+    if hata:
+        raise HTTPException(status_code=400, detail=hata)
+    spec["location"] = (payload or {}).get("location") or ""
+    return connections.test_connection((payload or {}).get("id"), spec)
+
+
+@app.post("/api/connections/token-info")
+def api_token_info(payload: dict = Body(...)):
+    """
+    Bir token kontratının sembolünü ve ondalık hanesini zincirden okur.
+
+    Otomatik keşif her zincirde ücretsiz değil (Etherscan'ın ücretsiz planı
+    BNB Chain, Base, Optimism ve Avalanche'ı kapsamıyor). Elle token tanımlama
+    o boşluğu kapatır ve bu uç onu kullanıcı için zahmetsiz kılar: kullanıcı
+    yalnızca kontrat adresini yapıştırır, sembolü ve ondalığı zincir söyler.
+    **Anahtar gerekmez, hiçbir şey kaydedilmez.**
+    """
+    payload = payload or {}
+    try:
+        return {"success": True, "token": connections.evm_token_info(
+            str(payload.get("chain") or "").strip().lower(),
+            payload.get("contract"))}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Kontrat okunamadı: {e}")
+
+
+@app.post("/api/connections")
+def api_save_connection(payload: dict = Body(...)):
+    """Bağlantı ekler veya günceller. Kimlik gövdedeki `id` alanıdır."""
+    payload = payload or {}
+    try:
+        kayit = connections.save_connection(
+            payload.get("location"), payload, conn_id=payload.get("id"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "connection": kayit,
+            "connections": connections.list_connections(),
+            "warnings": connections.duplicate_address_warnings()}
+
+
+@app.delete("/api/connections/{conn_id}")
+def api_delete_connection(conn_id: str):
+    if not connections.delete_connection(conn_id):
+        raise HTTPException(status_code=404, detail="Bağlantı bulunamadı.")
+    return {"success": True, "connections": connections.list_connections()}
+
+
+@app.get("/api/connections/balances")
+def api_connection_balances():
+    """Tüm açık bağlantıların canlı bakiyeleri. **Salt okunur.**"""
+    return {"readings": connections.read_all(), "read_only": True}
+
+
+@app.get("/api/connections/reconcile")
+def api_connection_reconcile():
+    """
+    Canlı cüzdan bakiyeleri ile defterin karşılaştırması. **Yazma yok.**
+
+    Kasa durumu da dönüyor: anahtar kasada durup kasa kilitliyken okuma sessizce
+    eksik kalıyordu ve kullanıcı sebebini göremiyordu. Arayüz bunu okumadan
+    ÖNCE söyleyebilsin diye rapora ekli.
+    """
+    rapor = connections.compare_with_ledger()
+    rapor["vault"] = {**keyvault.status(),
+                      "provider_key_set": keyvault.has(connections.ETHERSCAN_KEY_NAME)}
+    return rapor
+
+
 @app.post("/api/archive/snapshot")
 def create_archive_snapshot():
     """Elle fotoğraf al. Bugünün kaydı varsa üzerine yazar."""
@@ -459,11 +606,10 @@ def create_transaction(tx_in: TransactionCreate):
     clean_coin = tx_in.coin.strip()
     exchange = (tx_in.exchange or "BINANCE").upper().strip()
     
-    # If CEX (Binance, MEXC, Gate.io) and does not contain "/", standardize with USDT
-    if exchange in ["BINANCE", "MEXC", "GATE.IO"] and not clean_coin.endswith("USDT") and "/" not in clean_coin:
-        symbol = f"{clean_coin.upper()}USDT"
-    else:
-        symbol = clean_coin.upper()
+    # Borsada USDT çifti, cüzdanda yalın sembol. Kural burada satır arasında
+    # gömülüydü ve transfer tarafı ondan habersizdi; artık tek tanım
+    # `data_manager.symbol_for_location` içinde ve iki taraf da onu kullanıyor.
+    symbol = symbol_for_location(clean_coin, exchange)
 
     category = tx_in.category or DEFAULT_CATEGORIES.get(symbol, DEFAULT_CATEGORIES.get(clean_coin.upper(), "Altcoin"))
     date_str = tx_in.date or datetime.now().strftime("%Y-%m-%d")
