@@ -1162,6 +1162,43 @@ ACTIVE_STATUS = "Aktif"
 # sistemin her katmanı onu eşit vatandaş olarak görmelidir.
 DEFAULT_LOCATIONS = ("BINANCE", "MEXC", "GATE.IO", "DEX")
 
+# Varlığın USDT ÇİFTİ olarak işlem gördüğü yerler. Binance'te tuttuğunuz şey
+# `BNBUSDT` piyasasındaki bir pozisyondur; cüzdanınızda duran şey ise sadece
+# `BNB`'dir — orada çift diye bir şey yoktur.
+#
+# Bu liste daha önce `main.py` içinde satır arasında gömülüydü ve transfer
+# tarafı ondan habersizdi: `BNBUSDT` MEXC'ten METAMASK'a taşınınca adı
+# `BNBUSDT` olarak kalıyor, cüzdanda var olmayan bir çift ekranda duruyordu.
+# Tek tanım burada.
+PAIR_EXCHANGES = ("BINANCE", "MEXC", "GATE.IO")
+
+
+def base_symbol(coin: str) -> str:
+    """`BNBUSDT` → `BNB`. Çift işareti taşıyan (`/`) semboller olduğu gibi kalır."""
+    ham = str(coin or "").upper().strip()
+    if "/" in ham:
+        return ham
+    # `len > 4` koruması `USDT`'nin kendisini `` yapmasını engelliyor.
+    return ham[:-4] if ham.endswith("USDT") and len(ham) > 4 else ham
+
+
+def symbol_for_location(coin: str, location: str) -> str:
+    """
+    Bir varlığın o konumdaki doğru yazımı.
+
+    Borsada USDT çifti, cüzdanda yalın sembol. Sembolü konuma göre yazmak
+    kozmetik bir tercih değil: kullanıcı cüzdan ekranında var olmayan bir
+    işlem çifti görüyordu ve zincir karşılaştırması her seferinde eki
+    kırpmak zorunda kalıyordu.
+    """
+    ham = str(coin or "").upper().strip()
+    if "/" in ham:
+        return ham
+    taban = base_symbol(ham)
+    if not taban:
+        return ham
+    return f"{taban}USDT" if normalize_location(location) in PAIR_EXCHANGES else taban
+
 
 def normalize_location(name: str) -> str:
     """
@@ -1470,7 +1507,10 @@ def transfer_position(payload: dict):
                 # Orijinal alım tarihi korunur — transfer yeni bir alım değildir,
                 # elde tutma süresi ve maliyet tabanı devam eder.
                 "date": tx.get("date", temiz["date"]),
-                "coin": symbol,
+                # Sembol HEDEFE göre yazılır: borsada `BNBUSDT`, cüzdanda `BNB`.
+                # Kaynağın yazımını olduğu gibi taşımak, cüzdanda var olmayan
+                # bir işlem çiftini deftere sokuyordu.
+                "coin": symbol_for_location(symbol, temiz["to_exchange"]),
                 "exchange": temiz["to_exchange"],
                 "qty": varan,
                 "cost": lot_cost,
@@ -1593,6 +1633,80 @@ def undo_transfer(transfer_id: int):
     return {"transfer_id": int(transfer_id), "restored_lots": len(kayit.get("consumed", []))}
 
 
+MIGRATION_WALLET_SYMBOL = "wallet_symbol_v1"
+
+
+def normalize_wallet_symbols(data=None, save=True) -> list:
+    """
+    Transferle oluşmuş kayıtların sembolünü bulunduğu konuma göre düzeltir.
+
+    NEDEN GEREKLİ
+    -------------
+    Transfer, hedef lotu kaynağın sembolüyle açıyordu. `BNBUSDT` MEXC'ten
+    METAMASK'a taşındığında adı `BNBUSDT` olarak kalıyor ve kullanıcı
+    cüzdanında var olmayan bir işlem çifti görüyordu. Kod tarafı düzeltildi
+    ama daha önce yapılmış transferler defterde yanlış adla duruyor; onları da
+    düzeltmek gerekiyor, aksi hâlde hata kalıcı olur.
+
+    Yalnızca **transferin ürettiği** kayıtlara dokunur. Kullanıcının elle
+    yazdığı bir sembol onun tercihidir; yanlış görünse bile üzerine yazmak
+    bize düşmez.
+
+    Miktara, maliyete, tarihe veya duruma DOKUNMAZ — sadece addır. Değişen
+    kayıtların listesini döndürür; hiçbir şey değişmediyse boş liste.
+    """
+    kendi = data is None
+    if kendi:
+        data = load_portfolio()
+
+    degisen = []
+    for tx in data.get("transactions", []):
+        transferden = (tx.get("type") == "TRANSFER"
+                       or tx.get("transfer_in_id") is not None)
+        if not transferden:
+            continue
+        eski = str(tx.get("coin") or "")
+        yeni = symbol_for_location(eski, tx.get("exchange"))
+        if yeni and yeni != eski:
+            tx["coin"] = yeni
+            degisen.append({"id": tx.get("id"), "exchange": tx.get("exchange"),
+                            "from": eski, "to": yeni})
+
+    if degisen and kendi and save:
+        save_portfolio(data)
+    return degisen
+
+
+def run_pending_migrations() -> dict:
+    """
+    Bir kez çalışması gereken veri düzeltmelerini uygular.
+
+    Uygulama açılışında çağrılır ve yapıldığı `settings.json` içinde
+    işaretlenir; ikinci kez çalışmaz. Sessiz kalmıyoruz — ne değiştiyse
+    loglanır, çünkü kullanıcının verisine dokunan her işlem izlenebilir olmalı.
+    """
+    settings = load_settings()
+    yapilan = dict(settings.get("migrations") or {})
+    sonuc = {}
+
+    if not yapilan.get(MIGRATION_WALLET_SYMBOL):
+        try:
+            degisen = normalize_wallet_symbols()
+            sonuc[MIGRATION_WALLET_SYMBOL] = degisen
+            for d in degisen:
+                logger.info("Sembol düzeltildi: #%s %s → %s (%s)",
+                            d["id"], d["from"], d["to"], d["exchange"])
+            if degisen:
+                logger.info("Transfer sembolleri düzeltildi: %d kayıt.", len(degisen))
+            yapilan[MIGRATION_WALLET_SYMBOL] = True
+            settings["migrations"] = yapilan
+            save_settings(settings)
+        except Exception as e:
+            # Bir düzeltmenin patlaması uygulamayı açılmaz hâle getirmemeli.
+            logger.error("Sembol düzeltmesi uygulanamadı: %s", e)
+    return sonuc
+
+
 def list_transfers(data=None):
     """Transfer defterini yeniden eskiye doğru döndürür."""
     if data is None:
@@ -1644,6 +1758,27 @@ DÖRT KURAL
 REBUILD_CLOSE_REASON = "rebuild"
 
 
+def exch_of_pos_key(pos_key: str) -> str:
+    """`BTCUSDT@BINANCE` → "BINANCE"."""
+    return _split_pos_key(pos_key)[1]
+
+
+def _canli_bakiye(asset: str, location: str):
+    """
+    Bağlantı katmanından canlı bakiye. Bağlantı yoksa/okunamazsa `None`.
+
+    `None` ile `0.0` karıştırılmamalı: birincisi "bilmiyorum", ikincisi "orada
+    hiç yok". Okunamayan bir cüzdanı boş sanmak, kullanıcının varlığını
+    silmeye kalkmak demektir — F5b'de düzeltilen hatanın aynısı.
+    """
+    try:
+        import connections
+        return connections.live_balance(asset, location)
+    except Exception as e:
+        logger.debug("Canlı bakiye okunamadı (%s@%s): %s", asset, location, e)
+        return None
+
+
 def get_rebuild_plan(data=None, root=None):
     """Düzeltme önerilerini döndürür. Salt okunur."""
     import reconcile
@@ -1681,14 +1816,26 @@ def apply_rebuild(pos_key: str, signature: str = None, note: str = "", root=None
         raise ValueError("Öneri değişmiş — dışa aktarım dosyaları güncellenmiş olabilir. "
                          "Listeyi yenileyip yeniden bakın.")
 
+    dogrulama_kaynagi = "user"
     if satir.get("verify_required", True):
         if verified_qty is None or str(verified_qty).strip() == "":
-            raise ValueError(
-                "Düzeltme uygulanmadan önce borsadaki güncel gerçek bakiye girilmelidir. "
-                + satir.get("verify_prompt", "")
-            )
+            # FAZ F6 — Bu konum için canlı bir bağlantı varsa rakamı kullanıcıya
+            # sormaya gerek yok: kaynağın kendisi okunabiliyor. Elle giriş, canlı
+            # bağlantının bulunmadığı yerdeki yedek yoldur.
+            canli = _canli_bakiye(satir["asset"], exch_of_pos_key(pos_key))
+            if canli is None:
+                raise ValueError(
+                    "Düzeltme uygulanmadan önce borsadaki güncel gerçek bakiye girilmelidir. "
+                    + satir.get("verify_prompt", "")
+                )
+            verified_qty = canli
+            dogrulama_kaynagi = "connection"
         hakem = reconcile.evaluate_verified_qty(satir, verified_qty)
         if not hakem["ok"]:
+            if dogrulama_kaynagi == "connection":
+                raise ValueError(
+                    f"Bağlantıdan okunan gerçek bakiye ({float(verified_qty):,.8f}) "
+                    "düzeltmeyi doğrulamadı. " + hakem["message"])
             raise ValueError(hakem["message"])
 
     symbol, exch, eski_lotlar = _aktif_lotlar(data, pos_key)
@@ -1813,6 +1960,7 @@ def apply_rebuild(pos_key: str, signature: str = None, note: str = "", root=None
         "verified_qty": (float(verified_qty)
                          if verified_qty is not None and str(verified_qty).strip() != ""
                          else None),
+        "verified_by": dogrulama_kaynagi,
         "coverage_start": satir.get("coverage_start"),
         "applied_warnings": satir.get("warnings", []),
         "sources": [k["name"] for k in plan.get("sources", [])],
@@ -1920,6 +2068,20 @@ DEFAULT_SETTINGS = {
     #   { "RDNT": {"type": "dex", "query": "RDNT"} }
     #   { "XYZ":  {"type": "manual", "price": 0.0012} }
     "symbol_sources": {},
+    # FAZ F6 — Bağlantı kayıt defteri. Konum adı → canlı veri kaynağı.
+    # Fiyat kaynakları gibi bu da VERİDİR: yeni bir cüzdan eklemek kod
+    # değişikliği değil, arayüzde bir form doldurmaktır. Varsayılan BOŞTUR;
+    # hiçbir kullanıcının adresi koda gömülmez.
+    #   { "METAMASK": {"type":"onchain","chain":"ethereum","address":"0x…"} }
+    "connections": {},
+    # FAZ F6 — Anahtar kasası. PIN'den türetilmiş anahtarla şifrelenmiş
+    # sırlar. `api_keys`ten AYRI tutuldu: oradaki Base64 obfuscation
+    # şifreleme değildir ve borsa anahtarı için yeterli değildir.
+    "vault": {},
+    # Bir kez uygulanmış veri düzeltmeleri. Açılışta bakılır; işaretliyse
+    # tekrar çalışmaz. Kullanıcının verisine dokunan her düzeltme buraya iz
+    # bırakır ki neyin ne zaman değiştiği belirsiz kalmasın.
+    "migrations": {},
     "api_keys": {
         "gemini_api_key": "",
         "telegram_bot_token": "",
@@ -2210,7 +2372,33 @@ def reset_pin_with_recovery(recovery_key: str, new_pin: str, auto_lock_minutes: 
     """Kurtarma anahtarı ile PIN sıfırlar ve yeni recovery key üretir."""
     if not verify_recovery_key(recovery_key):
         return {"success": False, "error": "Geçersiz kurtarma anahtarı."}
-    return set_pin(new_pin, auto_lock_minutes)
+    # Kurtarma akışında ESKİ PIN elimizde yok, dolayısıyla kasa yeniden
+    # mühürlenemez ve içeriği bir daha çözülemez. Çözülemeyen şifreli veriyi
+    # dosyada tutmak kullanıcıya "anahtarım duruyor" yanılgısı verir; bu
+    # yüzden temizlenir ve sonuç açıkça bildirilir.
+    silinen = _purge_vault("PIN kurtarma anahtarıyla sıfırlandı")
+    sonuc = set_pin(new_pin, auto_lock_minutes)
+    sonuc["vault_cleared"] = silinen
+    return sonuc
+
+def _purge_vault(sebep: str) -> int:
+    """Çözülemez hâle gelen kasayı boşaltır. Silinen kayıt sayısını döner."""
+    settings = load_settings()
+    kasa = settings.get("vault", {}) or {}
+    adet = len(kasa)
+    sec = settings.get("security", {})
+    if adet or sec.get("vault_verifier"):
+        settings["vault"] = {}
+        sec.pop("vault_verifier", None)
+        settings["security"] = sec
+        save_settings(settings)
+        logger.warning("Anahtar kasası temizlendi (%s kayıt) — %s", adet, sebep)
+    try:
+        import keyvault
+        keyvault.lock()
+    except Exception:
+        pass
+    return adet
 
 def disable_pin(current_pin: str) -> bool:
     if not verify_pin(current_pin):
@@ -2222,11 +2410,26 @@ def disable_pin(current_pin: str) -> bool:
     sec["salt"] = ""
     settings["security"] = sec
     save_settings(settings)
+    # PIN kalkınca kasayı açacak bir şey kalmaz. Şifreli çöpü saklamak yerine
+    # temizliyoruz; kullanıcı PIN'i yeniden açtığında anahtarlarını yeniden
+    # girer. Arayüz bunu PIN kapatma onayında söyler.
+    _purge_vault("PIN koruması kapatıldı")
     return True
 
 def change_pin(current_pin: str, new_pin: str) -> bool:
     if not verify_pin(current_pin):
         return False
+
+    # FAZ F6 — Anahtar kasası PIN'den türetiliyor. PIN değişince kasa yeniden
+    # mühürlenmezse kullanıcı bütün API anahtarlarını SESSİZCE kaybeder ve
+    # bunu ancak bir sonraki bağlantı denemesinde anlar. Yeniden mühürleme
+    # PIN yazılmadan ÖNCE yapılır: bu noktada iki PIN de elimizde.
+    try:
+        import keyvault
+        keyvault.rewrap(current_pin, new_pin)
+    except Exception as e:
+        logger.warning("Anahtar kasası yeni PIN'e mühürlenemedi: %s", e)
+
     settings = load_settings()
     h, salt = hash_pin(str(new_pin).strip())
     sec = settings.get("security", {})

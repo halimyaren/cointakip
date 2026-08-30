@@ -2,3 +2,10 @@ fastapi>=0.110.0
 uvicorn>=0.28.0
 pydantic>=2.0.0
 openpyxl>=3.1.0
+
+# FAZ F6 — Anahtar kasası. Borsa ve sağlayıcı API anahtarları PIN'den
+# türetilmiş bir anahtarla ŞİFRELENİR. Projedeki Base64 obfuscation
+# şifreleme değildir ve bir borsa anahtarı için yeterli değildir; ev yapımı
+# şifreleme yazmak ise hiç seçenek değil. Bu yüzden tek dış kriptografi
+# bağımlılığı burada kabul edildi.
+cryptography>=42.0.0

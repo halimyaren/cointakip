@@ -516,3 +516,176 @@ class TestApiUclari:
         r = client.get("/api/portfolio")
         assert r.status_code == 200
         assert "no_source_value_usd" in r.json()["kpis"]
+
+
+# =====================================================================
+# BÖLÜM 9 — SEMBOL KONUMA GÖRE YAZILIR (FAZ F6d)
+# =====================================================================
+class TestKonumaGoreSembol:
+    """
+    GERÇEK HATA: kullanıcı BNB'yi DEX → MEXC → METAMASK diye taşıdı ve cüzdan
+    kaydının adı `BNBUSDT` olarak kaldı. Cüzdanda USDT çifti diye bir şey
+    yoktur; orada duran şey sadece BNB'dir.
+
+    Sebep: kuralın iki ayrı yerde olmaması, BİR yerde olup diğerinin ondan
+    habersiz olmasıydı. `main.create_transaction` USDT ekini biliyordu,
+    `transfer_position` bilmiyordu ve kaynağın yazımını olduğu gibi taşıyordu.
+    """
+
+    def test_borsada_usdt_cifti_cuzdanda_yalin(self):
+        assert dm.symbol_for_location("BNB", "BINANCE") == "BNBUSDT"
+        assert dm.symbol_for_location("BNB", "MEXC") == "BNBUSDT"
+        assert dm.symbol_for_location("BNB", "GATE.IO") == "BNBUSDT"
+        assert dm.symbol_for_location("BNB", "METAMASK") == "BNB"
+        assert dm.symbol_for_location("BNB", "DEX") == "BNB"
+
+    def test_yazim_iki_yonde_de_calisir(self):
+        """Borsadan cüzdana giderken ek düşer, tersinde geri gelir."""
+        assert dm.symbol_for_location("BNBUSDT", "METAMASK") == "BNB"
+        assert dm.symbol_for_location("BNB", "BINANCE") == "BNBUSDT"
+
+    def test_islem_uygulanamaz_hale_gelmez(self):
+        """Aynı sembolü iki kez geçirmek onu bozmamalı."""
+        s = dm.symbol_for_location("BNB", "BINANCE")
+        assert dm.symbol_for_location(s, "BINANCE") == "BNBUSDT"
+        c = dm.symbol_for_location("BNB", "METAMASK")
+        assert dm.symbol_for_location(c, "METAMASK") == "BNB"
+
+    def test_usdt_kendisi_kirpilmaz(self):
+        """`USDT` dört harf; kırpılsa geriye boş sembol kalırdı."""
+        assert dm.base_symbol("USDT") == "USDT"
+        assert dm.symbol_for_location("USDT", "METAMASK") == "USDT"
+
+    def test_cift_isareti_tasiyan_sembol_korunur(self):
+        assert dm.symbol_for_location("BTC/ETH", "BINANCE") == "BTC/ETH"
+        assert dm.symbol_for_location("BTC/ETH", "METAMASK") == "BTC/ETH"
+
+    def test_bilinmeyen_konum_cuzdan_sayilir(self):
+        """Bilinmeyen bir konumda çift olduğunu VARSAYMAK yanlış olurdu."""
+        assert dm.symbol_for_location("BNB", "LEDGER") == "BNB"
+        assert dm.symbol_for_location("BNBUSDT", "TRUST WALLET") == "BNB"
+
+
+class TestTransferSembolu:
+
+    def _lot(self, coin, exchange, qty=1.0, cost=100.0):
+        data = dm.load_portfolio()
+        yeni_id = max([int(t.get("id", 0) or 0)
+                       for t in data.get("transactions", [])] or [0]) + 1
+        data.setdefault("transactions", []).append({
+            "id": yeni_id, "date": "2026-01-01", "coin": coin,
+            "exchange": exchange, "qty": qty, "cost": cost,
+            "status": dm.ACTIVE_STATUS})
+        dm.save_portfolio(data)
+        return yeni_id
+
+    def _aktif(self, coin_parcasi, exchange):
+        return [t for t in dm.load_portfolio()["transactions"]
+                if t.get("status") == dm.ACTIVE_STATUS
+                and t.get("exchange") == exchange
+                and coin_parcasi in str(t.get("coin"))]
+
+    def test_borsadan_cuzdana_ek_dusuruluyor(self):
+        self._lot("BNBUSDT", "MEXC", qty=0.0504, cost=692.325)
+        dm.transfer_position({"pos_key": "BNBUSDT@MEXC", "to_exchange": "METAMASK",
+                              "qty": 0.0504})
+        hedef = self._aktif("BNB", "METAMASK")
+        assert len(hedef) == 1
+        assert hedef[0]["coin"] == "BNB"
+        # Maliyet ve miktar transferin asıl işi; ada dokunmak onları bozmamalı.
+        assert hedef[0]["cost"] == pytest.approx(692.325)
+        assert hedef[0]["qty"] == pytest.approx(0.0504)
+
+    def test_cuzdandan_borsaya_ek_ekleniyor(self):
+        self._lot("BNB", "METAMASK", qty=2.0, cost=600.0)
+        dm.transfer_position({"pos_key": "BNB@METAMASK", "to_exchange": "BINANCE",
+                              "qty": 2.0})
+        hedef = self._aktif("BNB", "BINANCE")
+        assert len(hedef) == 1 and hedef[0]["coin"] == "BNBUSDT"
+
+    def test_cuzdandan_cuzdana_yalin_kalir(self):
+        self._lot("CPL", "METAMASK", qty=100.0, cost=0.01)
+        dm.transfer_position({"pos_key": "CPL@METAMASK", "to_exchange": "LEDGER",
+                              "qty": 100.0})
+        hedef = self._aktif("CPL", "LEDGER")
+        assert len(hedef) == 1 and hedef[0]["coin"] == "CPL"
+
+    def test_geri_alma_kimlikle_calisir_sembolle_degil(self):
+        """Sembol değiştiği için geri alma bozulmamalı — eşleşme id üzerinden."""
+        kaynak = self._lot("BNBUSDT", "MEXC", qty=1.0, cost=600.0)
+        sonuc = dm.transfer_position({"pos_key": "BNBUSDT@MEXC",
+                                      "to_exchange": "METAMASK", "qty": 1.0})
+        dm.undo_transfer(sonuc["id"])
+        data = dm.load_portfolio()
+        geri = next(t for t in data["transactions"] if t["id"] == kaynak)
+        assert geri["status"] == dm.ACTIVE_STATUS
+        assert geri["coin"] == "BNBUSDT"
+        assert not self._aktif("BNB", "METAMASK")
+
+
+class TestSembolDuzeltmesi:
+    """
+    Kod düzeltilse bile DAHA ÖNCE yapılmış transferler defterde yanlış adla
+    duruyor. Bir kez çalışan düzeltme onları da onarır; yoksa hata kalıcı olur.
+    """
+
+    def _bozuk_kayit(self):
+        data = dm.load_portfolio()
+        data["transactions"] = [
+            {"id": 1, "date": "2026-01-01", "coin": "BNBUSDT",
+             "exchange": "METAMASK", "qty": 0.05, "cost": 690.0,
+             "status": dm.ACTIVE_STATUS, "type": "TRANSFER", "transfer_in_id": 5},
+            {"id": 2, "date": "2026-01-01", "coin": "CPLUSDT",
+             "exchange": "METAMASK", "qty": 1000.0, "cost": 0.001,
+             "status": dm.ACTIVE_STATUS, "transfer_in_id": 3},
+            # Elle girilmiş kayıt: transferin ürünü değil, DOKUNULMAMALI.
+            {"id": 3, "date": "2026-01-01", "coin": "XYZUSDT",
+             "exchange": "METAMASK", "qty": 5.0, "cost": 1.0,
+             "status": dm.ACTIVE_STATUS},
+            # Borsadaki kayıt zaten doğru yazımda.
+            {"id": 4, "date": "2026-01-01", "coin": "BTCUSDT",
+             "exchange": "BINANCE", "qty": 0.1, "cost": 60000.0,
+             "status": dm.ACTIVE_STATUS, "type": "TRANSFER"},
+        ]
+        dm.save_portfolio(data)
+
+    def test_transfer_kayitlari_duzeltilir(self):
+        self._bozuk_kayit()
+        degisen = dm.normalize_wallet_symbols()
+        assert {d["id"] for d in degisen} == {1, 2}
+        adlar = {t["id"]: t["coin"] for t in dm.load_portfolio()["transactions"]}
+        assert adlar[1] == "BNB" and adlar[2] == "CPL"
+
+    def test_elle_girilen_kayda_dokunulmaz(self):
+        self._bozuk_kayit()
+        dm.normalize_wallet_symbols()
+        adlar = {t["id"]: t["coin"] for t in dm.load_portfolio()["transactions"]}
+        assert adlar[3] == "XYZUSDT", "kullanıcının kendi yazdığı sembol korunmalı"
+
+    def test_dogru_olan_kayit_degistirilmez(self):
+        self._bozuk_kayit()
+        degisen = dm.normalize_wallet_symbols()
+        assert 4 not in {d["id"] for d in degisen}
+
+    def test_miktar_maliyet_ve_durum_korunur(self):
+        self._bozuk_kayit()
+        dm.normalize_wallet_symbols()
+        tx = next(t for t in dm.load_portfolio()["transactions"] if t["id"] == 1)
+        assert tx["qty"] == pytest.approx(0.05)
+        assert tx["cost"] == pytest.approx(690.0)
+        assert tx["status"] == dm.ACTIVE_STATUS
+        assert tx["date"] == "2026-01-01"
+
+    def test_ikinci_calistirma_bos_doner(self):
+        """Düzeltme fikirsizdir (idempotent): ikinci kez değişecek şey kalmaz."""
+        self._bozuk_kayit()
+        assert dm.normalize_wallet_symbols()
+        assert dm.normalize_wallet_symbols() == []
+
+    def test_migrasyon_bir_kez_calisir(self):
+        self._bozuk_kayit()
+        ilk = dm.run_pending_migrations()
+        assert len(ilk[dm.MIGRATION_WALLET_SYMBOL]) == 2
+        assert dm.load_settings()["migrations"][dm.MIGRATION_WALLET_SYMBOL] is True
+        # İkinci çağrı hiç çalışmamalı — işaret konmuş durumda.
+        assert dm.run_pending_migrations() == {}
