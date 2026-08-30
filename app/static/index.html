@@ -1245,6 +1245,11 @@
             <i data-lucide="git-compare" class="w-4 h-4"></i>
             <span>🔍 Borsa Mutabakatı</span>
           </button>
+          <!-- FAZ F6 — Cüzdan bağlantıları. Zincirden okur, SALT OKUNUR. -->
+          <button @click="tvSubTab = 'connections'; fetchConnections();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'connections' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
+            <i data-lucide="wallet" class="w-4 h-4"></i>
+            <span>🔗 Cüzdan Bağlantıları</span>
+          </button>
         </div>
 
         <!-- Right: Fast Coin Selector for TV & Pro Link -->
@@ -1901,6 +1906,490 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- ============================================================= -->
+      <!-- VIEW 7: 🔗 CÜZDAN BAĞLANTILARI (FAZ F6)                        -->
+      <!-- ============================================================= -->
+      <div x-show="tvSubTab === 'connections'" class="space-y-4" x-transition:enter="transition ease-out duration-150">
+
+        <div class="px-4 py-3 rounded-xl bg-teal-950/40 border border-teal-800/50 text-[11.5px] text-teal-100 leading-relaxed font-sans">
+          Cüzdanınızın <b>herkese açık adresini</b> girin; sistem zincirden okur ve
+          defterinizle karşılaştırır. <b class="text-white">Cüzdan değil zincir okunur</b> —
+          MetaMask, Phantom, Ledger, Trust fark etmez, varlık zincirde durur.
+          Buradan yapılan her okuma <b>salt okunurdur</b>; deftere hiçbir şey yazılmaz.
+        </div>
+
+        <!-- Bu uyarı kalıcıdır ve gizlenemez. Kullanıcıyı sırrını yapıştırmaktan
+             koruyan tek şey bunu her seferinde görmesi. -->
+        <div class="px-4 py-3 rounded-xl bg-rose-950/40 border border-rose-800/60 text-[11.5px] text-rose-200 leading-relaxed font-sans flex items-start gap-2.5">
+          <span class="text-base leading-none mt-0.5">🛡️</span>
+          <div>
+            <b class="text-white">CoinTakip asla kurtarma ifadesi (seed phrase) veya özel anahtar istemez.</b>
+            Yalnızca herkese açık adresinizi girin — o adres zaten blok gezginlerinde
+            herkesin görebildiği bir bilgidir ve okuma yapı gereği salt okunurdur.
+            Size bunları soran her ekran, her site ve her kişi dolandırıcıdır.
+          </div>
+        </div>
+
+        <!-- Bütünlük uyarıları. Aynı adresin iki konumda olması aynı parayı iki
+             kez saydırır; bu bildirim geçici değil, düzeltilene kadar durur. -->
+        <template x-if="connWarnings.length > 0">
+          <div class="px-4 py-3 rounded-xl bg-rose-950/40 border border-rose-800/60 space-y-1.5">
+            <div class="text-[11px] uppercase tracking-wider text-rose-300 font-sans font-semibold">
+              ⚠ Çift sayma riski
+            </div>
+            <template x-for="w in connWarnings" :key="w">
+              <p class="text-[11.5px] text-rose-200 leading-relaxed font-sans" x-text="w"></p>
+            </template>
+          </div>
+        </template>
+
+        <!-- Anahtar kasası -->
+        <div class="rounded-xl bg-slate-900 border border-slate-800 p-4 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2">
+              <span class="text-sm" x-text="vaultStatus.unlocked ? '🔓' : '🔒'"></span>
+              <h3 class="text-[12px] font-bold text-white font-sans">Anahtar Kasası</h3>
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold"
+                    :class="vaultStatus.unlocked ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-700/50'
+                                                 : 'bg-slate-700/40 text-slate-400 border border-slate-700'"
+                    x-text="vaultStatus.unlocked ? 'Açık' : 'Kilitli'"></span>
+            </div>
+            <div class="flex items-center gap-2">
+              <template x-if="!vaultStatus.unlocked">
+                <div class="flex items-center gap-2">
+                  <input type="password" x-model="vaultPin" placeholder="PIN"
+                         @keydown.enter="unlockVault()"
+                         class="w-24 bg-slate-950 border border-slate-700 focus:border-teal-500 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 outline-none transition">
+                  <button @click="unlockVault()" :disabled="vaultBusy"
+                          class="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white text-[11px] font-bold transition">
+                    Kasayı Aç
+                  </button>
+                </div>
+              </template>
+              <button x-show="vaultStatus.unlocked" @click="lockVault()"
+                      class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold transition">
+                Kilitle
+              </button>
+            </div>
+          </div>
+
+          <p class="text-[11px] text-slate-500 leading-relaxed font-sans">
+            Sağlayıcı ve borsa anahtarları PIN'inizden türetilen bir anahtarla
+            <b class="text-slate-400">şifrelenerek</b> saklanır. Çözme anahtarı diskte
+            hiçbir yerde durmaz; yalnızca kasayı açtığınız oturum boyunca bellekte
+            kalır. Uygulama siz açmadan hiçbir yere bağlanmaz.
+            <span x-show="!vaultStatus.pin_enabled" class="text-amber-400">
+              Kasa için önce Ayarlar → Güvenlik bölümünden bir PIN tanımlamalısınız.
+            </span>
+          </p>
+
+          <!-- EVM bağlantısı var ama anahtar yoksa tokenlar okunamıyor. Bunu
+               kullanıcı ancak eksik token fark edince anlıyordu; şimdi önden
+               söyleniyor. -->
+          <div x-show="!providerKeySet && connHasEvm"
+               class="px-3 py-2 rounded-lg bg-amber-950/40 border border-amber-800/60 text-[11px] text-amber-200 leading-relaxed font-sans">
+            <b class="text-amber-100">EVM tokenlarınız okunmuyor.</b>
+            Etherscan anahtarı tanımlı olmadığı için EVM zincirlerinde yalnızca
+            <b>yerel coin</b> (ETH, BNB…) görünür; USDT, CAKE veya kendi tokenlarınız
+            listeye girmez. Ücretsiz anahtarı
+            <code class="px-1 rounded bg-slate-800">etherscan.io</code> üzerinden alıp
+            aşağıya girin.
+            <span x-show="!vaultStatus.unlocked" class="block mt-1">
+              Önce kasayı açmanız gerekiyor.
+            </span>
+          </div>
+
+          <div x-show="vaultStatus.unlocked" class="pt-1 border-t border-slate-800 space-y-2">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500 font-sans">
+              Etherscan API anahtarı <span class="text-slate-600">(isteğe bağlı ama tokenlar için şart)</span>
+            </div>
+            <p class="text-[11px] text-slate-500 leading-relaxed font-sans">
+              Bu anahtar olmadan yalnızca <b class="text-slate-400">yerel coin</b>
+              bakiyesi okunabilir (ETH, BNB…), çünkü hangi tokenlara sahip olduğunuzu
+              bulmak için zincir taraması gerekir. Ücretsiz anahtar
+              <code class="px-1 rounded bg-slate-800">etherscan.io</code> üzerinden
+              alınır. Solana için anahtar gerekmez.
+            </p>
+            <!-- Bu ayrım baştan yazılmadığı için kullanıcı ücretsiz anahtar
+                 alıp BNB Chain'de tokenının yine gelmediğini gördü. Etherscan
+                 tek anahtarı tüm zincirlerde KABUL ediyor ama ücretsiz plan
+                 hepsini KAPSAMIYOR. İkisi aynı şey değil. -->
+            <div class="px-3 py-2 rounded-lg bg-slate-950/70 border border-slate-800 text-[11px] leading-relaxed font-sans space-y-1">
+              <div class="text-slate-400">
+                <b class="text-slate-300">Tek anahtar tüm zincirlerde geçerli, ama
+                ücretsiz plan hepsini kapsamıyor.</b>
+              </div>
+              <div class="text-emerald-300/90">
+                ✓ Otomatik token keşfi ücretsiz çalışır:
+                <span class="text-slate-400" x-text="connFreeChains"></span>
+              </div>
+              <div class="text-amber-300/90">
+                ✗ Keşif için ücretli plan ister:
+                <span class="text-slate-400" x-text="connPaidChains"></span>
+              </div>
+              <div class="text-slate-500">
+                Ücretli plana gerek yok: bu zincirlerde takip etmek istediğiniz tokenı
+                <b class="text-slate-400">kontrat adresiyle elle tanımlayın</b> —
+                bakiye doğrudan zincirden okunur, anahtar gerekmez.
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <input type="password" x-model="providerKeyInput"
+                     :placeholder="providerKeySet ? '•••••• (tanımlı)' : 'Etherscan API anahtarı'"
+                     class="flex-1 min-w-[200px] bg-slate-950 border border-slate-700 focus:border-teal-500 rounded-lg px-3 py-1.5 text-xs font-mono-nums text-slate-100 outline-none transition">
+              <button @click="saveProviderKey()" :disabled="vaultBusy"
+                      class="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white text-[11px] font-bold transition">
+                Kaydet
+              </button>
+              <button x-show="providerKeySet" @click="forgetProviderKey()"
+                      class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 text-[11px] font-bold transition">
+                Sil
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bağlantı ekleme -->
+        <div class="rounded-xl bg-slate-900 border border-slate-800 p-4 space-y-3">
+          <h3 class="text-[12px] font-bold text-white font-sans">Bağlantı ekle veya düzenle</h3>
+          <p class="text-[11px] text-slate-500 leading-relaxed font-sans">
+            Her <b class="text-slate-400">adres</b> ayrı bir bağlantıdır ve hiçbiri
+            diğerinin yerine geçmez. Bir cüzdanda birden çok <b>hesap</b> olabilir
+            (Phantom'da Hesap 2, Hesap 3…) ve her hesap birden çok <b>zincirde</b>
+            yaşayabilir — hepsini ayrı ayrı ekleyin, hepsi aynı konumun altında
+            toplanır. MetaMask'te aynı <code class="px-1 rounded bg-slate-800">0x</code>
+            adresi tüm EVM zincirlerinde geçerlidir ama bakiyeler ayrıdır.
+          </p>
+          <div class="grid grid-cols-1 sm:grid-cols-4 gap-2">
+            <!-- Gerçek açılır liste. Önceki sürümde `datalist` kullanılmıştı;
+                 tarayıcılar onu ancak yazmaya başlayınca gösteriyor ve kutu
+                 doluyken hiç açılmıyor — kullanıcı haklı olarak "açılmıyor" dedi. -->
+            <div>
+              <label class="block text-[10px] uppercase tracking-wider text-slate-500 font-sans mb-1">Konum</label>
+              <select x-show="!connNewLocation" x-model="connForm.location"
+                      @change="if (connForm.location === '__yeni__') { connNewLocation = true; connForm.location = ''; $nextTick(() => $refs.yeniKonum && $refs.yeniKonum.focus()); }"
+                      class="w-full bg-slate-950 border border-slate-700 focus:border-teal-500 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none transition">
+                <option value="">— Seçin —</option>
+                <template x-for="l in connLocations" :key="l">
+                  <option :value="l" x-text="l"></option>
+                </template>
+                <option value="__yeni__">+ Yeni konum yaz…</option>
+              </select>
+              <div x-show="connNewLocation" class="flex gap-1">
+                <input x-ref="yeniKonum" x-model="connForm.location" placeholder="Cüzdan adı"
+                       class="flex-1 min-w-0 bg-slate-950 border border-slate-700 focus:border-teal-500 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none transition">
+                <button @click="connNewLocation = false; connForm.location = ''"
+                        class="px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 text-[11px] transition"
+                        title="Listeden seç">↩</button>
+              </div>
+            </div>
+            <div>
+              <label class="block text-[10px] uppercase tracking-wider text-slate-500 font-sans mb-1">Zincir</label>
+              <select x-model="connForm.chain"
+                      class="w-full bg-slate-950 border border-slate-700 focus:border-teal-500 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none transition">
+                <template x-for="c in connChains" :key="c.id">
+                  <option :value="c.id"
+                          x-text="c.name + ' (' + c.native + ')' + (c.discovery === 'paid' ? ' — token keşfi ücretli' : '')"></option>
+                </template>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[10px] uppercase tracking-wider text-slate-500 font-sans mb-1">
+                Hesap adı <span class="text-slate-600 normal-case">(isteğe bağlı)</span>
+              </label>
+              <input x-model="connForm.label" placeholder="Hesap 2"
+                     class="w-full bg-slate-950 border border-slate-700 focus:border-teal-500 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none transition">
+            </div>
+            <div>
+              <label class="block text-[10px] uppercase tracking-wider text-slate-500 font-sans mb-1">
+                Herkese açık adres
+              </label>
+              <input x-model="connForm.address" placeholder="0x… veya Solana adresi"
+                     class="w-full bg-slate-950 border border-slate-700 focus:border-teal-500 rounded-lg px-3 py-2 text-xs font-mono-nums text-slate-100 outline-none transition">
+            </div>
+          </div>
+          <!-- Elle token tanımı. Solana'da gerekmiyor (token hesapları zaten
+               RPC'den listeleniyor), bu yüzden yalnızca EVM zincirlerinde. -->
+          <div x-show="connForm.chain !== 'solana'"
+               class="pt-2 border-t border-slate-800 space-y-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[10px] uppercase tracking-wider text-slate-500 font-sans">
+                Elle tanımlı tokenlar
+              </span>
+              <span x-show="connChainDiscovery === 'paid'"
+                    class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-700/50 font-sans">
+                bu zincirde şart
+              </span>
+              <span x-show="connChainDiscovery === 'free'"
+                    class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700 font-sans">
+                isteğe bağlı
+              </span>
+            </div>
+            <p class="text-[11px] text-slate-500 leading-relaxed font-sans">
+              <template x-if="connChainDiscovery === 'paid'">
+                <span>
+                  Bu zincirde otomatik token keşfi Etherscan'ın <b class="text-amber-300">ücretli</b>
+                  planına bağlı. Takip etmek istediğiniz tokenı burada
+                  <b class="text-slate-400">kontrat adresiyle</b> tanımlayın; bakiyesi
+                  doğrudan zincirden okunur ve <b class="text-slate-400">anahtar
+                  gerekmez</b>. Sembolü ve ondalık haneyi zincire kendim sorarım.
+                </span>
+              </template>
+              <template x-if="connChainDiscovery !== 'paid'">
+                <span>
+                  Bu zincirde tokenlarınız anahtarla zaten otomatik bulunur. Buraya
+                  yalnızca keşfin kaçırdığı bir tokenı eklemeniz gerekir; eklerseniz
+                  otomatik listeye <b class="text-slate-400">eklenir</b>, onun yerine geçmez.
+                </span>
+              </template>
+              Kontrat adresini cüzdanınızdaki token detayından veya blok gezgininden
+              alabilirsiniz — <b class="text-slate-400">her zincirde ayrı bir kontrattır</b>.
+            </p>
+            <div class="flex flex-wrap items-center gap-2">
+              <input x-model="connTokenInput" @keydown.enter.prevent="addFormToken()"
+                     placeholder="Token kontrat adresi (0x…)"
+                     class="flex-1 min-w-[220px] bg-slate-950 border border-slate-700 focus:border-teal-500 rounded-lg px-3 py-1.5 text-xs font-mono-nums text-slate-100 outline-none transition">
+              <button @click="addFormToken()" :disabled="connTokenBusy || !connTokenInput.trim()"
+                      class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 text-[11px] font-bold transition">
+                <span x-text="connTokenBusy ? 'Soruluyor…' : 'Kontrattan Getir'"></span>
+              </button>
+            </div>
+            <div x-show="(connForm.tokens || []).length > 0" class="flex flex-wrap gap-1.5">
+              <template x-for="t in connForm.tokens" :key="t.contract">
+                <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-[10.5px]">
+                  <b class="text-teal-300 font-sans" x-text="t.symbol"></b>
+                  <span class="text-slate-600 font-mono-nums"
+                        x-text="t.contract.slice(0, 6) + '…' + t.contract.slice(-4)"></span>
+                  <span class="text-slate-700 font-sans" x-text="t.decimals + ' hane'"></span>
+                  <button @click="removeFormToken(t.contract)"
+                          class="text-slate-500 hover:text-rose-300 transition font-bold"
+                          title="Listeden çıkar">×</button>
+                </span>
+              </template>
+            </div>
+            <p x-show="(connForm.tokens || []).length > 0"
+               class="text-[10.5px] text-amber-400/90 font-sans">
+              Bu liste ancak <b>Kaydet</b>'e bastığınızda saklanır.
+            </p>
+          </div>
+
+          <div x-show="connForm.id" class="text-[11px] text-amber-400 font-sans">
+            Mevcut bir bağlantıyı düzenliyorsunuz.
+            <button @click="connForm = { id: '', location: connForm.location, chain: connForm.chain, address: '', label: '', tokens: [] }; connTokenInput = ''"
+                    class="underline hover:text-amber-300">Vazgeç, yeni ekle</button>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button @click="testConnection()" :disabled="connBusy"
+                    class="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 text-[11px] font-bold transition">
+              <span x-text="connBusy ? 'Deneniyor…' : 'Önce Dene'"></span>
+            </button>
+            <button @click="saveConnection()" :disabled="connBusy"
+                    class="px-3.5 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white text-[11px] font-bold transition">
+              Kaydet
+            </button>
+            <span x-show="connTestResult" class="text-[11px] font-sans"
+                  :class="connTestResult && connTestResult.ok ? 'text-emerald-400' : 'text-rose-400'"
+                  x-text="connTestMessage"></span>
+          </div>
+        </div>
+
+        <!-- Kayıtlı bağlantılar -->
+        <div x-show="Object.keys(connections).length > 0" class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
+          <div class="px-4 py-2.5 border-b border-slate-800 flex items-center justify-between">
+            <h3 class="text-[12px] font-bold text-white font-sans">Kayıtlı bağlantılar</h3>
+            <button @click="runConnectionReconcile()" :disabled="connBusy"
+                    title="Kayıtlı tüm bağlantıları okur — her cüzdanı, her hesabı, her zinciri."
+                    class="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white text-[11px] font-bold transition">
+              <span x-text="connBusy ? 'Okunuyor…' : 'Tüm Bakiyeleri Getir'"></span>
+            </button>
+          </div>
+          <!-- Bir cüzdan birden çok zincirde yaşar: konum başlık, zincirler
+               altında satır. Kimlik (konum, zincir) çiftidir. -->
+          <div class="divide-y divide-slate-800">
+            <template x-for="konum in connLocationsWithConn" :key="konum">
+              <div class="px-4 py-2.5">
+                <div class="flex items-center gap-2 mb-1.5">
+                  <b class="text-white text-xs font-sans" x-text="konum"></b>
+                  <span class="text-[10px] text-slate-600 font-sans"
+                        x-text="connByLocation[konum].length + ' adres'"></span>
+                </div>
+                <div class="space-y-1">
+                  <template x-for="e in connByLocation[konum]" :key="e.id">
+                    <div class="flex flex-wrap items-center justify-between gap-2 pl-2 border-l-2 border-slate-800">
+                      <div class="min-w-0">
+                        <span class="text-[11px] text-teal-300 font-sans" x-text="chainName(e.spec.chain)"></span>
+                        <span x-show="e.spec.label" class="text-[11px] text-slate-400 font-sans ml-1.5"
+                              x-text="'· ' + e.spec.label"></span>
+                        <span x-show="(e.spec.tokens || []).length > 0"
+                              class="text-[10px] text-teal-400/80 font-sans ml-1.5"
+                              x-text="'· ' + e.spec.tokens.length + ' elle token'"></span>
+                        <div class="text-[10.5px] text-slate-600 font-mono-nums truncate" x-text="e.spec.address"></div>
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <button @click="editConnection(e.id, e.spec)"
+                                class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] font-bold transition">
+                          Düzenle
+                        </button>
+                        <button @click="removeConnection(e.id, konum, chainName(e.spec.chain))"
+                                class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 text-[10.5px] font-bold transition">
+                          Sil
+                        </button>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Okuma raporu: hangi bağlantı okundu ve ne eksik kaldı.
+             "Bakiyeleri Getir" TÜM açık bağlantıları okur; hangisinden ne
+             geldiği görünmezse kullanıcı eksik tokenının sebebini bulamaz. -->
+        <template x-if="connReport && connReadings.length > 0">
+          <div class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
+            <div class="px-4 py-2.5 border-b border-slate-800">
+              <h3 class="text-[12px] font-bold text-white font-sans">Okunan bağlantılar</h3>
+              <p class="text-[10.5px] text-slate-500 font-sans mt-0.5">
+                "Bakiyeleri Getir" kayıtlı <b>tüm</b> bağlantıları okur — her cüzdanı,
+                her hesabı, her zinciri.
+                <span class="block mt-0.5">
+                  <span class="text-rose-300">⛔ okunamadı</span> ·
+                  <span class="text-amber-300/90">⚠ eksik okundu</span> ·
+                  <span class="text-slate-400">ℹ bilgi (eksiklik değil)</span>
+                </span>
+              </p>
+            </div>
+            <div class="divide-y divide-slate-800/60">
+              <template x-for="r in connReadings" :key="r.id">
+                <div class="px-4 py-2">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <!-- Üç ayrı durum: hiç okunamadı / okundu ama eksik / tam.
+                         Öncekinde ikisi vardı ve "eksik" ile "bilgi notu var"
+                         aynı sayılıyordu. -->
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold"
+                          :class="!r.ok ? 'bg-rose-500/15 text-rose-300 border border-rose-700/50'
+                                        : (r.incomplete ? 'bg-amber-500/15 text-amber-300 border border-amber-700/50'
+                                                        : 'bg-emerald-500/15 text-emerald-300 border border-emerald-700/50')"
+                          x-text="!r.ok ? 'Okunamadı' : (r.incomplete ? 'Eksik okundu' : 'Okundu')"></span>
+                    <b class="text-xs text-white font-sans" x-text="r.location"></b>
+                    <span class="text-[11px] text-teal-300 font-sans" x-text="chainName(r.chain)"></span>
+                    <span x-show="r.label" class="text-[11px] text-slate-400 font-sans"
+                          x-text="'· ' + r.label"></span>
+                    <span x-show="(r.token_count || 0) > 0"
+                          class="text-[10px] text-teal-400/80 font-sans"
+                          x-text="'· ' + r.token_count + ' elle token'"></span>
+                  </div>
+                  <template x-for="w in (r.notes || [])" :key="w.message">
+                    <p class="text-[11px] font-sans leading-snug mt-1"
+                       :class="(noteMeta[w.level] || noteMeta.info).cls">
+                      <span x-text="(noteMeta[w.level] || noteMeta.info).icon"></span>
+                      <span x-text="w.message"></span>
+                    </p>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <!-- Karşılaştırma -->
+        <template x-if="connReport">
+          <div class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
+            <div class="px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <h3 class="text-[12px] font-bold text-white font-sans">Zincir ↔ Defter</h3>
+              <div class="flex flex-wrap gap-1.5">
+                <template x-for="[d, n] in Object.entries(connReport.status_counts || {})" :key="d">
+                  <span class="px-2 py-0.5 rounded text-[10px] font-bold"
+                        :class="connStatusMeta[d] ? connStatusMeta[d].badge : 'bg-slate-800 text-slate-400'"
+                        x-text="(connStatusMeta[d] ? connStatusMeta[d].label : d) + ' · ' + n"></span>
+                </template>
+              </div>
+            </div>
+            <!-- Neden maliyet soruluyor? Kullanıcı "otomatik çekseydin ya"
+                 diye haklı olarak sorabilir; cevabı burada durmalı. -->
+            <div class="px-4 py-2.5 border-b border-slate-800 text-[11px] text-slate-500 leading-relaxed font-sans">
+              <b class="text-slate-400">Zincir miktarı bilir, maliyeti bilmez.</b>
+              Bu yüzden <b>+ Deftere Ekle</b> defterinize kendiliğinden yazmaz:
+              formu coin, miktar ve konumla dolu açar, <b class="text-slate-400">alım
+              tarihini ve birim maliyeti siz girersiniz</b>. Sıfır maliyetle yazmak
+              olmayan bir kâr uydurmak olurdu. Her varlık için bir kez yaparsınız;
+              sonrasında Kasa toplamınızda kalıcı olarak durur.
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-[11.5px] font-mono-nums">
+                <thead class="bg-slate-800/60 text-slate-500 text-[10px] uppercase font-sans">
+                  <tr>
+                    <th class="text-left py-2 px-3">Varlık</th>
+                    <th class="text-left py-2 px-3">Konum</th>
+                    <th class="text-right py-2 px-3">Defter</th>
+                    <th class="text-right py-2 px-3">Zincir</th>
+                    <th class="text-right py-2 px-3">Fark</th>
+                    <th class="text-left py-2 px-3">Durum</th>
+                    <th class="text-right py-2 px-3"></th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/60">
+                  <template x-for="r in connRows" :key="r.asset + '@' + r.location">
+                    <tr class="hover:bg-slate-800/30">
+                      <td class="py-2 px-3 font-bold text-white font-sans" x-text="r.asset"></td>
+                      <td class="py-2 px-3 text-slate-500 font-sans">
+                        <span x-text="r.location"></span>
+                        <div class="text-[10px] text-slate-600"
+                             x-text="(r.chains || []).map(c => chainName(c)).join(' · ')"></div>
+                      </td>
+                      <td class="py-2 px-3 text-right text-cyan-300" x-text="formatNum(r.ledger_qty, 6)"></td>
+                      <td class="py-2 px-3 text-right text-teal-300"
+                          x-text="r.chain_qty === null ? '—' : formatNum(r.chain_qty, 6)"></td>
+                      <td class="py-2 px-3 text-right"
+                          :class="r.diff_qty === null ? 'text-slate-600' : (r.diff_qty > 0 ? 'text-emerald-400' : (r.diff_qty < 0 ? 'text-rose-400' : 'text-slate-600'))"
+                          x-text="r.diff_qty === null ? '—' : (r.diff_qty > 0 ? '+' : '') + formatNum(r.diff_qty, 6)"></td>
+                      <td class="py-2 px-3">
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap"
+                              :class="connStatusMeta[r.status] ? connStatusMeta[r.status].badge : 'bg-slate-800 text-slate-400'"
+                              x-text="connStatusMeta[r.status] ? connStatusMeta[r.status].label : r.status"></span>
+                        <div x-show="r.note" class="text-[10.5px] text-slate-500 font-sans mt-1" x-text="r.note"></div>
+                      </td>
+                      <!-- Zincirde duran ama deftere girmemiş varlık için tek
+                           tıkla kayıt. Otomatik YAZMIYOR: form açılır, miktar
+                           doludur, tarihi ve maliyeti kullanıcı girer. Zincir
+                           maliyeti bilmez ve sıfırla yazmak sahte kâr üretirdi. -->
+                      <td class="py-2 px-3 text-right whitespace-nowrap">
+                        <button x-show="chainAddableQty(r) > 0" @click="addFromChain(r)"
+                                class="px-2.5 py-1 rounded-lg bg-emerald-600/20 text-emerald-300 border border-emerald-600/40 hover:bg-emerald-600 hover:text-white text-[10.5px] font-bold transition font-sans"
+                                :title="'Deftere ' + formatNum(chainAddableQty(r), 8) + ' ' + r.asset + ' ekle — tarih ve maliyeti siz gireceksiniz'">
+                          + Deftere Ekle
+                        </button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <div x-show="connRows.length === 0"
+                 class="px-4 py-8 text-center text-slate-500 text-xs font-sans">
+              Karşılaştırılacak bir şey yok. Önce bir bağlantı ekleyin.
+            </div>
+
+            <!-- Spam tokenlar gizlenmiyor, katlanıyor. Gizlemek de bir tür
+                 yalandır; kullanıcı ne olduğunu bilmeli ve açabilmeli. -->
+            <div x-show="(connReport.spam_count || 0) > 0"
+                 class="px-4 py-2.5 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <span class="text-[11px] text-slate-500 font-sans">
+                <b class="text-slate-400" x-text="connReport.spam_count"></b>
+                doğrulanmamış token gizlendi — defterinizde yoklar ve tanınmış
+                token listesinde bulunmuyorlar. Solana'da istenmeden gönderilen
+                spam yaygındır; <b class="text-slate-400">tanımadığınız bir tokenın
+                sitesine bağlanmayın</b>.
+              </span>
+              <button @click="connShowSpam = !connShowSpam"
+                      class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] font-bold transition font-sans whitespace-nowrap"
+                      x-text="connShowSpam ? 'Gizle' : 'Yine de göster'"></button>
+            </div>
+          </div>
+        </template>
       </div>
 
       <!-- ============================================================= -->
@@ -3181,15 +3670,31 @@
           </div>
           <div>
             <label class="block text-slate-400 font-semibold mb-1">BORSA / KAYNAK</label>
+            <!-- Liste artık SABİT DEĞİL. Önceden yalnızca BINANCE/MEXC/GATE.IO/
+                 DEX/COINGECKO/MANUEL vardı; kullanıcı cüzdanındaki varlığı
+                 seçecek konum bulamadığı için "DEX'teymiş gibi" girmek zorunda
+                 kalmıştı. Konumlar veriden türetiliyor ve bağlantısı olan
+                 cüzdanlar da listeye giriyor — yoksa "Deftere Ekle" METAMASK'ı
+                 dolduruyor ama kutuda karşılığı olmuyordu. -->
             <select x-model="txForm.exchange" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white focus:border-emerald-500">
-              <option value="BINANCE">BINANCE</option>
-              <option value="MEXC">MEXC</option>
-              <option value="GATE.IO">GATE.IO</option>
-              <option value="DEX">DEX (Pancake / Uni / Raydium)</option>
-              <option value="COINGECKO">COINGECKO</option>
-              <option value="MANUEL">MANUEL</option>
+              <template x-for="loc in txExchangeOptions" :key="'txex' + loc">
+                <option :value="loc" x-text="loc === 'DEX' ? 'DEX (Pancake / Uni / Raydium)' : loc"></option>
+              </template>
             </select>
           </div>
+        </div>
+
+        <!-- Alım tarihi. Önceden bu alan yoktu ve her kayıt BUGÜNÜN tarihiyle
+             açılıyordu; geçmişte alınmış bir varlığı doğru tarihiyle girmek
+             arayüzden mümkün değildi. FIFO ve tutma süresi tarihe bağlı
+             olduğu için bu gerçek bir eksikti. -->
+        <div>
+          <label class="block text-slate-400 font-semibold mb-1">
+            ALIM TARİHİ
+            <span class="text-slate-600 font-normal">(boş bırakırsanız bugün)</span>
+          </label>
+          <input type="date" x-model="txForm.date"
+                 class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white font-mono-nums focus:border-emerald-500 focus:outline-none">
         </div>
 
         <!-- Quantity & Cost in row -->

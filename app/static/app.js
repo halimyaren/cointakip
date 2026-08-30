@@ -117,6 +117,7 @@ function portfolioApp() {
     txForm: {
       id: null,
       coin: '',
+      date: '',
       qty: '',
       cost: '',
       status: 'Aktif',
@@ -240,6 +241,38 @@ function portfolioApp() {
     // yazarken ne olacağını göstermek içindir.
     rebuildConfirm: { open: false, row: null, verifyQty: '' },
     showReconcileHelp: false,
+
+    // Faz F6: Anahtar kasası ve cüzdan bağlantıları
+    vaultStatus: { unlocked: false, pin_enabled: false, sealed: false, entry_count: 0 },
+    vaultPin: '',
+    vaultBusy: false,
+    providerKeyInput: '',
+    providerKeySet: false,
+    connections: {},
+    connChains: [],
+    connLocations: [],
+    // `id` boşsa yeni kayıt, doluysa güncelleme. `label` kullanıcının hesabı
+    // ayırt etmesi için: bir cüzdanda aynı zincirde birden çok hesap olabilir
+    // (Phantom Hesap 2 / Hesap 3) ve ikisi de ayrı bağlantıdır.
+    // `tokens`: elle tanımlanmış token kontratları. Otomatik keşif her zincirde
+    // ücretsiz olmadığı için (BNB Chain, Base, Optimism, Avalanche ücretli
+    // plana bağlı) bu liste bazı zincirlerde tokenı görmenin TEK yolu.
+    connForm: { id: '', location: '', chain: 'ethereum', address: '', label: '',
+                tokens: [] },
+    connTokenInput: '',       // eklenecek kontrat adresi
+    connTokenBusy: false,
+    // İşlem formu zincir tablosundan mı açıldı? Kayıttan sonra karşılaştırmayı
+    // tazelemek için: satır "Zincirde var"dan "Eşleşiyor"a dönmeli, kullanıcı
+    // işin bittiğini görmeli.
+    chainAddPending: false,
+    connNewLocation: false,   // konum kutusu serbest metne geçti mi
+    connWarnings: [],         // aynı adres birden çok konumda gibi bütünlük uyarıları
+    connBusy: false,
+    connTestResult: null,
+    connReport: null,
+    // Solana'da istenmeden gönderilen spam token yaygın; gerçek bir cüzdanda
+    // yüzlerce satır üretir. Gizlenmiyor, katlanıyor — kullanıcı açabilir.
+    connShowSpam: false,
 
     // Faz F2: Arşiv (net varlık geçmişi)
     archiveStatus: {},
@@ -768,6 +801,452 @@ function portfolioApp() {
     },
 
     // -------------------------------------------------------------
+    // FAZ F6: ANAHTAR KASASI VE CÜZDAN BAĞLANTILARI
+    // -------------------------------------------------------------
+    // Bu ekran ADRES ister, sır istemez. Adres herkese açık bir bilgidir ve
+    // okuma yapı gereği salt okunurdur. Kullanıcıya kurtarma ifadesi veya
+    // özel anahtar sorulmaz; sunucu tarafı da böyle bir girdiyi reddeder.
+
+    connStatusMeta: {
+      mismatch: { label: 'Fark var', badge: 'bg-rose-500/15 text-rose-300 border border-rose-700/50' },
+      only_chain: { label: 'Zincirde var', badge: 'bg-amber-500/15 text-amber-300 border border-amber-700/50' },
+      only_ledger: { label: 'Zincirde yok', badge: 'bg-orange-500/15 text-orange-300 border border-orange-700/50' },
+      unreadable: { label: 'Okunamadı', badge: 'bg-slate-500/15 text-slate-400 border border-slate-600' },
+      match: { label: 'Eşleşiyor', badge: 'bg-emerald-500/15 text-emerald-300 border border-emerald-700/50' },
+    },
+
+    // Bağlantılar `KONUM@zincir` ile anahtarlanır; ekranda konuma göre
+    // gruplanır. Aynı cüzdan birden çok zincirde olabilir ve biri diğerini
+    // ezmemelidir — ilk sürümde tam olarak bu oldu.
+    get connByLocation() {
+      const grup = {};
+      for (const [id, spec] of Object.entries(this.connections || {})) {
+        const konum = spec.location || '?';
+        (grup[konum] = grup[konum] || []).push({ id, spec });
+      }
+      for (const k of Object.keys(grup)) {
+        grup[k].sort((a, b) => (a.spec.chain || '').localeCompare(b.spec.chain || '') ||
+                               (a.spec.label || '').localeCompare(b.spec.label || ''));
+      }
+      return grup;
+    },
+
+    get connLocationsWithConn() {
+      return Object.keys(this.connByLocation).sort();
+    },
+
+    // Okuma raporu: hangi bağlantı okundu, ne oldu, ne eksik kaldı.
+    // Bunu göstermek ŞART: başarıyla okunan bir bağlantının uyarısı (örneğin
+    // "Etherscan anahtarı yok, tokenlar bulunamadı") daha önce sessizce
+    // düşüyordu ve kullanıcı tokenının neden gelmediğini göremiyordu.
+    get connReadings() {
+      if (!this.connReport) return [];
+      return Object.entries(this.connReport.connections || {})
+        .map(([id, v]) => ({ id, ...v }))
+        .sort((a, b) => (a.location || '').localeCompare(b.location || '') ||
+                        (a.chain || '').localeCompare(b.chain || ''));
+    },
+
+    // EVM bağlantısı var mı? Etherscan anahtarı yalnızca EVM için gerekli;
+    // sadece Solana kullanan birine anahtar uyarısı göstermek gürültü olurdu.
+    get connHasEvm() {
+      return Object.values(this.connections || {})
+        .some(c => c.chain && c.chain !== 'solana');
+    },
+
+    get connHasWarnings() {
+      return this.connReadings.some(r => !r.ok || r.incomplete);
+    },
+
+    // Not seviyeleri: ⛔ okunamadı, ⚠ eksik okundu, ℹ bilgi. Üçünü aynı
+    // kırmızıyla göstermek gerçek sorunu gürültüde kaybettiriyordu.
+    noteMeta: {
+      error: { icon: '⛔', cls: 'text-rose-300' },
+      warn:  { icon: '⚠',  cls: 'text-amber-300/90' },
+      info:  { icon: 'ℹ',  cls: 'text-slate-400' },
+    },
+
+    // Seçili zincirde otomatik token keşfi çalışıyor mu? Kullanıcı bunu zinciri
+    // SEÇERKEN görmeli; tokenı gelmedikten sonra öğrenmesi geç oluyor.
+    get connChainDiscovery() {
+      const c = (this.connChains || []).find(x => x.id === this.connForm.chain);
+      return c ? (c.discovery || 'free') : 'free';
+    },
+
+    get connPaidChains() {
+      return (this.connChains || []).filter(c => c.discovery === 'paid')
+        .map(c => c.name).join(', ');
+    },
+
+    get connFreeChains() {
+      return (this.connChains || []).filter(c => c.discovery === 'free')
+        .map(c => c.name).join(', ');
+    },
+
+    get connRows() {
+      if (!this.connReport) return [];
+      const rows = this.connReport.rows || [];
+      return this.connShowSpam ? rows : rows.filter(r => !r.likely_spam);
+    },
+
+    chainName(id) {
+      const c = (this.connChains || []).find(x => x.id === id);
+      return c ? c.name : (id || '—');
+    },
+
+    get connTestMessage() {
+      const r = this.connTestResult;
+      if (!r) return '';
+      // Beklenmeyen bir cevap şekli sessizce "kurulamadı"ya düşmemeli; sebebi
+      // olmayan bir hata mesajı kullanıcıyı yanlış yere bakmaya iter.
+      if (r.ok === undefined) return 'Sunucudan beklenmeyen bir cevap geldi.';
+      const notlar = r.notes || [];
+      if (!r.ok) return (notlar[0] || {}).message || 'Bağlantı kurulamadı.';
+      const n = r.asset_count != null ? r.asset_count : (r.balances || []).length;
+      // Denemede de en ağır not gösterilir; bilgi notu bir hatanın önüne geçmemeli.
+      const onemli = notlar.find(w => w.level === 'error') ||
+                     notlar.find(w => w.level === 'warn') || notlar[0];
+      return `Bağlantı çalışıyor — ${n} varlık okundu.` +
+             (onemli ? ' ' + onemli.message : '');
+    },
+
+    async fetchConnections() {
+      try {
+        const resp = await fetch('/api/connections');
+        if (!resp.ok) throw new Error('Bağlantılar okunamadı.');
+        const body = await resp.json();
+        this.connections = body.connections || {};
+        this.connChains = body.chains || [];
+        this.connLocations = body.locations || [];
+        this.connWarnings = body.warnings || [];
+        this.vaultStatus = body.vault || this.vaultStatus;
+        this.providerKeySet = !!body.provider_key_set;
+      } catch (e) {
+        this.notify(e.message || 'Bağlantılar okunamadı.', 'error', 5000);
+      }
+    },
+
+    async unlockVault() {
+      if (this.vaultBusy) return;
+      this.vaultBusy = true;
+      try {
+        const resp = await fetch('/api/vault/unlock', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: this.vaultPin })
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Kasa açılamadı.');
+        this.vaultStatus = body;
+        this.notify(body.created ? 'Anahtar kasası oluşturuldu ve açıldı.'
+                                 : 'Anahtar kasası açıldı.', 'success', 4000);
+      } catch (e) {
+        this.notify(e.message || 'Kasa açılamadı.', 'error', 6000);
+      } finally {
+        // PIN bellekte tutulmaz; kutu her denemeden sonra temizlenir.
+        this.vaultPin = '';
+        this.vaultBusy = false;
+      }
+    },
+
+    async lockVault() {
+      try {
+        const resp = await fetch('/api/vault/lock', { method: 'POST' });
+        this.vaultStatus = await resp.json();
+        this.notify('Anahtar kasası kilitlendi.', 'success', 3000);
+      } catch (e) {
+        this.notify('Kasa kilitlenemedi.', 'error', 4000);
+      }
+    },
+
+    async saveProviderKey() {
+      if (!this.providerKeyInput.trim()) {
+        this.notify('Önce anahtarı yazın.', 'error', 4000);
+        return;
+      }
+      this.vaultBusy = true;
+      try {
+        const resp = await fetch('/api/vault/secret/etherscan_api_key', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: this.providerKeyInput.trim() })
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Anahtar kaydedilemedi.');
+        this.providerKeySet = !!body.stored;
+        this.notify('Anahtar kasaya şifrelenerek kaydedildi.', 'success', 4000);
+      } catch (e) {
+        this.notify(e.message || 'Anahtar kaydedilemedi.', 'error', 6000);
+      } finally {
+        // Kutu temizlenir: kaydedilen sır ekranda asılı kalmaz ve geri okunmaz.
+        this.providerKeyInput = '';
+        this.vaultBusy = false;
+      }
+    },
+
+    async forgetProviderKey() {
+      const onay = await this.askConfirm({
+        title: 'Sağlayıcı anahtarını sil',
+        message: 'Etherscan API anahtarı kasadan silinecek.',
+        detail: 'Anahtar olmadan yalnızca yerel coin bakiyeleri okunabilir; ' +
+                'token listesi otomatik bulunamaz. İstediğiniz zaman yeniden girebilirsiniz.',
+        confirmText: 'Sil', tone: 'danger'
+      });
+      if (!onay) return;
+      try {
+        await fetch('/api/vault/secret/etherscan_api_key', { method: 'DELETE' });
+        this.providerKeySet = false;
+        this.notify('Anahtar silindi.', 'success', 3000);
+      } catch (e) {
+        this.notify('Anahtar silinemedi.', 'error', 4000);
+      }
+    },
+
+    _connPayload() {
+      return {
+        id: this.connForm.id || null,
+        type: 'onchain',
+        location: (this.connForm.location || '').trim(),
+        chain: this.connForm.chain,
+        address: (this.connForm.address || '').trim(),
+        label: (this.connForm.label || '').trim(),
+        tokens: this.connForm.tokens || [],
+        enabled: true,
+      };
+    },
+
+    // Kontrat adresinden sembol ve ondalık haneyi zincire sorar. Kullanıcıdan
+    // ondalık hane istemek anlamsız olurdu — zincir zaten biliyor ve yanlış
+    // girilen bir ondalık bakiyeyi sessizce 10^n kat yanlış gösterirdi.
+    async addFormToken() {
+      const kontrat = (this.connTokenInput || '').trim();
+      if (!kontrat) return;
+      if ((this.connForm.tokens || []).some(t => t.contract.toLowerCase() === kontrat.toLowerCase())) {
+        this.notify('Bu token zaten listede.', 'error', 3000);
+        return;
+      }
+      this.connTokenBusy = true;
+      try {
+        const resp = await fetch('/api/connections/token-info', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chain: this.connForm.chain, contract: kontrat })
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Kontrat okunamadı.');
+        this.connForm.tokens = [...(this.connForm.tokens || []), body.token];
+        this.connTokenInput = '';
+        this.notify(`${body.token.symbol} eklendi. Kaydet'e basmayı unutmayın.`,
+                    'success', 4000);
+      } catch (e) {
+        this.notify(e.message || 'Kontrat okunamadı.', 'error', 8000);
+      } finally {
+        this.connTokenBusy = false;
+      }
+    },
+
+    removeFormToken(kontrat) {
+      this.connForm.tokens = (this.connForm.tokens || [])
+        .filter(t => t.contract !== kontrat);
+    },
+
+    async testConnection() {
+      const konum = (this.connForm.location || '').trim();
+      if (!konum || !this.connForm.address.trim()) {
+        this.notify('Konum ve adres gerekli.', 'error', 4000);
+        return;
+      }
+      this.connBusy = true;
+      this.connTestResult = null;
+      try {
+        const resp = await fetch('/api/connections/test', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this._connPayload())
+        });
+        const body = await resp.json();
+        if (!resp.ok) {
+          // Doğrulama hatası (sır yapıştırma dâhil) burada yakalanır ve
+          // kullanıcıya olduğu gibi gösterilir — sessizce yutulmaz.
+          this.connTestResult = { ok: false, notes: [
+            { level: 'error', message: body.detail || 'Geçersiz tanım.' }] };
+          return;
+        }
+        this.connTestResult = body;
+      } catch (e) {
+        this.connTestResult = { ok: false, notes: [
+          { level: 'error', message: e.message || 'Bağlantı denenemedi.' }] };
+      } finally {
+        this.connBusy = false;
+      }
+    },
+
+    async saveConnection() {
+      const konum = (this.connForm.location || '').trim();
+      if (!konum || !this.connForm.address.trim()) {
+        this.notify('Konum ve adres gerekli.', 'error', 4000);
+        return;
+      }
+      // GERÇEK HATA: kullanıcı kontrat adresini kutuya yazıp doğrudan Kaydet'e
+      // bastı. Adres listeye girmemişti, kayıt boş token listesiyle yapıldı ve
+      // sistem bunu SÖYLEMEDİ. Kullanıcı tokenını eklediğini sanıyordu.
+      // Artık bekleyen adres önce çözülür; çözülemezse kayıt yapılmaz.
+      if ((this.connTokenInput || '').trim()) {
+        await this.addFormToken();
+        if ((this.connTokenInput || '').trim()) {
+          this.notify('Kutudaki kontrat adresi çözülemediği için kayıt ' +
+                      'yapılmadı. Adresi düzeltin veya kutuyu boşaltın — ' +
+                      'aksi hâlde o token sessizce kaybolurdu.', 'error', 9000);
+          return;
+        }
+      }
+      this.connBusy = true;
+      try {
+        const resp = await fetch('/api/connections', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this._connPayload())
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Bağlantı kaydedilemedi.');
+        this.connections = body.connections || {};
+        this.connWarnings = body.warnings || [];
+        const zincir = this.chainName(this.connForm.chain);
+        // Konum ve zincir BİLEREK korunuyor: aynı cüzdana başka bir hesap veya
+        // başka bir zincir eklemek yaygın durum; kullanıcı baştan yazmamalı.
+        this.connForm = { id: '', location: konum, chain: this.connForm.chain,
+                          address: '', label: '', tokens: [] };
+        this.connTokenInput = '';
+        this.connTestResult = null;
+        this.notify(`${konum} — ${zincir} bağlantısı kaydedildi. Aynı cüzdanda başka ` +
+                    'bir hesabınız veya başka bir zinciriniz varsa adresi değiştirip ' +
+                    'tekrar kaydedin; öncekiler silinmez.', 'success', 6000);
+        // Çift sayma uyarısı varsa kaybolmasın — bu tabloyu bozan bir durumdur.
+        if (this.connWarnings.length) {
+          this.notify(this.connWarnings[0], 'error', 12000);
+        }
+      } catch (e) {
+        this.notify(e.message || 'Bağlantı kaydedilemedi.', 'error', 7000);
+      } finally {
+        this.connBusy = false;
+      }
+    },
+
+    editConnection(id, spec) {
+      this.connForm = { id, location: spec.location, chain: spec.chain,
+                        address: spec.address, label: spec.label || '',
+                        tokens: (spec.tokens || []).map(t => ({ ...t })) };
+      this.connTokenInput = '';
+      this.connTestResult = null;
+    },
+
+    async removeConnection(id, konum, zincirAdi) {
+      const onay = await this.askConfirm({
+        title: 'Bağlantıyı sil',
+        message: `${konum} — ${zincirAdi} bağlantısı silinecek.`,
+        detail: 'Yalnızca bu adresin bağlantı tanımı silinir; aynı konumdaki ' +
+                'diğer hesaplar, diğer zincirler ve defterinizdeki kayıtlar ' +
+                'olduğu gibi kalır. İstediğiniz zaman yeniden ekleyebilirsiniz.',
+        confirmText: 'Sil', tone: 'danger'
+      });
+      if (!onay) return;
+      try {
+        const resp = await fetch('/api/connections/' + encodeURIComponent(id),
+                                 { method: 'DELETE' });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Bağlantı silinemedi.');
+        this.connections = body.connections || {};
+        this.connWarnings = body.warnings || [];
+        this.notify(`${konum} — ${zincirAdi} bağlantısı silindi.`, 'success', 3000);
+      } catch (e) {
+        this.notify(e.message || 'Bağlantı silinemedi.', 'error', 5000);
+      }
+    },
+
+    // -------------------------------------------------------------
+    // FAZ F6a: ZİNCİRDEKİ VARLIĞI DEFTERE EKLEME
+    // -------------------------------------------------------------
+    // Zincir MİKTARI bilir, MALİYETİ bilmez. Bu yüzden otomatik yazma yok:
+    // sıfır maliyetle yazmak %100 kâr uydurmak olurdu — F5b'de düzeltilen
+    // sahte kâr hatasının aynısı. Form coin/miktar/konumla dolu açılır,
+    // tarih ve maliyet kullanıcıya bırakılır. Varlık başına BİR kez.
+    chainAddableQty(r) {
+      if (!r || r.chain_qty === null || r.chain_qty === undefined) return 0;
+      if (r.likely_spam) return 0;                 // spam token deftere girmez
+      if (r.status === 'only_chain') return r.chain_qty;
+      // Kısmi eksik de aynı durumun küçük hâli: zincirde defterden FAZLA var.
+      if (r.status === 'mismatch' && r.diff_qty > 0) return r.diff_qty;
+      return 0;
+    },
+
+    addFromChain(r) {
+      const miktar = this.chainAddableQty(r);
+      if (!miktar) return;
+      this.openAddModal('Aktif');
+      this.txForm.coin = r.asset;
+      this.txForm.exchange = r.location;
+      // 8 hane: zincir bakiyeleri ondalıklı ve yuvarlamak miktarı bozar.
+      this.txForm.qty = Number(miktar.toFixed(8));
+      this.txForm.date = '';
+      this.txForm.cost = '';
+      this.txForm.notes = `Zincirden okundu (${(r.chains || []).join(', ')}). ` +
+                          'Maliyeti zincir bilmiyor; kendiniz girdiniz.';
+      this.chainAddPending = true;
+      this.notify(
+        `${r.asset} — ${r.location}: miktar zincirden dolduruldu. ` +
+        'ALIM TARİHİ ve BİRİM ALIŞ FİYATI alanlarını siz doldurun — ' +
+        'zincir maliyeti bilmez.', 'info', 9000);
+    },
+
+    async runConnectionReconcile() {
+      if (this.connBusy) return;
+      // Kasa kilitliyken okuma sessizce eksik kalıyordu. Anahtar kasada
+      // duruyorsa bunu okumadan ÖNCE söylemek, sonra "eksik okundu" demekten
+      // iyidir — kullanıcı zaten anahtarı girmiş, eksik olan tek şey kasayı
+      // açmak.
+      if (this.connHasEvm && this.providerKeySet && !this.vaultStatus.unlocked) {
+        this.notify('Kasa kilitli — Etherscan anahtarınız kullanılamıyor ve EVM ' +
+                    'tokenlarınız okunmayacak. Anahtar Kasası bölümünden PIN ile ' +
+                    'açıp tekrar deneyin.', 'error', 10000);
+      }
+      this.connBusy = true;
+      try {
+        const resp = await fetch('/api/connections/reconcile');
+        if (!resp.ok) throw new Error('Bakiyeler okunamadı.');
+        this.connReport = await resp.json();
+        this.connWarnings = this.connReport.warnings || [];
+        // Kasa durumu rapordan tazelenir: kullanıcı başka bir sekmede kasayı
+        // açmış veya kilitlemiş olabilir ve ekrandaki rozet yanıltmamalı.
+        if (this.connReport.vault) {
+          this.vaultStatus = this.connReport.vault;
+          this.providerKeySet = !!this.connReport.vault.provider_key_set;
+        }
+        // Okunamayan bağlantı gizlenmez: kullanıcı boş listeyi "varlığım yok"
+        // sanmamalı, sebebini görmeli.
+        const okumalar = this.connReadings;
+        const sorunlu = okumalar.filter(r => !r.ok);
+        if (sorunlu.length) {
+          this.notify(`${sorunlu.length} bağlantı okunamadı: ` +
+                      sorunlu.map(r => r.location + ' / ' + this.chainName(r.chain)).join(', '),
+                      'error', 8000);
+        }
+        // Okunan ama EKSİK okunan bağlantılar da bildirilmeli. Daha önce bunlar
+        // sessizce düşüyordu: kullanıcı BNB Chain'deki tokenının neden
+        // gelmediğini göremedi, çünkü uyarı hiçbir yere çıkmıyordu.
+        //
+        // Ama "her not = eksiklik" saymak da yanlıştı ve tersine hata yaptı:
+        // Solana'nın spam token BİLGİSİ de alarm üretince "3 bağlantı eksik
+        // okundu" dendi, gerçekte eksik olan bir taneydi. Sunucu artık her
+        // notu seviyelendiriyor; burada yalnızca gerçek eksikler sayılıyor.
+        const eksik = okumalar.filter(r => r.ok && r.incomplete);
+        if (eksik.length) {
+          this.notify(`${eksik.length} bağlantı eksik okundu (` +
+                      eksik.map(r => r.location + ' / ' + this.chainName(r.chain)).join(', ') +
+                      ') — "Okunan bağlantılar" bölümüne bakın.', 'error', 9000);
+        }
+      } catch (e) {
+        this.notify(e.message || 'Bakiyeler okunamadı.', 'error', 6000);
+      } finally {
+        this.connBusy = false;
+      }
+    },
+
+    // -------------------------------------------------------------
     // FAZ F2: ARŞİV & NET VARLIK EĞRİSİ
     // -------------------------------------------------------------
     // Arşiv bir konfor katmanıdır, kritik yol değildir: burada bir şey
@@ -891,6 +1370,29 @@ function portfolioApp() {
       const varsayilan = ['BINANCE', 'MEXC', 'GATE.IO', 'DEX'];
       const ekstra = Array.from(set).filter(x => !varsayilan.includes(x)).sort();
       return varsayilan.concat(ekstra);
+    },
+
+    // İşlem formundaki "Borsa / Kaynak" kutusu. Sabit liste bir tuzaktı:
+    // kullanıcı cüzdanındaki varlığı girerken seçecek konum bulamayınca
+    // "DEX'teymiş gibi" girmek zorunda kaldı ve defteri gerçeği yansıtmaz
+    // oldu. Kaynak üç yerden geliyor:
+    //   1. `knownLocations` — verisinde fiilen geçen konumlar,
+    //   2. bağlantı tanımlı cüzdanlar — henüz defterinde varlığı olmayabilir,
+    //      ki "Deftere Ekle" tam da o durumu çözüyor,
+    //   3. formda o an duran değer — düzenlenen eski bir kaydın konumu
+    //      listede yoksa kutu boş görünür ve kaydetmek konumu değiştirirdi.
+    get txExchangeOptions() {
+      const set = new Set(this.knownLocations);
+      Object.values(this.connections || {}).forEach(c => {
+        if (c && c.location) set.add(String(c.location).toUpperCase());
+      });
+      ['COINGECKO', 'MANUEL'].forEach(x => set.add(x));
+      const mevcut = (this.txForm && this.txForm.exchange || '').toUpperCase();
+      if (mevcut) set.add(mevcut);
+      const varsayilan = ['BINANCE', 'MEXC', 'GATE.IO', 'DEX'];
+      return varsayilan.filter(v => set.has(v)).concat(
+        Array.from(set).filter(x => !varsayilan.includes(x))
+          .sort((a, b) => a.localeCompare(b, 'tr')));
     },
 
     // Kasa sekmesinde gösterilecek konumlar: içinde varlık VEYA nakit olanlar.
@@ -1633,9 +2135,14 @@ function portfolioApp() {
     // -------------------------------------------------------------
     openAddModal(defaultStatus = 'Aktif') {
       this.isEditMode = false;
+      // Zincirden gelme bayrağı her açılışta sıfırlanır; `addFromChain` bunu
+      // çağrıdan SONRA kuruyor. Aksi hâlde vazgeçilen bir formun bayrağı
+      // ilgisiz bir kayıtta karşılaştırmayı tetiklerdi.
+      this.chainAddPending = false;
       this.txForm = {
         id: null,
         coin: '',
+        date: '',
         qty: '',
         cost: '',
         status: defaultStatus,
@@ -1655,9 +2162,11 @@ function portfolioApp() {
 
     openEditModal(item) {
       this.isEditMode = true;
+      this.chainAddPending = false;
       this.txForm = {
         id: item.id,
         coin: item.coin,
+        date: item.date || '',
         qty: item.qty,
         cost: item.cost || item.old_cost,
         status: item.status || (this.activeTab === 'simulation' ? 'Kapandı / İzleme' : 'Aktif'),
@@ -1683,6 +2192,8 @@ function portfolioApp() {
 
         const payload = {
           coin: this.txForm.coin,
+          // Boş bırakılırsa sunucu bugünü kullanır — eski davranış.
+          date: (this.txForm.date || '').trim() || null,
           qty: parseFloat(this.txForm.qty),
           cost: parseFloat(this.txForm.cost),
           status: this.txForm.status,
@@ -1713,6 +2224,12 @@ function portfolioApp() {
           this.showTxModal = false;
           this.notify('İşlem başarıyla kaydedildi!', 'success');
           this.fetchPortfolio(true);
+          // Zincir tablosundan gelindiyse karşılaştırma tazelenir; aksi hâlde
+          // satır "Zincirde var" olarak kalır ve kullanıcı işin olmadığını sanır.
+          if (this.chainAddPending) {
+            this.chainAddPending = false;
+            this.runConnectionReconcile();
+          }
         } else {
           this.notify('İşlem kaydedilirken hata oluştu.', 'error');
         }
