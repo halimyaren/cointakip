@@ -201,7 +201,7 @@ class TestKayitDefteri:
             "address": "So11111111111111111111111111111111111111112"})
         cx.save_connection("PHANTOM", {
             "chain": "solana", "label": "Hesap 3",
-            "address": "GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ"})
+            "address": "TestHesapUcAdresiAAAAAAAAAAAAAAAAAAAAAAAAAAA"})
         kayitlar = cx.list_connections()
         assert len(kayitlar) == 2
         assert {v["label"] for v in kayitlar.values()} == {"Hesap 2", "Hesap 3"}
