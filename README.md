@@ -83,6 +83,42 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   corrected; if it matches your ledger, the export is the incomplete one and
   **your ledger is left untouched**. There is no green "ready to apply" badge,
   because nothing earns one from a file.
+- **Wallet connections (read-only)** — paste a wallet's **public address** and the
+  app reads the chain directly: no file downloads, no exchange keys. It reads the
+  *chain*, not the wallet, so MetaMask, Phantom, Ledger and Trust are all covered
+  by two adapters — EVM (Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Base,
+  Avalanche) and Solana. Connections are configuration, not code: adding a wallet
+  is filling a form. An unreadable connection is reported as *unknown*, never as
+  an empty wallet. **The app never asks for a seed phrase or private key**, and
+  refuses one if pasted into the address field.
+- **Manual token definition** — Etherscan's free plan covers automatic token
+  discovery on some chains but not others (BNB Chain, Base, Optimism and
+  Avalanche need a paid plan). No payment is required to work around that:
+  reading a balance is free, only *knowing which tokens you hold* is not. Paste
+  the token's contract address and the app asks the chain for its symbol and
+  decimals. On free chains manual tokens are **added to** automatic discovery,
+  not substituted for it.
+- **One-click ledger entry from the chain** — for an asset sitting in your
+  wallet but missing from your ledger, the form opens pre-filled with coin,
+  quantity and location; **you supply the date and the cost.** Writing it
+  automatically is deliberately not offered: the chain knows the quantity but
+  not the cost, and booking it at zero would fabricate a profit that never
+  happened. Done once per asset, after which it behaves like any other position.
+- **Location-correct symbols** — an exchange holding is a trading pair
+  (`BNBUSDT`); the same coin in your wallet is just `BNB`, because a wallet
+  has no pairs. Transfers now rewrite the symbol for the destination, and a
+  one-time migration repairs records created by earlier transfers. Only the
+  name changes — never quantity, cost, date or status.
+- **Graded read notes** — a reading is *complete*, *incomplete* or *failed*, and
+  each note carries its own level. An informational note (Solana's unverified-token
+  notice, say) no longer raises the same alarm as data that genuinely did not
+  arrive; inflating the alarm buries the real problem.
+- **Key vault** — provider and (later) exchange API keys are **encrypted** with a
+  key derived from your PIN via PBKDF2; the decryption key is never written to
+  disk and lives only in memory for the session you unlock. Nothing connects
+  anywhere until you unlock it. Changing your PIN re-seals the vault; resetting it
+  via the recovery key clears the vault instead of keeping undecryptable data
+  around and pretending your keys survived.
 - **Excel export**, daily automatic backups, privacy mode.
 
 ---
@@ -138,9 +174,15 @@ data/
 
 This directory is excluded via `.gitignore`. **Never share it.**
 
-> **About API keys:** keys in `settings.json` are Base64-obfuscated — this is
-> **not encryption**. Anyone with access to the file can read your key. That is
-> acceptable if the key stays on your own machine; otherwise, do not configure one.
+> **About API keys — two different mechanisms, on purpose:**
+>
+> - **Vault keys** (provider and exchange keys, under `vault`) are **encrypted**
+>   with a key derived from your PIN. The decryption key is never stored; it lives
+>   in memory only while the vault is unlocked.
+> - **Gemini / Telegram keys** (under `api_keys`) are only **Base64-obfuscated**,
+>   which is **not encryption** — anyone with the file can read them. That is an
+>   accepted trade-off for keys that merely spend your own quota; it would not be
+>   acceptable for a key that can touch money, which is why those go in the vault.
 
 ---
 
@@ -151,7 +193,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-427 tests, about 16 seconds. The suite **never touches your real data and never hits
+535 tests, about 25 seconds. The suite **never touches your real data and never hits
 the network**: data paths are redirected to a temporary directory, all external calls
 are mocked, and no test calls the AI API.
 
@@ -167,6 +209,8 @@ app/
 ├── archive.py        SQLite net-worth / price archive (never on the critical path)
 ├── reconcile.py      Exchange export ↔ ledger reconciliation and repair
 │                     proposals (read-only; writes go through data_manager)
+├── connections.py    Connection registry + on-chain readers (EVM, Solana)
+├── keyvault.py       PIN-derived encryption for API keys (session-only)
 ├── ai_service.py     Gemini integration + local fallback engine
 └── static/           Alpine.js single-page UI + bundled libraries
 ```

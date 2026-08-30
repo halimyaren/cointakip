@@ -17,10 +17,11 @@ yapıldığını öğrenmek için [README.tr.md](README.tr.md) dosyasına bakın
 8. [Kâr alma hedefleri](#8-kâr-alma-hedefleri)
 9. [Hedge takibi](#9-hedge-takibi)
 10. [Borsa mutabakatı ve düzeltme](#10-borsa-mutabakatı-ve-düzeltme)
-11. [Arşiv ve net varlık eğrisi](#11-arşiv-ve-net-varlık-eğrisi)
-12. [Güvenlik: PIN ve gizlilik modu](#12-güvenlik-pin-ve-gizlilik-modu)
-13. [Yedekleme ve geri yükleme](#13-yedekleme-ve-geri-yükleme)
-14. [Sık sorulanlar](#14-sık-sorulanlar)
+11. [Cüzdan bağlantıları](#11-cüzdan-bağlantıları) — MetaMask, Phantom ve diğerleri
+12. [Arşiv ve net varlık eğrisi](#12-arşiv-ve-net-varlık-eğrisi)
+13. [Güvenlik: PIN ve gizlilik modu](#13-güvenlik-pin-ve-gizlilik-modu)
+14. [Yedekleme ve geri yükleme](#14-yedekleme-ve-geri-yükleme)
+15. [Sık sorulanlar](#15-sık-sorulanlar)
 
 ---
 
@@ -161,6 +162,12 @@ devam eder.
 
 **Ağ ücreti** alanı isteğe bağlıdır. Yazarsanız o kadar coin gerçekten kaybolmuş
 sayılır ve taşıdığı maliyet ayrı bir zarar kaydına geçer.
+
+**Sembol hedefe göre yazılır.** Borsada tuttuğunuz şey bir işlem çiftidir
+(`BNBUSDT`), cüzdanınızda duran şey ise yalın coindir (`BNB`) — cüzdanda USDT
+çifti diye bir şey yoktur. Bu yüzden Binance'ten MetaMask'a taşıdığınızda ad
+`BNB` olur, tersinde `BNBUSDT`'ye döner. Miktar, maliyet ve tarih değişmez;
+değişen yalnızca addır.
 
 Transferler **İşlem Defteri**nden geri alınabilir. Ancak transfer ettiğiniz varlığı
 hedefte sattıysanız geri alma reddedilir — önce satışı geri almanız gerekir.
@@ -353,7 +360,202 @@ gerekmez.
 
 ---
 
-## 11. Arşiv ve net varlık eğrisi
+## 11. Cüzdan bağlantıları
+
+**Grafikler → 🔗 Cüzdan Bağlantıları**
+
+Cüzdanınızın **herkese açık adresini** girersiniz; sistem zincirden okur ve
+defterinizle karşılaştırır. Dosya indirmek gerekmez.
+
+> ### 🛡️ Önce bunu okuyun
+>
+> **CoinTakip asla kurtarma ifadesi (seed phrase) veya özel anahtar istemez.**
+> Yalnızca herkese açık adresinizi ister — o adres zaten blok gezginlerinde
+> herkesin görebildiği bir bilgidir ve okuma yapı gereği salt okunurdur; adresle
+> kimse paranıza dokunamaz.
+>
+> Size kurtarma ifadenizi veya özel anahtarınızı soran **her ekran, her site ve
+> her kişi dolandırıcıdır.** Bu, CoinTakip için de geçerlidir: ileride böyle bir
+> şey soran bir ekran görürseniz o CoinTakip değildir. Adres kutusuna yanlışlıkla
+> böyle bir şey yapıştırırsanız sistem kabul etmez ve sizi uyarır.
+
+### Cüzdan değil, zincir okunur
+
+MetaMask, Phantom, Ledger, Trust, Rabby — hangisini kullandığınız **fark etmez.**
+Bunların bağlanılacak bir API'si yoktur; anahtarı tutan programlardır, varlık ise
+zincirde durur. Bu yüzden okuyucu cüzdan başına değil zincir başına çalışır:
+
+| Zincir ailesi | Kapsadığı |
+|:---|:---|
+| **EVM** | Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Base, Avalanche |
+| **Solana** | Phantom, Solflare, Backpack ve diğer Solana cüzdanları |
+
+Bir bağlantıyı benzersiz kılan şey **adrestir** — konum adı değil, konum+zincir
+çifti de değil. Bir cüzdan uygulaması bir kimlik değil bir **kaptır**: içinde
+istediğiniz kadar hesap olur (Phantom'da Hesap 2, Hesap 3…) ve her hesap birden
+çok zincirde yaşar. Hepsini ayrı ayrı ekleyin; hiçbiri diğerinin yerine geçmez,
+hepsi aynı konumun altında yan yana durur.
+
+- **MetaMask**: aynı `0x` adresi tüm EVM zincirlerinde geçerlidir, ama her
+  zincirdeki bakiyeniz ayrıdır. MetaMask'te ağ kutusundan Ethereum → Polygon →
+  Arbitrum diye geçtiğinizde listenin değişmesinin sebebi budur. Varlık
+  tuttuğunuz **her zincir için ayrı bir bağlantı** ekleyin: konum aynı, adres
+  aynı, yalnızca zincir farklı. Boş zinciri eklemenin faydası yoktur.
+- **Phantom**: Solana ve Ethereum adresleriniz **farklıdır**. Her birini kendi
+  zinciriyle, kendi adresiyle ekleyin.
+
+Kaydettikten sonra konum kutusu temizlenmez — zinciri değiştirip yeni adresi
+girip tekrar kaydetmeniz yeterlidir.
+
+### Adım adım
+
+1. Cüzdanınızdan **adresi kopyalayın** (MetaMask'te hesap adına tıklayınca
+   kopyalanır; Phantom'da aynı şekilde).
+2. **Konum** kutusuna o cüzdanı defterinizde ne diye adlandırdığınızı yazın —
+   örneğin `METAMASK`. Açılır listede yalnızca defterinizde **hâlihazırda geçen**
+   konumlar görünür; yeni bir isim yazmanız tamamen normaldir.
+3. **Zincir**'i seçin, adresi yapıştırın.
+4. **Önce Dene** deyin. Kaç varlık okunduğunu söyler; kaydetmeden görürsünüz.
+5. **Kaydet**, sonra **Bakiyeleri Getir**.
+
+### Anahtar kasası
+
+Ekranın üstündeki kasa, gizli tutulması gereken anahtarları saklar. Anahtar
+**PIN'inizden türetilen bir anahtarla şifrelenir**; çözme anahtarı diskte hiçbir
+yerde durmaz, yalnızca kasayı açtığınız oturum boyunca bellekte kalır. Uygulama
+siz açmadan hiçbir yere bağlanmaz.
+
+Bunun için önce **Ayarlar → Güvenlik** bölümünden bir PIN tanımlamış olmanız
+gerekir.
+
+> ⚠️ **PIN'i kurtarma anahtarıyla sıfırlarsanız veya PIN korumasını kapatırsanız
+> kasa temizlenir.** Sebebi şu: eski PIN olmadan içerik bir daha çözülemez ve
+> çözülemeyen şifreli veriyi saklamak size "anahtarım duruyor" yanılgısı verirdi.
+> PIN'i normal yoldan *değiştirirseniz* anahtarlarınız korunur.
+
+### Etherscan anahtarı ne işe yarar?
+
+**Solana için hiçbir şey gerekmez** — bakiyeler doğrudan okunur.
+
+EVM zincirlerinde ise anahtarsız yalnızca **yerel coin** bakiyesi okunabilir
+(ETH, BNB, POL…). Hangi tokenlara sahip olduğunuzu bulmak zincir taraması
+gerektirir ve bunun için `etherscan.io` üzerinden alınan **ücretsiz** bir anahtar
+gerekir.
+
+**Anahtarı girmek için:** Anahtar Kasası panelinde PIN'inizi yazıp *Kasayı Aç*
+deyin; kasa açılınca alttaki *Etherscan API anahtarı* kutusu belirir. Anahtarı
+yapıştırıp *Kaydet*'e basın, sonra *Bakiyeleri Getir* deyin. Anahtar şifreli
+saklanır ama çözme anahtarı diskte durmadığı için **uygulamayı her açtığınızda
+kasayı yeniden açmanız gerekir.**
+
+#### Tek anahtar her zincirde geçerli, ama ücretsiz plan hepsini kapsamıyor
+
+Bu ikisi aynı şey değil ve karıştırılması zaman kaybettirir. Etherscan tek
+anahtarı bütün zincirlerde **kabul eder**, fakat ücretsiz plan token taramasını
+yalnızca bir kısmında **açar**. Kapsam dışı bir zincirde istek
+*"Free API access is not supported for this chain"* diye geri döner.
+
+| Otomatik token keşfi | Zincirler |
+|:---|:---|
+| ✅ Ücretsiz anahtarla çalışır | Ethereum, Polygon, Arbitrum One |
+| ❌ Ücretli plan ister | BNB Chain, Base, Optimism, Avalanche |
+
+Zincir açılır listesinde ücretli olanların yanında *"token keşfi ücretli"*
+yazar, yani seçerken görürsünüz.
+
+#### Ücretli plana gerek yok: tokenı elle tanımlayın
+
+Kapsam dışı zincirlerde eksik olan tek şey **"hangi tokenlara sahipsiniz"**
+bilgisidir. Bakiye okumak zaten ücretsizdir. Siz hangi tokenu takip etmek
+istediğinizi zaten bildiğiniz için o boşluğu doğrudan kapatabilirsiniz:
+
+1. Bağlantı listesinde ilgili satırda **Düzenle** deyin.
+2. **Elle tanımlı tokenlar** bölümüne tokenın **kontrat adresini** yapıştırın ve
+   *Kontrattan Getir*'e basın. Sembolü ve ondalık haneyi sistem zincire sorar.
+3. **Kaydet**, sonra **Bakiyeleri Getir**.
+
+Kontrat adresini cüzdanınızdaki token detayından veya blok gezgininden
+alabilirsiniz. Dikkat: **aynı tokenın her zincirde ayrı bir kontratı vardır**;
+BNB Chain'deki adresi Ethereum'a girerseniz sistem "bu adres ERC-20 kontratı
+gibi cevap vermiyor" der.
+
+Bu yol ücretsiz zincirlerde de kullanılabilir — orada otomatik keşfin **yerine
+geçmez, üstüne eklenir**. Keşfin kaçırdığı eski bir token için işe yarar.
+
+Anahtar girmezseniz sistem bunu **açıkça söyler**; boş liste gösterip
+"varlığınız yok" demez.
+
+### Okuma raporunu okuyun
+
+*Bakiyeleri Getir* her bağlantı için tek satır üretir ve satırlar üç durumdan
+birindedir:
+
+| Etiket | Anlamı |
+|:---|:---|
+| **Okundu** | Her şey geldi. |
+| **Eksik okundu** | Bağlantı cevap verdi ama bir kısım veri gelmedi — örneğin token keşfi yapılamadı. |
+| **Okunamadı** | Hiçbir şey gelmedi. |
+
+Satır altındaki notlar da ayrışır: ⛔ okunamadı, ⚠ eksik okundu, ℹ bilgi.
+**Bilgi notu bir sorun değildir** — örneğin Solana'daki doğrulanmamış token
+bildirimi. O tokenlar okundu ve tabloda duruyorlar; yalnızca tanınmış listede
+olmadıkları söyleniyor.
+
+> ⚠️ **Uygulamayı her açtığınızda kasa kilitlidir.** Anahtarınız kasada durur ama
+> çözme anahtarı diskte durmaz. Kasayı açmadan *Bakiyeleri Getir* derseniz EVM
+> tokenlarınız okunmaz — sistem bunu artık okumaya başlamadan önce söylüyor.
+
+### Zincirdeki varlığı deftere ekleme
+
+Karşılaştırma tablosunda **Zincirde var** (veya zincirde defterinizden fazlası
+olan **Fark var**) satırlarında **+ Deftere Ekle** düğmesi çıkar. Basınca işlem
+formu **coin, miktar ve konum dolu** olarak açılır.
+
+**Tarihi ve birim maliyeti siz girersiniz.** Sistem bunları sizin yerinize
+dolduramaz, çünkü **zincir miktarı bilir, maliyeti bilmez.** Zincirde 0.05 BNB
+durduğunu görür ama onu kaç dolara aldığınızı görmez — o bilgi ya bir borsanın
+geçmişinde ya sizin aklınızdadır. Sıfır maliyetle yazmak, olmayan bir %100 kâr
+uydurmak olurdu; mutabakat düzeltmesinde aynı hatayı bir kez yapıp düzeltmiştik.
+
+Bunu **varlık başına bir kez** yaparsınız. Sonrasında o varlık Kasa
+toplamınızda, kâr/zarar hesabınızda ve tüm raporlarda normal bir pozisyon gibi
+durur; her açılışta tekrar girmeniz gerekmez.
+
+Kayıttan sonra tablo kendiliğinden tazelenir ve satır **Eşleşiyor**'a döner.
+
+> **Alım tarihi alanı** artık her işlem formunda var (yalnızca burada değil).
+> Boş bırakırsanız bugünün tarihi kullanılır. Geçmişte alınmış bir varlığı doğru
+> tarihiyle girmek önemlidir: FIFO satış maliyetini tarihe göre seçer.
+
+> **Konum kutusu** artık sabit bir liste değil. Defterinizde geçen konumların
+> yanı sıra **bağlantı tanımladığınız cüzdanlar** da listede çıkar. Daha önce
+> yalnızca BINANCE / MEXC / GATE.IO / DEX seçilebildiği için cüzdandaki varlığı
+> "DEX'teymiş gibi" girmek zorunda kalıyordunuz.
+
+### Karşılaştırmayı okuyun
+
+| Etiket | Anlamı |
+|:---|:---|
+| **Fark var** | Zincirdeki miktar defterinizle uyuşmuyor. |
+| **Zincirde var** | Cüzdanda duruyor ama defterinize girmemişsiniz. |
+| **Zincirde yok** | Defterinizde var ama bu adreste yok — taşımış veya satmış olabilirsiniz. |
+| **Okunamadı** | Bağlantı kurulamadı. **Bu bir fark değildir**, bakiye bilinmiyor. |
+| **Eşleşiyor** | Tutuyor. |
+
+Son iki satırın ayrımı önemli: okunamayan bir cüzdanı "boş" saymak, varlığınızı
+yok saymak olurdu. Sistem bilmediğinde bunu söyler.
+
+### Varlıklarınızı yanlış konuma girdiyseniz
+
+Cüzdanınızdaki varlıkları `DEX` gibi genel bir adla girmiş olabilirsiniz —
+büyük ihtimalle mecburen, çünkü konum kutusunda cüzdanınızın adı yoktu. Artık
+var. Bu kayıtları gerçek konumlarına (`METAMASK`, `PHANTOM`) taşımak için İşlem
+Defteri'nden ilgili kaydı düzenleyip konumunu değiştirin. Sistem bunu
+kendiliğinden yapmaz; hangi varlığın nerede olduğunu yalnızca siz bilirsiniz.
+
+---
+
+## 12. Arşiv ve net varlık eğrisi
 
 **Grafikler → 🗄️ Arşiv & Net Varlık**
 
@@ -374,7 +576,7 @@ eğrisi oluşur.
 
 ---
 
-## 12. Güvenlik: PIN ve gizlilik modu
+## 13. Güvenlik: PIN ve gizlilik modu
 
 **PIN koruması** Ayarlar'dan açılır. Kuruluma özel bir salt ile SHA-256 kullanılır;
 PIN'in kendisi hiçbir yerde saklanmaz.
@@ -391,7 +593,7 @@ olduğu durumlarda kullanışlıdır.
 
 ---
 
-## 13. Yedekleme ve geri yükleme
+## 14. Yedekleme ve geri yükleme
 
 Uygulama her gün otomatik yedek alır: `data/backups/portfolio_backup_YYYYMMDD.json`.
 
@@ -403,9 +605,23 @@ kopyalamanız yeterlidir.
 > ⚠️ `data/` klasörünü **asla paylaşmayın** ve depoya eklemeyin. `.gitignore`
 > kapsamındadır ama dikkatli olun.
 
+### Veri düzeltmeleri
+
+Bazı sürümler, eski kayıtlardaki bir hatayı onarmak için **bir kez çalışan**
+küçük düzeltmeler getirir. Bunlar uygulama açılışında yapılır, `settings.json`
+içinde işaretlenir (`migrations`) ve ikinci kez çalışmaz.
+
+Sessizce olmazlar: ne değiştiyse `data/logs/cointakip.log` dosyasına satır satır
+yazılır. Sonucu beğenmezseniz o günün yedeğinden geri dönebilirsiniz.
+
+Şimdiye kadar bir tane var — `wallet_symbol_v1`: transferle oluşmuş cüzdan
+kayıtlarındaki gereksiz `USDT` ekini düşürür (`BNBUSDT` → `BNB`). Yalnızca
+**adı** değiştirir; miktara, maliyete, tarihe veya duruma dokunmaz ve elle
+girdiğiniz kayıtları hiç ellemez.
+
 ---
 
-## 14. Sık sorulanlar
+## 15. Sık sorulanlar
 
 **İnternet gerekiyor mu?**
 Fiyatlar için evet. Arayüz kütüphaneleri paketli olduğu için CDN erişimi olmasa da
@@ -431,6 +647,18 @@ dosyayı klasöre koymamışsınız (Binance'te **Transaction History**). Onay
 penceresinde borsadaki gerçek bakiyenizi yazın: rakam defterinizle uyuşuyorsa
 sistem düzeltmeyi **reddeder** ve defterinize dokunmaz. Doğru davranış budur;
 eksik olan sizin kaydınız değil, dosyadır.
+
+**Etherscan anahtarını girdim ama tokenım hâlâ gelmiyor.**
+Muhtemelen o token, ücretsiz planın kapsamadığı bir zincirde: BNB Chain, Base,
+Optimism veya Avalanche. Bağlantının okuma satırında bunu açıkça yazar. Ücretli
+plana geçmeye gerek yok — bağlantıyı **Düzenle**yip tokenın **kontrat adresini**
+elle tanımlayın; bakiye doğrudan zincirden okunur ve anahtar gerekmez.
+
+**"Eksik okundu" ile "bilgi" notu arasındaki fark ne?**
+⚠ **eksik okundu**, bağlantının cevap verdiğini ama bir kısım verinin
+gelmediğini söyler — bir şey yapmanız gerekir. ℹ **bilgi** ise eksiklik değildir;
+örneğin Solana'daki doğrulanmamış token bildirimi. O tokenlar okundu ve tabloda
+duruyorlar, sadece tanınmış listede yoklar.
 
 **Bir işlemi yanlış girdim.**
 İşlem defterinden silebilir veya düzenleyebilirsiniz. Transfer, zarar yazımı ve

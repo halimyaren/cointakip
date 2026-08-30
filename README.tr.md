@@ -78,6 +78,42 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   güncel bakiyenizi** sorar: rakam hesaplananla uyuşuyorsa defteriniz düzeltilir,
   defterinizle uyuşuyorsa eksik olan dosyadır ve **defterinize dokunulmaz**.
   Yeşil "uygulanabilir" rozeti yoktur; bir dosya onu hak edemez.
+- **Cüzdan bağlantıları (salt okunur)** — cüzdanınızın **herkese açık adresini**
+  girin, uygulama zinciri doğrudan okusun: dosya indirmek yok, borsa anahtarı yok.
+  Cüzdan değil **zincir** okunduğu için MetaMask, Phantom, Ledger ve Trust iki
+  adaptörle kapsanır: EVM (Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Base,
+  Avalanche) ve Solana. Bağlantılar kod değil **yapılandırmadır**; yeni cüzdan
+  eklemek bir form doldurmaktır. Okunamayan bağlantı "boş cüzdan" değil
+  *bilinmiyor* diye raporlanır. **Uygulama asla kurtarma ifadesi veya özel anahtar
+  istemez**, adres kutusuna yapıştırılırsa reddeder ve uyarır.
+- **Elle token tanımlama** — Etherscan'ın ücretsiz planı otomatik token keşfini
+  bazı zincirlerde açıyor, bazılarında açmıyor (BNB Chain, Base, Optimism ve
+  Avalanche ücretli plan istiyor). Bunun için ödeme yapmak gerekmiyor: bakiye
+  okumak zaten ücretsiz, ücretli olan yalnızca *hangi tokenlara sahip
+  olduğunuzu bulmak*. Tokenın kontrat adresini yapıştırırsınız, sembolünü ve
+  ondalık hanesini uygulama zincire sorar. Ücretsiz zincirlerde elle tanım
+  otomatik keşfin **yerine geçmez, üstüne eklenir**.
+- **Zincirdeki varlığı tek tıkla deftere ekleme** — cüzdanınızda durup
+  defterinize girmemiş bir varlık için form coin, miktar ve konumla dolu açılır;
+  **alım tarihini ve maliyeti siz girersiniz.** Otomatik yazma bilinçli olarak
+  yok: zincir miktarı bilir, maliyeti bilmez ve sıfır maliyetle yazmak olmayan
+  bir kâr uydurmak olurdu. Varlık başına bir kez yapılır, sonrasında normal bir
+  pozisyon gibi Kasa toplamınızda durur.
+- **Konuma göre sembol** — borsadaki varlık bir işlem çiftidir (`BNBUSDT`);
+  aynı coin cüzdanınızda yalnızca `BNB`'dir, çünkü cüzdanda çift yoktur.
+  Transfer artık sembolü hedefe göre yazıyor ve bir kez çalışan bir düzeltme
+  eski transferlerin ürettiği kayıtları onarıyor. Yalnızca **ad** değişir;
+  miktar, maliyet, tarih ve durum değişmez.
+- **Seviyeli okuma notları** — bir okuma *tam*, *eksik* veya *başarısız*dır ve
+  her not kendi seviyesini taşır. Bilgi notu (örneğin Solana'nın doğrulanmamış
+  token bildirimi) artık gerçekten gelmemiş veriyle aynı alarmı üretmiyor;
+  alarmı şişirmek gerçek sorunu gürültüde kaybettiriyordu.
+- **Anahtar kasası** — sağlayıcı ve (ileride) borsa API anahtarları, PIN'inizden
+  PBKDF2 ile türetilen bir anahtarla **şifrelenir**; çözme anahtarı diske hiç
+  yazılmaz, yalnızca kasayı açtığınız oturum boyunca bellekte kalır. Siz açmadan
+  uygulama hiçbir yere bağlanmaz. PIN'i değiştirmek kasayı yeniden mühürler;
+  kurtarma anahtarıyla sıfırlamak ise kasayı temizler — çözülemeyen veriyi tutup
+  "anahtarlarınız duruyor" izlenimi vermektense.
 - **Excel dışa aktarım**, günlük otomatik yedekleme, gizlilik modu.
 
 ---
@@ -133,10 +169,15 @@ data/
 
 Bu klasör `.gitignore` ile depo dışında tutulur. **Asla paylaşmayın.**
 
-> **API anahtarları hakkında:** `settings.json` içindeki anahtarlar Base64 ile
-> okunaksızlaştırılır — bu **şifreleme değildir**. Dosyaya erişebilen biri
-> anahtarınızı okuyabilir. Anahtar yalnızca kendi makinenizde tutulacaksa
-> yeterlidir; değilse anahtar kullanmayın.
+> **API anahtarları hakkında — bilinçli olarak iki ayrı mekanizma var:**
+>
+> - **Kasa anahtarları** (`vault` altındaki sağlayıcı ve borsa anahtarları)
+>   PIN'inizden türetilen bir anahtarla **şifrelenir**. Çözme anahtarı hiçbir yere
+>   yazılmaz; yalnızca kasa açıkken bellekte durur.
+> - **Gemini / Telegram anahtarları** (`api_keys` altında) yalnızca Base64 ile
+>   **okunaksızlaştırılır** — bu şifreleme değildir, dosyaya erişen okuyabilir.
+>   Yalnızca kendi kotanızı harcayan bir anahtar için bu kabul edilebilir bir
+>   takas; paraya dokunabilen bir anahtar için değildir, o yüzden onlar kasaya girer.
 
 ---
 
@@ -147,7 +188,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-427 test, yaklaşık 16 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
+535 test, yaklaşık 25 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
 veri yolları geçici bir klasöre yönlendirilir, tüm dış çağrılar taklit edilir ve
 hiçbir test yapay zekâ API'sine istek atmaz.
 
@@ -163,6 +204,8 @@ app/
 ├── archive.py        SQLite net varlık / fiyat arşivi (kritik yolda değildir)
 ├── reconcile.py      Borsa dışa aktarımı ↔ defter mutabakatı ve düzeltme
 │                     önerileri (salt okunur; yazma data_manager'dan geçer)
+├── connections.py    Bağlantı kayıt defteri + zincir okuyucuları (EVM, Solana)
+├── keyvault.py       API anahtarları için PIN'den türetilmiş şifreleme
 ├── ai_service.py     Gemini entegrasyonu + yerel yedek motor
 └── static/           Alpine.js tek sayfa arayüz + paketlenmiş kütüphaneler
 ```
