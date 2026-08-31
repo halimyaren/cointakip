@@ -364,7 +364,13 @@ class TestZincirOkuma:
                                           api_key="ANAHTAR")
         assert [b["asset"] for b in bakiyeler] == ["RDNT"]   # mükerrer teklendi
         assert bakiyeler[0]["qty"] == pytest.approx(5.0)
-        assert uyarilar == []
+        # Keşif başarılı: hiçbir HATA veya EKSİKLİK notu yok.
+        assert not cx.is_incomplete(uyarilar)
+        # Ama token yalnızca keşiften geldi; defterde geçmiyor ve elle
+        # tanımlanmadı. Bu "spam" hükmü değil "dayanağım yok" hükmüdür ve
+        # bir BİLGİ notuyla söylenir.
+        assert bakiyeler[0]["trust"] == cx.TRUST_UNKNOWN
+        assert [n["level"] for n in uyarilar] == [cx.NOTE_INFO]
 
     def test_solana_spl_tokenlari_okunur(self, monkeypatch):
         def sahte_rpc(url, method, params):
@@ -1080,3 +1086,322 @@ class TestSembolDuzeltmesiSonrasiKarsilastirma:
         satir = next(r for r in cx.compare_with_ledger()["rows"]
                      if r["asset"] == "BNB")
         assert satir["status"] == "match"
+
+
+# =====================================================================
+# 10) FAZ F6e — YANLIŞ KONUM, KONUM DÜZELTME, EVM SPAM SÜZGECİ
+# =====================================================================
+def _tek_okuma(konum, zincir, bakiyeler):
+    """Tek bağlantılık sahte okuma üretir."""
+    return {"id": "c1", "location": konum, "ok": True, "chain": zincir,
+            "address": "0x11", "notes": [], "incomplete": False,
+            "balances": bakiyeler}
+
+
+class TestYanlisKonumTespiti:
+    """
+    Aynı varlık bir konumda `only_ledger`, başka bir konumda `only_chain` ve
+    miktarlar yakınsa bu iki ayrı eksiklik değil, YANLIŞ RAFA YAZILMIŞ TEK bir
+    varlıktır.
+
+    Ayrım kozmetik değil: sistem bunu görmezse zincir tarafında "+ Deftere
+    Ekle" düğmesi gösterir, kullanıcı basar ve varlığını İKİ KEZ sayar.
+    Gerçek bir kullanımda buna ramak kalmıştı; kullanıcı düğmeye basmadan
+    kendisi fark etti.
+    """
+
+    def _kur(self, monkeypatch, defter_qty, zincir_qty):
+        data = dm.load_portfolio()
+        data["transactions"] = [{
+            "id": 1, "date": "2026-01-01", "coin": "ETHUSDT",
+            "exchange": "PHANTOM", "qty": defter_qty, "cost": 2400.0,
+            "status": dm.ACTIVE_STATUS, "type": "TRANSFER"}]
+        dm.save_portfolio(data)
+        okumalar = {
+            "c1": _tek_okuma("PHANTOM", "solana", []),
+            "c2": _tek_okuma("METAMASK", "ethereum",
+                             [{"asset": "ETH", "qty": zincir_qty}]),
+        }
+        monkeypatch.setattr(cx, "read_all", lambda only_enabled=True: okumalar)
+        return cx.compare_with_ledger()
+
+    def test_yakin_miktarlar_yanlis_konum_sayilir(self, monkeypatch):
+        rapor = self._kur(monkeypatch, 0.00219, 0.00219)
+        defter_satir = next(r for r in rapor["rows"] if r["location"] == "PHANTOM")
+        zincir_satir = next(r for r in rapor["rows"] if r["location"] == "METAMASK")
+
+        assert defter_satir["status"] == "only_ledger"
+        assert zincir_satir["status"] == "only_chain"
+        # İki satır da işaretlenmeli ve ikisi de AYNI doğru konumu göstermeli.
+        assert defter_satir["misplaced"]["role"] == "ledger"
+        assert zincir_satir["misplaced"]["role"] == "chain"
+        assert defter_satir["misplaced"]["correct_location"] == "METAMASK"
+        assert zincir_satir["misplaced"]["correct_location"] == "METAMASK"
+        assert zincir_satir["misplaced"]["ledger_location"] == "PHANTOM"
+        # Düzeltilecek kaydın kimliği taşınıyor ki arayüz onu düzeltebilsin.
+        assert defter_satir["misplaced"]["tx_ids"] == [1]
+        # İki satır ama TEK sorun.
+        assert rapor["misplaced_count"] == 1
+
+    def test_uzak_miktarlar_eslenmez(self, monkeypatch):
+        """
+        Miktarlar birbirinden uzaksa bu yanlış konum değildir. Zorlama bir
+        eşleşme, gerçek bir eksiği gizlerdi.
+        """
+        rapor = self._kur(monkeypatch, 0.00219, 5.0)
+        for r in rapor["rows"]:
+            assert r["misplaced"] is None
+        assert rapor["misplaced_count"] == 0
+
+    def test_yanlis_konumda_deftere_ekleme_onerilmez(self, monkeypatch):
+        """
+        Arayüzün `chainAddableQty` kuralının sunucu tarafındaki dayanağı:
+        işaretli satır ekleme adayı olmamalı. Bu testin koruduğu şey tam
+        olarak çift sayma tuzağıdır.
+        """
+        rapor = self._kur(monkeypatch, 0.00219, 0.00219)
+        zincir_satir = next(r for r in rapor["rows"] if r["location"] == "METAMASK")
+        assert zincir_satir["chain_qty"] > 0          # eklenebilir görünüyor
+        assert zincir_satir["misplaced"] is not None  # ama eklenmemeli
+
+
+class TestKonumDuzeltme:
+    """`relocate_asset`: yanlış yazılmış kaydı düzeltir, transfer üretmez."""
+
+    def _defter(self, kayitlar):
+        data = dm.load_portfolio()
+        data["transactions"] = kayitlar
+        dm.save_portfolio(data)
+
+    def test_konum_ve_sembol_birlikte_duzelir(self):
+        self._defter([{"id": 1, "date": "2026-01-01", "coin": "SOLUSDT",
+                       "exchange": "PHANTOM", "qty": 0.08, "cost": 93.0,
+                       "status": dm.ACTIVE_STATUS}])
+        sonuc = dm.relocate_asset("SOL", "PHANTOM", "METAMASK")
+        assert sonuc["count"] == 1
+        tx = dm.load_portfolio()["transactions"][0]
+        assert tx["exchange"] == "METAMASK"
+        assert tx["coin"] == "SOL"          # cüzdanda çift yazımı olmaz
+
+    def test_borsaya_tasinirsa_cift_yazimi_geri_gelir(self):
+        self._defter([{"id": 1, "date": "2026-01-01", "coin": "SOL",
+                       "exchange": "PHANTOM", "qty": 0.08, "cost": 93.0,
+                       "status": dm.ACTIVE_STATUS}])
+        dm.relocate_asset("SOL", "PHANTOM", "BINANCE")
+        assert dm.load_portfolio()["transactions"][0]["coin"] == "SOLUSDT"
+
+    def test_miktar_maliyet_tarih_degismez(self):
+        self._defter([{"id": 1, "date": "2026-01-01", "coin": "ETHUSDT",
+                       "exchange": "PHANTOM", "qty": 0.00219, "cost": 2420.0,
+                       "status": dm.ACTIVE_STATUS, "notes": "elle yazıldı"}])
+        dm.relocate_asset("ETH", "PHANTOM", "METAMASK")
+        tx = dm.load_portfolio()["transactions"][0]
+        assert tx["qty"] == 0.00219
+        assert tx["cost"] == 2420.0
+        assert tx["date"] == "2026-01-01"
+        assert tx["notes"] == "elle yazıldı"
+
+    def test_kapali_kayitlara_dokunulmaz(self):
+        """
+        Kapalı kayıt geçmişin kaydıdır; şimdi yeniden yazmak muhasebe izini
+        bozar. Kullanıcının aktif tablosunu düzeltmek yeterlidir.
+        """
+        self._defter([
+            {"id": 1, "coin": "ETHUSDT", "exchange": "PHANTOM", "qty": 1.0,
+             "cost": 100.0, "status": "Kapandı / İzleme"},
+            {"id": 2, "coin": "ETHUSDT", "exchange": "PHANTOM", "qty": 2.0,
+             "cost": 100.0, "status": dm.ACTIVE_STATUS},
+        ])
+        sonuc = dm.relocate_asset("ETH", "PHANTOM", "METAMASK")
+        assert sonuc["count"] == 1
+        kayitlar = {t["id"]: t for t in dm.load_portfolio()["transactions"]}
+        assert kayitlar[1]["exchange"] == "PHANTOM"      # kapalı: dokunulmadı
+        assert kayitlar[2]["exchange"] == "METAMASK"
+
+    def test_ayni_konuma_tasima_reddedilir(self):
+        self._defter([{"id": 1, "coin": "ETH", "exchange": "METAMASK",
+                       "qty": 1.0, "cost": 100.0, "status": dm.ACTIVE_STATUS}])
+        with pytest.raises(ValueError):
+            dm.relocate_asset("ETH", "METAMASK", "METAMASK")
+
+    def test_kayit_yoksa_hata_verir(self):
+        """Sessizce 'başarılı' demek, kullanıcıya olmayan bir iş yaptırırdı."""
+        self._defter([])
+        with pytest.raises(ValueError):
+            dm.relocate_asset("ETH", "PHANTOM", "METAMASK")
+
+    def test_birden_cok_lot_birlikte_tasinir(self):
+        """Elle düzeltmeye göre asıl faydası bu: tekrarlayan el emeğini kaldırır."""
+        self._defter([
+            {"id": i, "coin": "ETHUSDT", "exchange": "PHANTOM", "qty": 1.0,
+             "cost": 100.0, "status": dm.ACTIVE_STATUS} for i in (1, 2, 3)])
+        assert dm.relocate_asset("ETH", "PHANTOM", "METAMASK")["count"] == 3
+        assert all(t["exchange"] == "METAMASK"
+                   for t in dm.load_portfolio()["transactions"])
+
+
+class TestEvmSpamSuzgeci:
+    """
+    EVM tarafında kürasyonlu bir doğrulanmış-token listesi YOK. Bu yüzden
+    olumlu sinyali olmayan token "spam" değil **"bilmiyorum"** sayılır.
+
+    Ayrım şart: ikisi birleştirilseydi, Ethereum'da gerçek USDC tutan ve onu
+    henüz deftere yazmamış bir kullanıcının tokenları spam diye katlanır,
+    "+ Deftere Ekle" düğmesi de kaybolurdu — yani zincirden deftere ekleme
+    özelliği ilk kullanımda çalışmaz hâle gelirdi.
+    """
+
+    def _kesif(self, monkeypatch, sembol="ACT"):
+        monkeypatch.setattr(cx, "_rpc", lambda url, m, p: "0x0"
+                            if m == "eth_getBalance" else hex(7 * 10 ** 18))
+        monkeypatch.setattr(cx, "_etherscan", lambda cid, params, key: [
+            {"contractAddress": "0x" + "ab" * 20, "tokenSymbol": sembol,
+             "tokenDecimal": "18"}])
+        return cx.read_evm("arbitrum", "0x" + "11" * 20, api_key="ANAHTAR")
+
+    def test_kesiften_gelen_bilinmeyen_token_isaretlenir(self, monkeypatch):
+        bakiyeler, _ = self._kesif(monkeypatch)
+        assert bakiyeler[0]["trust"] == cx.TRUST_UNKNOWN
+        assert bakiyeler[0]["verified"] is False
+
+    def test_elle_tanimlanan_token_dogrulanmis_sayilir(self, monkeypatch):
+        """Kullanıcı kontratı kendi yazdıysa niyet açıktır."""
+        monkeypatch.setattr(cx, "_rpc", lambda url, m, p: "0x0"
+                            if m == "eth_getBalance" else hex(7 * 10 ** 18))
+        bakiyeler, _ = cx.read_evm(
+            "bsc", "0x" + "11" * 20,
+            tokens=[{"contract": "0x" + "ab" * 20, "symbol": "CPL",
+                     "decimals": 18}])
+        assert bakiyeler[0]["trust"] == cx.TRUST_VERIFIED
+
+    def test_defterde_gecen_sembol_dogrulanmis_sayilir(self, monkeypatch):
+        data = dm.load_portfolio()
+        data["transactions"] = [{"id": 1, "coin": "ACTUSDT",
+                                 "exchange": "BINANCE", "qty": 1.0,
+                                 "cost": 1.0, "status": dm.ACTIVE_STATUS}]
+        dm.save_portfolio(data)
+        bakiyeler, _ = self._kesif(monkeypatch, sembol="ACT")
+        assert bakiyeler[0]["trust"] == cx.TRUST_VERIFIED
+
+    def test_elle_spam_isareti_her_seyi_ezer(self, monkeypatch):
+        """Defterde geçse bile kullanıcı 'bu spam' diyebilmeli."""
+        data = dm.load_portfolio()
+        data["transactions"] = [{"id": 1, "coin": "ACTUSDT",
+                                 "exchange": "BINANCE", "qty": 1.0,
+                                 "cost": 1.0, "status": dm.ACTIVE_STATUS}]
+        dm.save_portfolio(data)
+        cx.set_token_mark("arbitrum", "0x" + "ab" * 20, cx.TOKEN_MARK_SPAM)
+        bakiyeler, _ = self._kesif(monkeypatch, sembol="ACT")
+        assert bakiyeler[0]["trust"] == cx.TRUST_UNLISTED
+
+    def test_elle_gercek_isareti_her_seyi_ezer(self, monkeypatch):
+        """Gerçek bir airdrop da başlangıçta dayanaksız görünür."""
+        cx.set_token_mark("arbitrum", "0x" + "AB" * 20, cx.TOKEN_MARK_REAL)
+        bakiyeler, _ = self._kesif(monkeypatch)
+        assert bakiyeler[0]["trust"] == cx.TRUST_VERIFIED
+
+    def test_isaret_kaldirilabilir(self, monkeypatch):
+        cx.set_token_mark("arbitrum", "0x" + "ab" * 20, cx.TOKEN_MARK_REAL)
+        cx.set_token_mark("arbitrum", "0x" + "ab" * 20, None)
+        bakiyeler, _ = self._kesif(monkeypatch)
+        assert bakiyeler[0]["trust"] == cx.TRUST_UNKNOWN
+
+    def test_gecersiz_isaret_reddedilir(self):
+        with pytest.raises(ValueError):
+            cx.set_token_mark("bsc", "0x" + "ab" * 20, "belki")
+
+    def test_yerel_para_her_zaman_dogrulanmistir(self, monkeypatch):
+        """Kimse size sahte ETH gönderemez."""
+        monkeypatch.setattr(cx, "_rpc", lambda url, m, p: hex(10 ** 18))
+        bakiyeler, _ = cx.read_evm("ethereum", "0x" + "11" * 20)
+        assert bakiyeler[0]["asset"] == "ETH"
+        assert bakiyeler[0]["trust"] == cx.TRUST_VERIFIED
+
+
+class TestGuvenDerecesiKarsilastirmada:
+    """`unknown` GÖRÜNÜR kalır ama eklenmez; `unlisted` katlanır."""
+
+    def _rapor(self, monkeypatch, trust):
+        monkeypatch.setattr(cx, "read_all", lambda only_enabled=True: {
+            "c1": _tek_okuma("METAMASK", "bsc", [
+                {"asset": "ACT", "qty": 500.0, "contract": "0x" + "ab" * 20,
+                 "chain": "bsc", "trust": trust,
+                 "verified": trust == cx.TRUST_VERIFIED}])})
+        return cx.compare_with_ledger()
+
+    def test_bilinmeyen_token_katlanmaz_ama_incelenir(self, monkeypatch):
+        rapor = self._rapor(monkeypatch, cx.TRUST_UNKNOWN)
+        satir = next(r for r in rapor["rows"] if r["asset"] == "ACT")
+        assert satir["needs_review"] is True
+        assert satir["likely_spam"] is False      # GİZLENMİYOR
+        assert rapor["review_count"] == 1
+        assert "Bu gerçek" in satir["note"]
+
+    def test_listede_olmayan_token_katlanir(self, monkeypatch):
+        rapor = self._rapor(monkeypatch, cx.TRUST_UNLISTED)
+        satir = next(r for r in rapor["rows"] if r["asset"] == "ACT")
+        assert satir["likely_spam"] is True
+        assert satir["needs_review"] is False
+        assert rapor["spam_count"] == 1
+
+    def test_kontrat_adresi_satira_tasinir(self, monkeypatch):
+        """İşaret sembole değil kontrata bağlanır; sembol taklit edilebilir."""
+        rapor = self._rapor(monkeypatch, cx.TRUST_UNKNOWN)
+        satir = next(r for r in rapor["rows"] if r["asset"] == "ACT")
+        assert satir["contracts"] == [{"chain": "bsc",
+                                       "contract": "0x" + "ab" * 20}]
+
+    def test_defterde_gecen_varlik_hicbir_zaman_katlanmaz(self, monkeypatch):
+        """
+        Defterinizde olan bir şey şüpheli olsa bile gizlenmez; kullanıcının
+        varlığını kullanıcıdan saklamak en kötü seçenektir.
+        """
+        data = dm.load_portfolio()
+        data["transactions"] = [{"id": 1, "coin": "ACT", "exchange": "METAMASK",
+                                 "qty": 500.0, "cost": 0.01,
+                                 "status": dm.ACTIVE_STATUS}]
+        dm.save_portfolio(data)
+        rapor = self._rapor(monkeypatch, cx.TRUST_UNLISTED)
+        satir = next(r for r in rapor["rows"] if r["asset"] == "ACT")
+        assert satir["likely_spam"] is False
+        assert satir["needs_review"] is False
+
+
+class TestF6eApiUclari:
+
+    def test_konum_duzeltme_ucu(self, client):
+        data = dm.load_portfolio()
+        data["transactions"] = [{"id": 1, "coin": "SOLUSDT",
+                                 "exchange": "PHANTOM", "qty": 0.08,
+                                 "cost": 93.0, "status": dm.ACTIVE_STATUS}]
+        dm.save_portfolio(data)
+        r = client.post("/api/connections/relocate",
+                        json={"asset": "SOL", "from_location": "PHANTOM",
+                              "to_location": "METAMASK"})
+        assert r.status_code == 200
+        assert r.json()["count"] == 1
+        assert dm.load_portfolio()["transactions"][0]["coin"] == "SOL"
+
+    def test_bulunamayan_kayit_400_doner(self, client):
+        r = client.post("/api/connections/relocate",
+                        json={"asset": "XYZ", "from_location": "PHANTOM",
+                              "to_location": "METAMASK"})
+        assert r.status_code == 400
+
+    def test_token_isaret_ucu(self, client):
+        r = client.post("/api/connections/token-mark",
+                        json={"chain": "bsc", "contract": "0x" + "ab" * 20,
+                              "mark": "spam"})
+        assert r.status_code == 200
+        assert r.json()["token_marks"]["bsc:0x" + "ab" * 20] == "spam"
+
+    def test_gecersiz_isaret_400_doner(self, client):
+        r = client.post("/api/connections/token-mark",
+                        json={"chain": "bsc", "contract": "0x" + "ab" * 20,
+                              "mark": "belki"})
+        assert r.status_code == 400
+
+    def test_kontratsiz_isaret_400_doner(self, client):
+        r = client.post("/api/connections/token-mark",
+                        json={"chain": "bsc", "mark": "spam"})
+        assert r.status_code == 400

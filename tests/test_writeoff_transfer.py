@@ -689,3 +689,116 @@ class TestSembolDuzeltmesi:
         assert dm.load_settings()["migrations"][dm.MIGRATION_WALLET_SYMBOL] is True
         # İkinci çağrı hiç çalışmamalı — işaret konmuş durumda.
         assert dm.run_pending_migrations() == {}
+
+
+# =====================================================================
+# 10) FAZ F6e — İKİNCİ GEÇİŞ VE KURALIN ÜÇÜNCÜ KOPYASI
+# =====================================================================
+class TestIkinciSembolGecisi:
+    """
+    Birinci geçiş 31 Ağustos 00:49'da çalıştı, ama o an faz diske yarım
+    yazılmıştı: migrasyon yüklenmiş, `transfer_position` düzeltmesi henüz
+    yüklenmemişti. Aradaki 68 dakikada yapılan transferler hedef lotu yine
+    eski kuralla açtı. Birinci geçiş işaretli olduğu için bir daha çalışmaz;
+    ayrı anahtarlı ikinci bir geçiş gerekiyor.
+    """
+
+    def _bozuk(self):
+        data = dm.load_portfolio()
+        data["transactions"] = [{
+            "id": 1, "date": "2026-01-01", "coin": "SOLUSDT",
+            "exchange": "PHANTOM", "qty": 0.08, "cost": 93.0,
+            "status": dm.ACTIVE_STATUS, "type": "TRANSFER"}]
+        dm.save_portfolio(data)
+
+    def test_ilk_calistirmada_iki_gecis_de_islenir(self):
+        self._bozuk()
+        sonuc = dm.run_pending_migrations()
+        isaretler = dm.load_settings()["migrations"]
+        assert isaretler[dm.MIGRATION_WALLET_SYMBOL] is True
+        assert isaretler[dm.MIGRATION_WALLET_SYMBOL_V2] is True
+        # Düzeltmeyi birincisi yapar; ikincisi bakar ve yapacak iş bulamaz.
+        assert len(sonuc[dm.MIGRATION_WALLET_SYMBOL]) == 1
+        assert sonuc[dm.MIGRATION_WALLET_SYMBOL_V2] == []
+        assert dm.load_portfolio()["transactions"][0]["coin"] == "SOL"
+
+    def test_birincisi_isaretliyken_ikincisi_yine_de_calisir(self):
+        """Kullanıcının gerçek durumu buydu: v1 bitmiş, hata sonradan doğmuş."""
+        ayarlar = dm.load_settings()
+        ayarlar["migrations"] = {dm.MIGRATION_WALLET_SYMBOL: True}
+        dm.save_settings(ayarlar)
+        self._bozuk()
+
+        sonuc = dm.run_pending_migrations()
+        assert dm.MIGRATION_WALLET_SYMBOL not in sonuc      # tekrar çalışmadı
+        assert len(sonuc[dm.MIGRATION_WALLET_SYMBOL_V2]) == 1
+        assert dm.load_portfolio()["transactions"][0]["coin"] == "SOL"
+
+    def test_ikisi_de_isaretliyse_hicbiri_calismaz(self):
+        ayarlar = dm.load_settings()
+        ayarlar["migrations"] = {dm.MIGRATION_WALLET_SYMBOL: True,
+                                 dm.MIGRATION_WALLET_SYMBOL_V2: True}
+        dm.save_settings(ayarlar)
+        self._bozuk()
+        assert dm.run_pending_migrations() == {}
+        # Dokunulmadı: işaret konmuşsa bir daha çalışmaz.
+        assert dm.load_portfolio()["transactions"][0]["coin"] == "SOLUSDT"
+
+
+class TestKayitDuzenlemedeSembol:
+    """
+    "Borsada çift, cüzdanda yalın" kuralının ÜÇÜNCÜ kopyası kayıt düzenleme
+    ucundaydı ve sembolü yalnızca `coin` gönderildiğinde türetiyordu.
+    Kullanıcı bir kaydın SADECE konumunu değiştirdiğinde ad olduğu gibi
+    kalıyordu.
+    """
+
+    def _kayit(self, client, coin, exchange):
+        r = client.post("/api/transactions", json={
+            "coin": coin, "exchange": exchange, "qty": 1.0, "cost": 100.0})
+        assert r.status_code == 200
+        return r.json()["transaction"]["id"]
+
+    def test_yalnizca_konum_degisince_sembol_yeniden_turetilir(self, client):
+        tx_id = self._kayit(client, "SOL", "BINANCE")
+        assert client.get("/api/portfolio").json()  # defter okunabilir
+        r = client.put(f"/api/transactions/{tx_id}", json={"exchange": "PHANTOM"})
+        assert r.status_code == 200
+        assert r.json()["transaction"]["coin"] == "SOL"
+        assert r.json()["transaction"]["exchange"] == "PHANTOM"
+
+    def test_cuzdandan_borsaya_donunce_cift_yazimi_geri_gelir(self, client):
+        tx_id = self._kayit(client, "SOL", "PHANTOM")
+        r = client.put(f"/api/transactions/{tx_id}", json={"exchange": "MEXC"})
+        assert r.json()["transaction"]["coin"] == "SOLUSDT"
+
+    def test_ilgisiz_duzenleme_sembole_dokunmaz(self, client):
+        """
+        Kullanıcı borsada `RDNT` diye yazdıysa bu onun tercihidir. Not
+        düzenlemek gibi ilgisiz bir değişikliğin adı sessizce `RDNTUSDT`
+        yapması, kullanıcının kendi yazdığı adı elinden almak olurdu.
+        """
+        data = dm.load_portfolio()
+        data["transactions"] = [{"id": 1, "date": "2026-01-01", "coin": "RDNT",
+                                 "exchange": "BINANCE", "qty": 1.0,
+                                 "cost": 100.0, "status": dm.ACTIVE_STATUS}]
+        dm.save_portfolio(data)
+        r = client.put("/api/transactions/1", json={"notes": "bir not"})
+        assert r.json()["transaction"]["coin"] == "RDNT"
+
+    def test_coin_ve_konum_birlikte_gonderilebilir(self, client):
+        tx_id = self._kayit(client, "ETH", "BINANCE")
+        r = client.put(f"/api/transactions/{tx_id}",
+                       json={"coin": "btc", "exchange": "METAMASK"})
+        assert r.json()["transaction"]["coin"] == "BTC"
+
+    def test_cift_isaretli_sembol_korunur(self, client):
+        """`BTC/USD` gibi bir yazım kullanıcının kastıdır; bozulmamalı."""
+        data = dm.load_portfolio()
+        data["transactions"] = [{"id": 1, "date": "2026-01-01",
+                                 "coin": "BTC/USD", "exchange": "MANUEL",
+                                 "qty": 1.0, "cost": 100.0,
+                                 "status": dm.ACTIVE_STATUS}]
+        dm.save_portfolio(data)
+        r = client.put("/api/transactions/1", json={"exchange": "BINANCE"})
+        assert r.json()["transaction"]["coin"] == "BTC/USD"

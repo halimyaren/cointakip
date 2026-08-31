@@ -550,8 +550,57 @@ yok saymak olurdu. Sistem bilmediğinde bunu söyler.
 Cüzdanınızdaki varlıkları `DEX` gibi genel bir adla girmiş olabilirsiniz —
 büyük ihtimalle mecburen, çünkü konum kutusunda cüzdanınızın adı yoktu. Artık
 var. Bu kayıtları gerçek konumlarına (`METAMASK`, `PHANTOM`) taşımak için İşlem
-Defteri'nden ilgili kaydı düzenleyip konumunu değiştirin. Sistem bunu
-kendiliğinden yapmaz; hangi varlığın nerede olduğunu yalnızca siz bilirsiniz.
+Defteri'nden ilgili kaydı düzenleyip konumunu değiştirin. Kaydın adı da o
+konuma göre kendiliğinden düzelir: borsaya taşırsanız `SOL` → `SOLUSDT`,
+cüzdana taşırsanız `SOLUSDT` → `SOL`.
+
+**Sistem bunu size hatırlatır.** Aynı varlık bir konumda “defterde var, zincirde
+yok”, başka bir konumda “zincirde var, defterde yok” çıkıyorsa ve miktarlar
+birbirine yakınsa, bu neredeyse her zaman iki ayrı eksiklik değil **yanlış rafa
+yazılmış tek bir varlıktır**. Tabloda iki satır görürsünüz ama ortada tek bir
+sorun vardır.
+
+O satırlarda **+ Deftere Ekle** düğmesi bilerek gösterilmez; yerine **Konumu
+düzelt** çıkar. Sebebi şu: ekleseydiniz aynı varlık defterinize ikinci kez
+girer ve portföyünüz olduğundan büyük görünürdü.
+
+> **Konumu düzelt** bir transfer değildir. Transfer, gerçekten yaşanmış bir
+> hareketi kaydeder ve iki iz bırakır. Burada varlık o konumda hiç bulunmadı;
+> kayıt baştan yanlış yazıldı. Bu yüzden düzeltme yalnızca **konumu ve sembolü**
+> değiştirir — miktar, maliyet, tarih ve notlar aynı kalır, kapalı kayıtlara
+> hiç dokunulmaz. O konumdaki birden çok lot varsa hepsi birlikte taşınır.
+
+Gerçekten bir hareket yaptıysanız (paranızı bir cüzdandan diğerine
+gönderdiyseniz) doğru araç **Transfer**'dir, bu değil.
+
+### Tanımadığınız tokenlar
+
+Zincir üstü adreslere istenmeden token gönderilmesi yaygındır; bazıları sadece
+gürültü, bazıları sizi kendi sitesine çekmeye çalışan tuzaklardır. Sistem
+bunların defterinize kendiliğinden girmesini engeller ama **iki ayrı durumu
+birbirinden ayırır**:
+
+| Durum | Ne demek | Ne yapılır |
+|:---|:---|:---|
+| **Katlanmış (spam)** | Doğrulanmış token listesi bu tokenı tanımıyor (Solana). | Tablo altında sayısı yazar; “Yine de göster” ile açabilirsiniz. |
+| **İnceleme bekliyor** | Elimizde bir hüküm yok: token yalnızca zincir keşfinden geldi, elle tanımlamadınız, defterinizde geçmiyor ve fiyat kaynağı yok (EVM). | Satır **görünür kalır**, yalnızca ekleme önerilmez. |
+
+Bu ayrım önemli: “bilmiyorum” ile “sahte” aynı şey değildir. EVM zincirlerinde
+kürasyonlu bir doğrulanmış-token listesi kullanmıyoruz, dolayısıyla bir tokenın
+sahte olduğunu söyleyecek dayanağımız da yok. Onu spam sayıp gizleseydik,
+Ethereum'da gerçekten USDC tutan ve henüz deftere yazmamış bir kullanıcının
+varlığı kendisinden saklanırdı.
+
+Son söz sizindir. Her iki durumda da satırın sonunda **Bu gerçek** düğmesi
+vardır; bastığınızda token doğrulanmış sayılır, katlanmaz ve deftere
+ekleyebilirsiniz. Tersi de mümkün: tanımadığınız bir tokenın yanındaki **spam**
+bağlantısına basarsanız katlanır. İşaret kalıcıdır ve **kontrat adresine**
+bağlanır — sembole değil, çünkü sembol taklit edilebilir ve spam tokenlar bunu
+bilerek yapar.
+
+Bir token şu üç durumdan birindeyse zaten doğrulanmış sayılır ve hiç
+işaretlemeniz gerekmez: kontratını **elle tanımladıysanız**, sembolü
+**defterinizde geçiyorsa**, veya onun için bir **fiyat kaynağı** tanımlıysa.
 
 ---
 
@@ -614,10 +663,18 @@ içinde işaretlenir (`migrations`) ve ikinci kez çalışmaz.
 Sessizce olmazlar: ne değiştiyse `data/logs/cointakip.log` dosyasına satır satır
 yazılır. Sonucu beğenmezseniz o günün yedeğinden geri dönebilirsiniz.
 
-Şimdiye kadar bir tane var — `wallet_symbol_v1`: transferle oluşmuş cüzdan
-kayıtlarındaki gereksiz `USDT` ekini düşürür (`BNBUSDT` → `BNB`). Yalnızca
-**adı** değiştirir; miktara, maliyete, tarihe veya duruma dokunmaz ve elle
-girdiğiniz kayıtları hiç ellemez.
+Şimdiye kadar ikisi var ve ikisi de aynı işi yapar — `wallet_symbol_v1` ve
+`wallet_symbol_v2`: transferle oluşmuş cüzdan kayıtlarındaki gereksiz `USDT`
+ekini düşürürler (`BNBUSDT` → `BNB`). Yalnızca **adı** değiştirirler; miktara,
+maliyete, tarihe veya duruma dokunmazlar ve elle girdiğiniz kayıtları hiç
+ellemezler.
+
+İkinci bir geçişin sebebi şu: birincisi çalıştıktan sonra, düzeltmenin kaynağı
+olan kod değişikliği yüklenmeden önce yapılan transferler yine eski adla
+kaydedilmişti. Birinci geçiş işaretlendiği için tekrar çalışmıyordu; bu yüzden
+ayrı anahtarlı ikinci bir geçiş eklendi. Buradan çıkan ders koda da yazıldı:
+açılışta veriye dokunan bir düzeltme, kendisini gerektiren kod değişikliğiyle
+**aynı anda** diske inmelidir.
 
 ---
 

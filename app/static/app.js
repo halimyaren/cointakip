@@ -1168,6 +1168,14 @@ function portfolioApp() {
     chainAddableQty(r) {
       if (!r || r.chain_qty === null || r.chain_qty === undefined) return 0;
       if (r.likely_spam) return 0;                 // spam token deftere girmez
+      // Hakkında hüküm olmayan token da deftere girmez. Fark şu: spam
+      // KATLANIR, bu satır GÖRÜNÜR kalır — yalnızca ekleme önerilmez.
+      // Kullanıcı "Bu gerçek" derse düğme gelir.
+      if (r.needs_review) return 0;
+      // Yanlış konuma yazılmış varlık: aynı varlık defterde başka bir konumda
+      // duruyor. Eklemek ÇİFT SAYAR. Burada yapılacak şey eklemek değil,
+      // mevcut kaydın konumunu düzeltmektir.
+      if (r.misplaced) return 0;
       if (r.status === 'only_chain') return r.chain_qty;
       // Kısmi eksik de aynı durumun küçük hâli: zincirde defterden FAZLA var.
       if (r.status === 'mismatch' && r.diff_qty > 0) return r.diff_qty;
@@ -1191,6 +1199,86 @@ function portfolioApp() {
         `${r.asset} — ${r.location}: miktar zincirden dolduruldu. ` +
         'ALIM TARİHİ ve BİRİM ALIŞ FİYATI alanlarını siz doldurun — ' +
         'zincir maliyeti bilmez.', 'info', 9000);
+    },
+
+    // Doğrulanmamış bir tokenı kullanıcı kendisi işaretler. Sistemin tahmini
+    // tahmindir: gerçek bir airdrop başlangıçta değersiz görünebilir. Son söz
+    // kullanıcınındır ve bu işaret tüm otomatik sinyalleri ezer.
+    async markToken(r, isaret) {
+      const kontratlar = (r && r.contracts) || [];
+      if (!kontratlar.length) {
+        this.notify(`${r.asset} bir kontrat adresi taşımıyor; işaretlenemez.`,
+                    'error', 4000);
+        return;
+      }
+      if (isaret === 'spam') {
+        const onay = await this.askConfirm({
+          title: 'Spam olarak işaretle',
+          message: `${r.asset} spam sayılacak.`,
+          detail: 'Karşılaştırma tablosunda katlanır ve deftere ekleme düğmesi ' +
+                  'gösterilmez. Defterinizdeki kayıtlara DOKUNULMAZ; istediğiniz ' +
+                  'zaman "Bu gerçek" diyerek geri alabilirsiniz.',
+          confirmText: 'Spam işaretle', tone: 'danger'
+        });
+        if (!onay) return;
+      }
+      try {
+        for (const k of kontratlar) {
+          const resp = await fetch('/api/connections/token-mark', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chain: k.chain, contract: k.contract,
+                                   mark: isaret })
+          });
+          const body = await resp.json();
+          if (!resp.ok) throw new Error(body.detail || 'İşaret kaydedilemedi.');
+        }
+        this.notify(
+          isaret === 'real'
+            ? `${r.asset} gerçek olarak işaretlendi; artık deftere ekleyebilirsiniz.`
+            : `${r.asset} spam olarak işaretlendi.`, 'success', 4000);
+        await this.runConnectionReconcile();
+      } catch (e) {
+        this.notify(e.message || 'İşaret kaydedilemedi.', 'error', 5000);
+      }
+    },
+
+    // Yanlış konuma yazılmış varlığın kaydını doğru konuma taşır.
+    // Ekleme DEĞİL düzeltme: varlık o konumda hiç bulunmadı, kayıt yanlış
+    // yazıldı. Yeni kayıt açmak defterde aynı varlıktan iki tane yaratırdı.
+    async fixLocation(r) {
+      const m = r && r.misplaced;
+      if (!m) return;
+      const adet = (m.tx_ids || []).length;
+      const onay = await this.askConfirm({
+        title: 'Kaydın konumunu düzelt',
+        message: `${m.asset}: defterde ${m.ledger_location} yazıyor, zincirde ` +
+                 `${m.correct_location} adresinde duruyor.`,
+        detail: `${adet || 'İlgili'} aktif kaydın konumu ${m.correct_location} ` +
+                'olarak güncellenecek ve sembol o konuma göre yeniden ' +
+                'yazılacak. Miktar, maliyet, tarih ve notlar değişmez; kapalı ' +
+                'kayıtlara dokunulmaz. Bu bir transfer değildir — varlık ' +
+                'gerçekte hiç taşınmadı, yalnızca yanlış yazılmıştı.',
+        confirmText: 'Konumu düzelt'
+      });
+      if (!onay) return;
+      try {
+        const resp = await fetch('/api/connections/relocate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ asset: m.asset,
+                                 from_location: m.ledger_location,
+                                 to_location: m.correct_location })
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Konum düzeltilemedi.');
+        this.notify(`${m.asset}: ${body.count} kayıt ${m.correct_location} ` +
+                    'konumuna alındı.', 'success', 5000);
+        await this.fetchPortfolio();
+        await this.runConnectionReconcile();
+      } catch (e) {
+        this.notify(e.message || 'Konum düzeltilemedi.', 'error', 5000);
+      }
     },
 
     async runConnectionReconcile() {

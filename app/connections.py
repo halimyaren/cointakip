@@ -600,6 +600,144 @@ def _evm_discover_tokens(chain, address, api_key, limit=400):
     return list(bulunan.values())
 
 
+# =====================================================================
+# Token güveni: hangi token gerçek, hangisi istenmeden gönderilmiş?
+# =====================================================================
+# Solana tarafında Jupiter'in doğrulanmış listesi var. EVM tarafında eşdeğeri
+# YOKTU: `tokentx` adrese DOKUNMUŞ her tokenı getirir ve bakiyesi sıfırdan
+# büyükse listeye girerdi. Size gönderilmiş bir spam token da tam olarak böyle
+# görünür — kullanıcı bunu kendi fark etti ve ACT örneğiyle bildirdi.
+#
+# Çözüm için ağa yeni bir bağımlılık eklemedik. Uygulamanın ZATEN bildiği üç
+# sinyal, bir tokenın kullanıcıya ait olduğunu makul biçimde gösterir:
+#
+#   1. Kullanıcı kontratı ELLE tanımlamış. Niyetin en güçlü kanıtı budur.
+#   2. Sembol kullanıcının DEFTERİNDE geçiyor. Zaten sahiplenilmiş demektir.
+#   3. Sembol için bir FİYAT KAYNAĞI tanımlı. Takip ediliyor demektir.
+#
+# Hiçbiri tutmuyorsa token yalnızca keşifle bulunmuştur — yani birileri onu
+# adrese göndermiştir. Bu "spam" hükmü değil, "doğrulanmadı" hükmüdür: satır
+# silinmez, gizlenmez, yalnızca katlanır ve kullanıcı açıp bakabilir.
+#
+# Son söz her zaman kullanıcınındır: elle "bu gerçek" / "bu spam" işareti
+# yukarıdaki üç sinyalin de ÜSTÜNDEDİR. Gerçek bir airdrop başlangıçta
+# değersiz görünebilir; sistem kullanıcı adına karar veremez.
+TOKEN_MARK_REAL = "real"
+TOKEN_MARK_SPAM = "spam"
+
+# Güven derecesi. İki farklı "hayır" vardır ve onları aynı kefeye koymak
+# pahalıya mal olurdu:
+#
+#   TRUST_VERIFIED — kullanıcıya ait olduğuna dair olumlu bir işaret var.
+#   TRUST_UNLISTED — DOĞRULANMIŞ BİR LİSTE bu tokenı tanımıyor. Güçlü bir
+#                    olumsuz sinyaldir (Solana/Jupiter). Satır katlanır.
+#   TRUST_UNKNOWN  — elimizde bir hüküm YOK. EVM tarafında durum budur:
+#                    kürasyonlu bir liste kullanmıyoruz, yalnızca yerel
+#                    sinyallere bakıyoruz ve onlar susuyor.
+#
+# Bu ayrım şart, çünkü ikisini birleştirmek gerçek varlıkları saklardı:
+# Ethereum'da USDC tutan ve onu daha deftere yazmamış bir kullanıcının
+# tokenları "spam" diye katlanır, üstelik "+ Deftere Ekle" düğmesi de
+# kaybolurdu — yani zincirden deftere ekleme özelliği ilk kullanımda
+# çalışmaz hâle gelirdi. Bilmemek, "yok" demek değildir; `None` ile `0.0`
+# ayrımının aynısı burada da geçerli.
+#
+# TRUST_UNKNOWN satırları GİZLENMEZ, yalnızca deftere ekleme düğmesi
+# gösterilmez. Kullanıcının isteği "spam otomatik portföye girmesin"di;
+# görünmesin değil.
+TRUST_VERIFIED = "verified"
+TRUST_UNLISTED = "unlisted"
+TRUST_UNKNOWN = "unknown"
+
+# En iyisinden en kötüsüne. Bir varlık tek bir kaynakta bile doğrulanmışsa
+# doğrulanmış sayılır.
+_TRUST_SIRA = {TRUST_VERIFIED: 0, TRUST_UNKNOWN: 1, TRUST_UNLISTED: 2}
+
+
+def _en_iyi_trust(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a if _TRUST_SIRA.get(a, 9) <= _TRUST_SIRA.get(b, 9) else b
+
+
+def _mark_key(chain, contract) -> str:
+    return f"{str(chain or '').strip().lower()}:{str(contract or '').strip().lower()}"
+
+
+def token_marks() -> dict:
+    from data_manager import load_settings
+    ham = load_settings().get("token_marks") or {}
+    return {str(k): str(v) for k, v in ham.items()
+            if str(v) in (TOKEN_MARK_REAL, TOKEN_MARK_SPAM)}
+
+
+def set_token_mark(chain, contract, mark) -> dict:
+    """
+    Bir tokenı "gerçek" veya "spam" olarak işaretler; `None` işareti kaldırır.
+
+    İşaret kontrat adresine bağlanır, sembole değil: sembol taklit edilebilir
+    ve spam tokenlar bunu bilerek yapar. Kontrat adresi tektir.
+    """
+    from data_manager import load_settings, save_settings
+    kontrat = str(contract or "").strip().lower()
+    if not kontrat:
+        raise ValueError("Kontrat adresi gerekli.")
+    if mark is not None and mark not in (TOKEN_MARK_REAL, TOKEN_MARK_SPAM):
+        raise ValueError("İşaret 'real' veya 'spam' olmalı.")
+    settings = load_settings()
+    isaretler = dict(settings.get("token_marks") or {})
+    anahtar = _mark_key(chain, kontrat)
+    if mark is None:
+        isaretler.pop(anahtar, None)
+    else:
+        isaretler[anahtar] = mark
+    settings["token_marks"] = isaretler
+    save_settings(settings)
+    return isaretler
+
+
+def _bilinen_semboller() -> set:
+    """Kullanıcının defterinde geçen ve fiyat kaynağı tanımlı semboller."""
+    from data_manager import load_portfolio, base_symbol, get_symbol_sources
+    bilinen = set()
+    try:
+        for tx in load_portfolio().get("transactions", []):
+            taban = base_symbol(tx.get("coin"))
+            if taban:
+                bilinen.add(taban)
+    except Exception:
+        pass
+    try:
+        for sembol in (get_symbol_sources() or {}):
+            taban = base_symbol(sembol)
+            if taban:
+                bilinen.add(taban)
+    except Exception:
+        pass
+    return bilinen
+
+
+def _evm_trust(chain, contract, symbol, elle_tanimli, bilinen, isaretler):
+    """
+    Bir EVM tokenı için güven derecesi. Elle işaret her şeyi ezer.
+
+    Olumlu sinyal yoksa cevap "spam" değil **"bilmiyorum"**dur: EVM tarafında
+    kürasyonlu bir doğrulanmış-token listesi kullanmıyoruz, dolayısıyla
+    tokenın sahte olduğunu söyleyecek bir dayanağımız da yok.
+    """
+    isaret = isaretler.get(_mark_key(chain, contract))
+    if isaret == TOKEN_MARK_SPAM:
+        return TRUST_UNLISTED
+    if isaret == TOKEN_MARK_REAL:
+        return TRUST_VERIFIED
+    if contract and str(contract).lower() in elle_tanimli:
+        return TRUST_VERIFIED
+    from data_manager import base_symbol
+    return TRUST_VERIFIED if base_symbol(symbol) in bilinen else TRUST_UNKNOWN
+
+
 def read_evm(chain, address, api_key=None, tokens=None, key_stored=False):
     """
     (bakiyeler, notlar) — bakiye: [{asset, qty, contract}]
@@ -621,7 +759,10 @@ def read_evm(chain, address, api_key=None, tokens=None, key_stored=False):
     try:
         miktar, sembol = _evm_native(chain, address)
         if miktar > DUST_EPSILON:
-            bakiyeler.append({"asset": sembol, "qty": miktar, "contract": None})
+            # Zincirin yerel parası (ETH, BNB…) her zaman gerçektir; kimse
+            # size "sahte ETH" gönderemez.
+            bakiyeler.append({"asset": sembol, "qty": miktar, "contract": None,
+                              "trust": TRUST_VERIFIED, "verified": True})
     except Exception as e:
         notlar.append(_not(NOTE_ERROR,
                            f"{bilgi['name']} yerel bakiyesi okunamadı: {e}"))
@@ -676,6 +817,8 @@ def read_evm(chain, address, api_key=None, tokens=None, key_stored=False):
     # tur ağ gecikmesi demekti: 100 tokenlı bir adres dakikalarca "Okunuyor…"
     # yazıyordu ve kullanıcı haklı olarak sürecin uzunluğundan şikâyet etti.
     # İşin tamamı ağ beklemesi olduğu için iş parçacığı burada doğru araç.
+    isaretler = token_marks()
+    bilinen = _bilinen_semboller()
     for t, miktar, hata in _paralel(
             aday.values(),
             lambda t: _evm_token_balance(chain, address, t["contract"], t["decimals"])):
@@ -684,8 +827,13 @@ def read_evm(chain, address, api_key=None, tokens=None, key_stored=False):
                 f"{t.get('symbol') or t['contract']} bakiyesi okunamadı: {hata}"))
             continue
         if miktar > DUST_EPSILON:
-            bakiyeler.append({"asset": t["symbol"], "qty": miktar,
-                              "contract": t["contract"]})
+            guven = _evm_trust(chain, t["contract"], t["symbol"],
+                               elle, bilinen, isaretler)
+            bakiyeler.append({
+                "asset": t["symbol"], "qty": miktar, "contract": t["contract"],
+                "chain": chain, "trust": guven,
+                "verified": guven == TRUST_VERIFIED,
+            })
 
     # Elle tanımlanmış ama bakiyesi sıfır çıkan tokenı sessizce yutmak,
     # kullanıcıya "ekledim ama gelmedi" dedirtirdi. Bunu söylüyoruz.
@@ -700,6 +848,18 @@ def read_evm(chain, address, api_key=None, tokens=None, key_stored=False):
         if kesif_yapildi:
             notlar.append(_not(NOTE_INFO,
                 f"{len(elle)} token elle tanımlı; otomatik keşfe ek olarak okundu."))
+
+    bilinmeyen = sum(1 for b in bakiyeler if b.get("trust") == TRUST_UNKNOWN)
+    if bilinmeyen:
+        # BİLGİ notu, eksiklik değil: bu tokenlar okundu ve tabloda duruyorlar.
+        # Yalnızca "bunun sizin olduğuna dair bir dayanağım yok" deniyor.
+        notlar.append(_not(NOTE_INFO,
+            f"{bilinmeyen} token yalnızca zincir keşfinden geldi: elle "
+            "tanımlanmamış, defterinizde geçmiyor ve fiyat kaynağı yok. EVM "
+            "adreslerine istenmeden token gönderilmesi yaygın olduğu için "
+            "bunlar deftere ekleme önerisi almaz. Gerçekten sizinse 'Bu "
+            "gerçek' deyin; tanımıyorsanız 'spam' diyerek katlayın. "
+            "Tanımadığınız bir tokenın sitesine bağlanmayın."))
     return bakiyeler, notlar
 
 
@@ -761,6 +921,7 @@ def read_solana(address):
                      [address, {"programId": SPL_TOKEN_PROGRAM},
                       {"encoding": "jsonParsed"}])
         eslem = _solana_symbols()
+        isaretler = token_marks()
         for hesap in (sonuc or {}).get("value", []):
             try:
                 bilgi = hesap["account"]["data"]["parsed"]["info"]
@@ -771,15 +932,33 @@ def read_solana(address):
             if miktar <= DUST_EPSILON:
                 continue
             sembol = eslem.get(mint)
+            # Doğrulanmış listede yoksa büyük ihtimalle istenmeden gönderilmiş
+            # spam. Silinmiyor — gizlemek de bir tür yalandır — ama
+            # işaretleniyor ki arayüz varsayılan olarak katlayabilsin.
+            #
+            # Kullanıcının elle koyduğu işaret listenin de ÜSTÜNDEDİR: liste
+            # gecikebilir, yeni bir token henüz doğrulanmamış olabilir; buna
+            # karşılık kullanıcı kendi tokenını bilir. Aynı yetki ters yönde de
+            # geçerli — listede olan bir tokena "bu spam" diyebilir.
+            isaret = isaretler.get(_mark_key("solana", mint))
+            if isaret == TOKEN_MARK_REAL:
+                guven = TRUST_VERIFIED
+            elif isaret == TOKEN_MARK_SPAM:
+                guven = TRUST_UNLISTED
+            elif sembol:
+                guven = TRUST_VERIFIED
+            else:
+                # Burada EVM'den farklı olarak elimizde GERÇEK bir olumsuz
+                # dayanak var: Jupiter'in doğrulanmış listesi bu mintı
+                # tanımıyor. Bu yüzden "bilmiyorum" değil "listede yok".
+                guven = TRUST_UNLISTED
             bakiyeler.append({
                 "asset": sembol or (mint[:4] + "…" + mint[-4:]),
-                "qty": miktar, "contract": mint,
-                # Doğrulanmış listede yoksa büyük ihtimalle istenmeden
-                # gönderilmiş spam. Silinmiyor — gizlemek de bir tür yalandır —
-                # ama işaretleniyor ki arayüz varsayılan olarak katlayabilsin.
-                "verified": bool(sembol),
+                "qty": miktar, "contract": mint, "chain": "solana",
+                "trust": guven, "verified": guven == TRUST_VERIFIED,
             })
-        dogrulanmamis = sum(1 for b in bakiyeler if b.get("verified") is False)
+        dogrulanmamis = sum(1 for b in bakiyeler
+                            if b.get("trust") == TRUST_UNLISTED)
         if dogrulanmamis:
             # BİLGİ notu, eksiklik değil: bu tokenlar okundu ve tabloda
             # duruyorlar. Yalnızca tanınmış listede olmadıkları söyleniyor.
@@ -933,6 +1112,84 @@ def live_balance(asset, location, readings=None):
     return 0.0 if len(okunabilir) == len(ilgili) else None
 
 
+def _yanlis_konum_isaretle(satirlar):
+    """
+    Yanlış rafa yazılmış TEK bir varlığı, iki ayrı eksiklik sanmayı önler.
+
+    NEDEN VAR
+    ---------
+    Aynı varlık bir konumda `only_ledger` (defterde var, zincirde yok), başka
+    bir konumda `only_chain` (zincirde var, defterde yok) ve miktarlar da
+    yakınsa, bu neredeyse her zaman iki ayrı olay değil **yanlış konuma
+    yazılmış tek bir varlıktır**.
+
+    Bunu görmeyen bir tablo kullanıcıyı çift saymaya davet eder: "+ Deftere
+    Ekle" düğmesi zincir tarafında durur, kullanıcı basar ve defterde aynı
+    varlıktan iki tane olur. Bu tuzağa bir kez düşülmesine ramak kalmıştı;
+    kullanıcı düğmeye basmadan önce kendi fark etti.
+
+    Neden `mismatch` satırları dâhil değil: orada varlık iki tarafta da vardır
+    ve fark bir MİKTAR farkıdır — yanlış konum değil, eksik kayıt olabilir.
+    Kapsamı dar tutmak, gerçek eksikleri yanlışlıkla gizlememek içindir.
+
+    Doğru çözüm taşıma (transfer) değil DÜZELTMEDİR: varlık o konumda hiç
+    bulunmadı, bir yazım hatasıydı. Transfer, hiç yaşanmamış bir hareketi
+    deftere işlerdi.
+    """
+    from reconcile import _yakin
+
+    gruplar = {}
+    for r in satirlar:
+        if r.get("likely_spam"):
+            continue
+        if r["status"] in ("only_ledger", "only_chain"):
+            g = gruplar.setdefault(r["asset"], {"only_ledger": [], "only_chain": []})
+            g[r["status"]].append(r)
+
+    for varlik, g in gruplar.items():
+        kalan = list(g["only_chain"])
+        for defter_satir in g["only_ledger"]:
+            if not kalan:
+                break
+            # Birden çok aday varsa miktarı en yakın olan seçilir; eşleşme
+            # yine de `_yakin` eşiğinden geçmek zorundadır. Geçemiyorsa
+            # eşleştirme YAPILMAZ — zorlama bir eşleşme, gerçek bir eksiği
+            # gizlerdi.
+            def _uzaklik(zr):
+                return abs(float(zr.get("chain_qty") or 0.0)
+                           - float(defter_satir.get("ledger_qty") or 0.0))
+
+            zincir_satir = min(kalan, key=_uzaklik)
+            if not _yakin(float(zincir_satir.get("chain_qty") or 0.0),
+                          float(defter_satir.get("ledger_qty") or 0.0)):
+                continue
+            kalan.remove(zincir_satir)
+
+            dogru_konum = zincir_satir["location"]
+            yanlis_konum = defter_satir["location"]
+            tx_ids = list(defter_satir.get("ledger_tx_ids") or [])
+
+            ortak = {"asset": varlik, "correct_location": dogru_konum,
+                     "ledger_location": yanlis_konum, "tx_ids": tx_ids,
+                     "ledger_qty": defter_satir.get("ledger_qty"),
+                     "chain_qty": zincir_satir.get("chain_qty")}
+
+            defter_satir["misplaced"] = dict(ortak, role="ledger")
+            defter_satir["note"] = (
+                f"Bu varlık defterinizde {yanlis_konum} konumunda yazılı ama "
+                f"zincirde {dogru_konum} adresinde duruyor. Büyük ihtimalle "
+                "konum yanlış yazılmış. Yeni kayıt açmayın — kaydın konumunu "
+                "düzeltin.")
+
+            zincir_satir["misplaced"] = dict(ortak, role="chain")
+            zincir_satir["note"] = (
+                f"Zincirde burada duruyor ama defterinizde {yanlis_konum} "
+                "konumunda yazılı. Aynı varlık olduğu için DEFTERE EKLEMEYİN — "
+                "eklerseniz iki kez sayılır. Kaydın konumunu düzeltmek yeter.")
+
+    return satirlar
+
+
 def compare_with_ledger(data=None):
     """
     Canlı cüzdan bakiyeleriyle defteri karşılaştırır. **Yazma yok.**
@@ -962,11 +1219,14 @@ def compare_with_ledger(data=None):
         if konum not in bagli_konumlar:
             continue
         anahtar = (varlik, konum)
-        d = defter.setdefault(anahtar, {"qty": 0.0, "coin": ham})
+        d = defter.setdefault(anahtar, {"qty": 0.0, "coin": ham, "tx_ids": []})
         d["qty"] += float(tx.get("qty") or 0.0)
+        if tx.get("id") is not None:
+            d["tx_ids"].append(tx.get("id"))
 
     ciftler = set(defter)
     dogrulanmis = {}
+    kontratlar = {}
     for okuma in okumalar.values():
         if not okuma.get("ok"):
             continue
@@ -974,8 +1234,20 @@ def compare_with_ledger(data=None):
             anahtar = (normalize_asset(b.get("asset")), okuma.get("location"))
             ciftler.add(anahtar)
             # Bir varlık tek bir kaynakta bile doğrulanmışsa doğrulanmış sayılır.
-            dogrulanmis[anahtar] = (dogrulanmis.get(anahtar, False)
-                                    or b.get("verified", True))
+            # `trust` taşımayan eski/başka kaynaklar doğrulanmış kabul edilir;
+            # sessizce şüpheli saymak kullanıcının varlığını gizlerdi.
+            ham_guven = b.get("trust")
+            if ham_guven not in (TRUST_VERIFIED, TRUST_UNLISTED, TRUST_UNKNOWN):
+                ham_guven = TRUST_VERIFIED if b.get("verified", True) else TRUST_UNLISTED
+            dogrulanmis[anahtar] = _en_iyi_trust(dogrulanmis.get(anahtar), ham_guven)
+            # Kontrat adresi satıra taşınıyor: "bu gerçek / bu spam" işareti
+            # sembole değil kontrata bağlanır, çünkü sembol taklit edilebilir
+            # ve spam tokenlar bunu bilerek yapar.
+            if b.get("contract"):
+                kayit = {"chain": b.get("chain") or okuma.get("chain"),
+                         "contract": str(b.get("contract")).lower()}
+                if kayit not in kontratlar.setdefault(anahtar, []):
+                    kontratlar[anahtar].append(kayit)
 
     satirlar = []
     for varlik, konum in sorted(ciftler):
@@ -1001,7 +1273,14 @@ def compare_with_ledger(data=None):
         # Defterinizde olan her şey ilgilidir; doğrulanmamış olsa da gizlenmez.
         # Yalnızca defterde HİÇ olmayan, doğrulanmamış zincir bakiyeleri
         # "muhtemelen spam" sayılır ve arayüz onları katlar.
-        varlik_dogrulanmis = dogrulanmis.get((varlik, konum), True)
+        guven = dogrulanmis.get((varlik, konum)) or TRUST_VERIFIED
+        varlik_dogrulanmis = (guven == TRUST_VERIFIED)
+        defterde_yok = defter_qty <= DUST_EPSILON
+        # İki ayrı durum, iki ayrı davranış:
+        #   likely_spam   — doğrulanmış liste tanımıyor → KATLANIR.
+        #   needs_review  — hüküm yok → görünür kalır ama ekleme önerilmez.
+        # İkisini birleştirmek ya gerçek varlıkları gizlerdi ya da spam'i
+        # deftere davet ederdi.
         satirlar.append({
             "asset": varlik, "location": konum,
             "chains": sorted({z for z in zincirler.get(konum, []) if z}),
@@ -1010,12 +1289,30 @@ def compare_with_ledger(data=None):
             "diff_qty": None if canli is None else canli - defter_qty,
             "status": durum, "note": not_metni,
             "verified": bool(varlik_dogrulanmis),
-            "likely_spam": bool(not varlik_dogrulanmis and defter_qty <= DUST_EPSILON),
+            "trust": guven,
+            "likely_spam": bool(guven == TRUST_UNLISTED and defterde_yok),
+            "needs_review": bool(guven == TRUST_UNKNOWN and defterde_yok),
+            "ledger_tx_ids": defter.get((varlik, konum), {}).get("tx_ids", []),
+            "contracts": kontratlar.get((varlik, konum), []),
+            "misplaced": None,
         })
+
+    _yanlis_konum_isaretle(satirlar)
+
+    # Ekleme düğmesinin neden olmadığı satırın kendisinde yazsın; kullanıcı
+    # sebebi aramak zorunda kalmasın.
+    for r in satirlar:
+        if r.get("needs_review") and not r.get("misplaced"):
+            r["note"] = ((r.get("note") or "") +
+                         " Bu token yalnızca zincir keşfinden geldi ve sizin "
+                         "olduğuna dair bir dayanak yok; bu yüzden deftere "
+                         "ekleme önerilmiyor. Gerçekten sizinse 'Bu gerçek' "
+                         "deyin.").strip()
 
     sira = {"mismatch": 0, "only_chain": 1, "only_ledger": 2,
             "unreadable": 3, "match": 4}
-    satirlar.sort(key=lambda r: (r["likely_spam"], sira.get(r["status"], 5),
+    satirlar.sort(key=lambda r: (r["likely_spam"], r.get("needs_review", False),
+                                 sira.get(r["status"], 5),
                                  r["location"], r["asset"]))
     # Sayımlar yalnızca ilgili satırları anlatır; 130 spam token "130 fark var"
     # diye görünseydi gerçek farklar gürültüde kaybolurdu.
@@ -1025,6 +1322,11 @@ def compare_with_ledger(data=None):
             continue
         sayim[r["status"]] = sayim.get(r["status"], 0) + 1
     spam_adedi = sum(1 for r in satirlar if r["likely_spam"])
+    inceleme_adedi = sum(1 for r in satirlar if r.get("needs_review"))
+    # Bir yanlış konum tabloda İKİ satır üretir ama TEK sorundur; sayarken
+    # ikiye bölünür ki kullanıcı olduğundan fazla sorun görmesin.
+    yanlis_konum_adedi = sum(1 for r in satirlar
+                             if (r.get("misplaced") or {}).get("role") == "chain")
 
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1038,6 +1340,8 @@ def compare_with_ledger(data=None):
         "rows": satirlar,
         "status_counts": sayim,
         "spam_count": spam_adedi,
+        "review_count": inceleme_adedi,
+        "misplaced_count": yanlis_konum_adedi,
         # Aynı adresin iki konumda olması tabloyu bozar; raporun başında durur.
         "warnings": duplicate_address_warnings(),
         "read_only": True,

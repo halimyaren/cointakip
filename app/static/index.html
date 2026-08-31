@@ -2362,6 +2362,30 @@
                                 :title="'Deftere ' + formatNum(chainAddableQty(r), 8) + ' ' + r.asset + ' ekle — tarih ve maliyeti siz gireceksiniz'">
                           + Deftere Ekle
                         </button>
+                        <!-- Yanlış konum: ekleme düğmesinin YERİNE geçer.
+                             Burada ekleme çift sayma demektir; kullanıcının
+                             ihtiyacı olan tek şey kaydın konumunu düzeltmek. -->
+                        <button x-show="r.misplaced" @click="fixLocation(r)"
+                                class="px-2.5 py-1 rounded-lg bg-amber-600/20 text-amber-300 border border-amber-600/40 hover:bg-amber-600 hover:text-white text-[10.5px] font-bold transition font-sans"
+                                :title="r.misplaced ? ('Kaydı ' + r.misplaced.ledger_location + ' konumundan ' + r.misplaced.correct_location + ' konumuna al — miktar ve maliyet değişmez') : ''">
+                          Konumu düzelt
+                        </button>
+                        <!-- Son söz kullanıcınında. Sistem "doğrulanmadı"
+                             diyebilir ama gerçek bir airdrop da başlangıçta
+                             öyle görünür; tersi de olur, tanıdık sembol taşıyan
+                             taklit token sistemin gözünden kaçabilir. -->
+                        <button x-show="(r.likely_spam || r.needs_review) && (r.contracts || []).length"
+                                @click="markToken(r, 'real')"
+                                class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-emerald-600 hover:text-white text-slate-300 text-[10.5px] font-bold transition font-sans"
+                                title="Bu token gerçekten sizin — katlanmasın ve deftere eklenebilsin">
+                          Bu gerçek
+                        </button>
+                        <button x-show="!r.likely_spam && !r.misplaced && (r.contracts || []).length && (r.needs_review || chainAddableQty(r) > 0)"
+                                @click="markToken(r, 'spam')"
+                                class="ml-1 px-2 py-1 rounded-lg text-slate-600 hover:text-rose-300 text-[10.5px] transition font-sans"
+                                title="Bu tokenı tanımıyorum — katla ve deftere ekleme önerme">
+                          spam
+                        </button>
                       </td>
                     </tr>
                   </template>
@@ -2373,16 +2397,53 @@
               Karşılaştırılacak bir şey yok. Önce bir bağlantı ekleyin.
             </div>
 
+            <!-- Hakkında hüküm olmayan tokenlar. Bunlar GİZLENMİYOR — gizlemek
+                 gerçek varlığı saklamak olurdu. Yalnızca deftere ekleme
+                 önerilmiyor; kullanıcı "Bu gerçek" deyince düğme geliyor. -->
+            <div x-show="(connReport.review_count || 0) > 0"
+                 class="px-4 py-2.5 border-t border-slate-800 text-[11px] text-slate-500 leading-relaxed font-sans">
+              <b class="text-slate-400" x-text="connReport.review_count"></b>
+              token yalnızca zincir keşfinden geldi: elle tanımlamadınız,
+              defterinizde geçmiyorlar ve fiyat kaynakları yok. EVM adreslerine
+              istenmeden token gönderilmesi yaygın olduğu için bunlara
+              <b>+ Deftere Ekle</b> önerilmiyor —
+              <b class="text-slate-400">ama gizlenmediler</b>, çünkü sistem
+              bunların sahte olduğunu bilmiyor; yalnızca sizin olduğunu
+              bilmiyor. Gerçekten sizinse <b class="text-slate-400">Bu gerçek</b>,
+              tanımıyorsanız <b class="text-slate-400">spam</b> deyin — ikisi de
+              kalıcı olarak hatırlanır.
+            </div>
+
+            <!-- Yanlış konum uyarısı. Bu tablo iki satır gösterir ama sorun
+                 tektir; kullanıcı bunu bilmezse iki ayrı eksiklik sanıp
+                 zincir tarafına yeni kayıt açar ve varlığını iki kez sayar. -->
+            <div x-show="(connReport.misplaced_count || 0) > 0"
+                 class="px-4 py-2.5 border-t border-slate-800 text-[11px] text-slate-500 leading-relaxed font-sans">
+              <b class="text-amber-300" x-text="connReport.misplaced_count"></b>
+              <b class="text-amber-300">varlık yanlış konumda yazılı görünüyor.</b>
+              Aynı varlık bir konumda “defterde var, zincirde yok”, başka bir
+              konumda “zincirde var, defterde yok” çıkıyor ve miktarlar
+              birbirine yakın. Bu genellikle iki ayrı eksiklik değil,
+              <b class="text-slate-400">yanlış rafa yazılmış tek bir varlıktır</b>.
+              O satırlarda <b>+ Deftere Ekle</b> bilerek gösterilmiyor: eklemek
+              varlığı iki kez saydırırdı. <b class="text-slate-400">Konumu
+              düzelt</b> yalnızca kaydın konumunu ve sembolünü değiştirir;
+              miktara, maliyete ve tarihe dokunmaz.
+            </div>
+
             <!-- Spam tokenlar gizlenmiyor, katlanıyor. Gizlemek de bir tür
                  yalandır; kullanıcı ne olduğunu bilmeli ve açabilmeli. -->
             <div x-show="(connReport.spam_count || 0) > 0"
                  class="px-4 py-2.5 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
               <span class="text-[11px] text-slate-500 font-sans">
                 <b class="text-slate-400" x-text="connReport.spam_count"></b>
-                doğrulanmamış token gizlendi — defterinizde yoklar ve tanınmış
-                token listesinde bulunmuyorlar. Solana'da istenmeden gönderilen
-                spam yaygındır; <b class="text-slate-400">tanımadığınız bir tokenın
-                sitesine bağlanmayın</b>.
+                doğrulanmamış token katlandı — defterinizde geçmiyorlar, elle
+                tanımlanmamışlar ve fiyat kaynakları yok. Hem Solana'da hem EVM
+                zincirlerinde adreslere istenmeden token gönderilmesi yaygındır.
+                Silinmediler; açıp bakabilir, gerçekten sizinse
+                <b class="text-slate-400">Bu gerçek</b> diyerek geri
+                alabilirsiniz. <b class="text-slate-400">Tanımadığınız bir tokenın
+                sitesine bağlanmayın.</b>
               </span>
               <button @click="connShowSpam = !connShowSpam"
                       class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] font-bold transition font-sans whitespace-nowrap"

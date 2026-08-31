@@ -1633,7 +1633,89 @@ def undo_transfer(transfer_id: int):
     return {"transfer_id": int(transfer_id), "restored_lots": len(kayit.get("consumed", []))}
 
 
+def relocate_asset(asset: str, from_location: str, to_location: str,
+                   data=None, save=True) -> dict:
+    """
+    Yanlış konuma yazılmış aktif kayıtların konumunu düzeltir.
+
+    NEDEN TRANSFER DEĞİL
+    --------------------
+    Transfer, gerçekten yaşanmış bir hareketi kaydeder: kaynak lot kapanır,
+    hedefte yeni lot açılır, defterde iki iz kalır. Ama burada varlık o konumda
+    hiç bulunmadı — kayıt baştan yanlış yazıldı. Transfer kullanmak, olmamış
+    bir hareketi deftere işlemek ve her yazım hatası için iki kayıt üretmek
+    olurdu. Yazım hatasının düzeltmesi düzeltmedir.
+
+    ELLE DÜZELTMEYE GÖRE FARKI
+    --------------------------
+    Aynı varlığın o konumda birden çok lotu olabilir; hepsini tek tek açıp
+    düzenlemek kullanıcıya düşen tekrarlayan bir iştir. Buradaki işlem hepsini
+    birlikte taşır.
+
+    NE DEĞİŞİR, NE DEĞİŞMEZ
+    -----------------------
+    Yalnızca **konum** ve ona bağlı **sembol** değişir. Miktar, maliyet, tarih,
+    durum, ücret ve notlar olduğu gibi kalır. Kapalı kayıtlara DOKUNULMAZ:
+    onlar geçmişin kaydıdır ve geçmişte varlık gerçekten o konumdaydı ya da
+    değildi — bunu şimdi yeniden yazmak muhasebe izini bozar.
+    """
+    varlik = base_symbol(asset)
+    kaynak = normalize_location(from_location)
+    hedef = normalize_location(to_location)
+    if not varlik:
+        raise ValueError("Varlık adı boş olamaz.")
+    if not hedef:
+        raise ValueError("Hedef konum boş olamaz.")
+    if kaynak == hedef:
+        raise ValueError("Kaynak ve hedef konum aynı; taşınacak bir şey yok.")
+
+    kendi = data is None
+    if kendi:
+        data = load_portfolio()
+
+    degisen = []
+    for tx in data.get("transactions", []):
+        if tx.get("status") != ACTIVE_STATUS:
+            continue
+        if base_symbol(tx.get("coin")) != varlik:
+            continue
+        if normalize_location(tx.get("exchange")) != kaynak:
+            continue
+        eski_coin = str(tx.get("coin") or "")
+        tx["exchange"] = hedef
+        tx["coin"] = symbol_for_location(eski_coin, hedef)
+        degisen.append({"id": tx.get("id"), "from": kaynak, "to": hedef,
+                        "coin_from": eski_coin, "coin_to": tx["coin"],
+                        "qty": tx.get("qty")})
+
+    if not degisen:
+        raise ValueError(
+            f"{kaynak} konumunda {varlik} için aktif kayıt bulunamadı.")
+
+    if kendi and save:
+        save_portfolio(data)
+    for d in degisen:
+        logger.info("Konum düzeltildi: #%s %s (%s → %s), sembol %s → %s",
+                    d["id"], varlik, d["from"], d["to"],
+                    d["coin_from"], d["coin_to"])
+    return {"asset": varlik, "from_location": kaynak, "to_location": hedef,
+            "moved": degisen, "count": len(degisen)}
+
+
 MIGRATION_WALLET_SYMBOL = "wallet_symbol_v1"
+
+# İkinci geçiş. Birincisi 31 Ağustos 2026 00:49'da çalıştı, ama o sırada faz
+# diske yarım yazılmıştı: migrasyon yüklenmiş, `transfer_position` düzeltmesi
+# henüz yüklenmemişti. Aradaki 68 dakikada yapılan iki transfer (#6 ve #7,
+# DEX → PHANTOM) hedef lotu yine eski kuralla açtı ve `SOLUSDT` / `ETHUSDT`
+# adları cüzdanda kaldı. Birinci geçiş işaretlendiği için bir daha çalışmaz;
+# bu yüzden ayrı anahtarlı ikinci bir geçiş gerekiyor.
+#
+# Aynı işlevi çağırır — işlev fikirsizdir (idempotent), zaten doğru olan
+# kayıtlara dokunmaz. Ders şu: açılışta veriye dokunan bir düzeltme, kendisini
+# üreten kod değişikliğiyle AYNI ANDA diske inmelidir; yoksa düzeltme
+# kendisinden sonra üretilen hatalı veriyi kaçırır.
+MIGRATION_WALLET_SYMBOL_V2 = "wallet_symbol_v2"
 
 
 def normalize_wallet_symbols(data=None, save=True) -> list:
@@ -1689,21 +1771,27 @@ def run_pending_migrations() -> dict:
     yapilan = dict(settings.get("migrations") or {})
     sonuc = {}
 
-    if not yapilan.get(MIGRATION_WALLET_SYMBOL):
+    def _sembol_gecisi(anahtar):
+        if yapilan.get(anahtar):
+            return
         try:
             degisen = normalize_wallet_symbols()
-            sonuc[MIGRATION_WALLET_SYMBOL] = degisen
+            sonuc[anahtar] = degisen
             for d in degisen:
                 logger.info("Sembol düzeltildi: #%s %s → %s (%s)",
                             d["id"], d["from"], d["to"], d["exchange"])
             if degisen:
-                logger.info("Transfer sembolleri düzeltildi: %d kayıt.", len(degisen))
-            yapilan[MIGRATION_WALLET_SYMBOL] = True
+                logger.info("Transfer sembolleri düzeltildi: %d kayıt (%s).",
+                            len(degisen), anahtar)
+            yapilan[anahtar] = True
             settings["migrations"] = yapilan
             save_settings(settings)
         except Exception as e:
             # Bir düzeltmenin patlaması uygulamayı açılmaz hâle getirmemeli.
-            logger.error("Sembol düzeltmesi uygulanamadı: %s", e)
+            logger.error("Sembol düzeltmesi uygulanamadı (%s): %s", anahtar, e)
+
+    _sembol_gecisi(MIGRATION_WALLET_SYMBOL)
+    _sembol_gecisi(MIGRATION_WALLET_SYMBOL_V2)
     return sonuc
 
 
@@ -2082,6 +2170,11 @@ DEFAULT_SETTINGS = {
     # tekrar çalışmaz. Kullanıcının verisine dokunan her düzeltme buraya iz
     # bırakır ki neyin ne zaman değiştiği belirsiz kalmasın.
     "migrations": {},
+    # Kullanıcının bir tokena elle koyduğu "gerçek"/"spam" hükmü. Anahtar
+    # `zincir:kontrat`, çünkü sembol taklit edilebilir ama kontrat adresi
+    # tektir. Bu işaret sistemin kendi tahminlerini EZER: gerçek bir airdrop
+    # başlangıçta değersiz görünebilir ve son söz kullanıcınındır.
+    "token_marks": {},
     "api_keys": {
         "gemini_api_key": "",
         "telegram_bot_token": "",

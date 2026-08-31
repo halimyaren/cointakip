@@ -104,6 +104,20 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   automatically is deliberately not offered: the chain knows the quantity but
   not the cost, and booking it at zero would fabricate a profit that never
   happened. Done once per asset, after which it behaves like any other position.
+- **Misfiled-location detection** — when the same asset shows as "in the ledger,
+  not on chain" at one location and "on chain, not in the ledger" at another,
+  with similar quantities, that is not two separate gaps but **one asset filed
+  on the wrong shelf**. The add button is deliberately withheld on those rows —
+  adding would count the asset twice — and a button that corrects the record's
+  location (and symbol) appears instead. It is not a transfer: the asset never
+  moved, it was simply recorded in the wrong place.
+- **Unrecognised-token filter** — tokens sent to you unsolicited never enter the
+  ledger on their own. "I don't know" is kept distinct from "fake": when a
+  curated list rejects a token the row is folded away, but when there is no
+  verdict at all the row **stays visible** and only the add button is withheld.
+  Conflating the two would hide assets you genuinely hold but haven't recorded
+  yet. The final say is yours: a "this is real" / "spam" mark is permanent and
+  binds to the **contract address**, not the symbol, which can be imitated.
 - **Location-correct symbols** — an exchange holding is a trading pair
   (`BNBUSDT`); the same coin in your wallet is just `BNB`, because a wallet
   has no pairs. Transfers now rewrite the symbol for the destination, and a
@@ -193,7 +207,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-535 tests, about 25 seconds. The suite **never touches your real data and never hits
+570 tests, about 25 seconds. The suite **never touches your real data and never hits
 the network**: data paths are redirected to a temporary directory, all external calls
 are mocked, and no test calls the AI API.
 

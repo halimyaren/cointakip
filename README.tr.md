@@ -99,6 +99,19 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   yok: zincir miktarı bilir, maliyeti bilmez ve sıfır maliyetle yazmak olmayan
   bir kâr uydurmak olurdu. Varlık başına bir kez yapılır, sonrasında normal bir
   pozisyon gibi Kasa toplamınızda durur.
+- **Yanlış konum tespiti** — aynı varlık bir konumda "defterde var, zincirde
+  yok", başka bir konumda "zincirde var, defterde yok" ve miktarlar yakınsa,
+  bu iki ayrı eksiklik değil **yanlış rafa yazılmış tek bir varlıktır**. O
+  satırlarda ekleme düğmesi bilerek gösterilmez — eklemek varlığı iki kez
+  saydırırdı; yerine kaydın konumunu (ve sembolünü) düzelten bir düğme çıkar.
+  Bu bir transfer değildir: varlık hiç taşınmadı, yalnızca yanlış yazılmıştı.
+- **Tanınmayan token süzgeci** — istenmeden gönderilen tokenlar deftere
+  kendiliğinden girmez. "Bilmiyorum" ile "sahte" ayrı tutulur: doğrulanmış
+  liste tanımıyorsa satır katlanır, elde hiç hüküm yoksa satır **görünür kalır**
+  ama ekleme önerilmez. İkisini birleştirmek, gerçekten sahip olduğunuz ama
+  henüz deftere yazmadığınız varlıkları sizden saklardı. Son söz sizde:
+  "Bu gerçek" / "spam" işareti kalıcıdır ve sembole değil **kontrat adresine**
+  bağlanır.
 - **Konuma göre sembol** — borsadaki varlık bir işlem çiftidir (`BNBUSDT`);
   aynı coin cüzdanınızda yalnızca `BNB`'dir, çünkü cüzdanda çift yoktur.
   Transfer artık sembolü hedefe göre yazıyor ve bir kez çalışan bir düzeltme
@@ -188,7 +201,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-535 test, yaklaşık 25 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
+570 test, yaklaşık 25 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
 veri yolları geçici bir klasöre yönlendirilir, tüm dış çağrılar taklit edilir ve
 hiçbir test yapay zekâ API'sine istek atmaz.
 

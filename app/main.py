@@ -26,7 +26,8 @@ from data_manager import (
     write_off_position, undo_write_off, transfer_position, undo_transfer,
     list_transfers, list_write_offs, WRITE_OFF_REASONS,
     get_rebuild_plan, apply_rebuild, undo_rebuild, list_rebuilds,
-    known_locations, symbol_for_location, run_pending_migrations
+    known_locations, symbol_for_location, run_pending_migrations,
+    relocate_asset
 )
 from price_service import price_service
 import archive
@@ -366,6 +367,51 @@ def api_token_info(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Kontrat okunamadı: {e}")
+
+
+@app.post("/api/connections/token-mark")
+def api_token_mark(payload: dict = Body(...)):
+    """
+    Bir tokenı "gerçek" veya "spam" olarak işaretler; `mark: null` işareti siler.
+
+    Sistem bir tokenın kullanıcıya ait olup olmadığını sinyallerle tahmin eder
+    (elle tanımlı mı, defterde geçiyor mu, fiyat kaynağı var mı) ama tahmin
+    tahmindir: gerçek bir airdrop başlangıçta değersiz görünebilir, taklit bir
+    token tanıdık bir sembol taşıyabilir. **Son söz kullanıcınındır** ve bu
+    işaret tüm otomatik sinyalleri ezer.
+
+    İşaret kontrat adresine bağlanır, sembole değil.
+    """
+    payload = payload or {}
+    try:
+        isaretler = connections.set_token_mark(
+            payload.get("chain"), payload.get("contract"), payload.get("mark"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "token_marks": isaretler}
+
+
+@app.post("/api/connections/relocate")
+def api_relocate_asset(payload: dict = Body(...)):
+    """
+    Yanlış konuma yazılmış bir varlığın aktif kayıtlarını doğru konuma taşır.
+
+    Karşılaştırma tablosu, aynı varlığın bir konumda "defterde var ama zincirde
+    yok", başka bir konumda "zincirde var ama defterde yok" göründüğü durumu
+    yakalar ve oraya ekleme düğmesi KOYMAZ — ekleme çift sayardı. Kullanıcının
+    ihtiyacı olan tek şey kaydın konumunu düzeltmektir; bu uç onu yapar.
+
+    Karşılaştırmanın kendisi salt okunurdur; **yazan yer burasıdır** ve yalnızca
+    kullanıcı açıkça istediğinde çalışır.
+    """
+    payload = payload or {}
+    try:
+        sonuc = relocate_asset(payload.get("asset"),
+                               payload.get("from_location"),
+                               payload.get("to_location"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, **sonuc}
 
 
 @app.post("/api/connections")
@@ -752,13 +798,24 @@ def update_transaction(tx_id: int, tx_in: TransactionUpdate):
 
     if tx_in.date is not None:
         target["date"] = tx_in.date
-    if tx_in.coin is not None:
-        c = tx_in.coin.strip()
-        ex = (tx_in.exchange or target.get("exchange", "BINANCE")).upper()
-        if ex in ["BINANCE", "MEXC", "GATE.IO"] and not c.upper().endswith("USDT") and "/" not in c:
-            target["coin"] = f"{c.upper()}USDT"
-        else:
-            target["coin"] = c.upper()
+
+    # Sembol bulunduğu konuma göre yazılır: borsada işlem çifti (BTCUSDT),
+    # cüzdanda yalın varlık (BTC). Kuralın burada üçüncü bir kopyası vardı ve
+    # iki ayrı kusuru taşıyordu: borsa listesi yine satır arasına gömülüydü, ve
+    # sembol YALNIZCA `coin` gönderildiğinde türetiliyordu. Kullanıcı bir kaydın
+    # sadece konumunu değiştirdiğinde ad olduğu gibi kalıyordu; `SOLUSDT`
+    # kaydının PHANTOM cüzdanında `SOLUSDT` diye durmasının sebebi buydu.
+    #
+    # Yeniden türetme yalnızca `coin` VEYA `exchange` gönderildiğinde yapılır.
+    # Not veya ücret düzenlemek gibi ilgisiz bir değişikliğin sembolü sessizce
+    # değiştirmesi, kullanıcının kendi yazdığı adı elinden almak olurdu.
+    if tx_in.coin is not None or tx_in.exchange is not None:
+        yeni_konum = (tx_in.exchange if tx_in.exchange is not None
+                      else target.get("exchange", "BINANCE"))
+        yeni_coin = (tx_in.coin.strip() if tx_in.coin is not None
+                     else target.get("coin", ""))
+        target["coin"] = symbol_for_location(yeni_coin, yeni_konum)
+
     if tx_in.exchange is not None:
         target["exchange"] = tx_in.exchange
     if tx_in.qty is not None:
