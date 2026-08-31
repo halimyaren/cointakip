@@ -1,0 +1,90 @@
+# GitGuardian / ggshield yapılandırması
+# =====================================
+#
+# NEDEN VAR: GitGuardian'ın "Generic High Entropy Secret" dedektörü, rastgele
+# görünen 32+ karakterlik her dizgeyi gizli veri sanır. Bu depo bir kripto
+# portföy takipçisi olduğu için içinde kaçınılmaz olarak **herkese açık zincir
+# adresleri** bulunur: token kontratları, mint adresleri, program kimlikleri.
+# Bunlar tanımı gereği kamuya açıktır ve onlarla hiçbir şey harcanamaz.
+#
+# 31 Ağustos 2026'da bu yüzden iki yanlış alarm üretildi (commit b712b09).
+#
+# TASARIM KARARI: Dedektör KAPATILMADI. Kapatmak, ileride gerçekten sızan bir
+# API anahtarını da susturur ve elimizde hiçbir koruma kalmazdı. Bunun yerine
+# yalnızca aşağıda tek tek sayılan dizgeler muaf tutuluyor; listede olmayan
+# yeni bir yüksek entropili dizge yine uyarı üretir.
+#
+# Aynı gerekçe projede daha önce de uygulandı: eksik uyarı sorunu gizler,
+# fazla uyarı sorunu gürültüde kaybettirir. (bkz. bağlantı notu seviyeleri)
+#
+# ASLA MUAF TUTULMAYACAK YERLER: `data/` ve `borsa_exports/` klasörleri. Gerçek
+# anahtarlar ve finansal veri oradadır; ikisi de `.gitignore` kapsamındadır ve
+# taranmaları ENGELLENMEMELİDİR. Bu dosyaya yol tabanlı muafiyet eklemeyin.
+#
+# YENİ BİR MUAFİYET EKLEMEK: dizgenin gerçekten kamuya açık olduğunu doğrulayın
+# (zincir gezgininde arayın), sonra karşılığını hesaplayıp buraya adıyla ve
+# kısa gerekçesiyle ekleyin:
+#     python -c "import hashlib;print(hashlib.sha256(b'DIZGE').hexdigest())"
+#
+# YEREL TARAMA (isteğe bağlı): `pip install ggshield` sonrası
+#     ggshield secret scan repo .
+# Bu dosya ggshield'in yerel ve CI taramalarını yönetir. GitGuardian panelinde
+# zaten açılmış olan olaylar buradan kapanmaz; onlar panelden "false positive"
+# olarak işaretlenir.
+
+version: 2
+
+secret:
+  ignored-matches:
+    # Solana SPL Token Program kimliği. Ağ genelinde tek ve sabittir; her
+    # Solana uygulamasında aynen bulunur. app/connections.py içinde token
+    # hesaplarını sorgulamak için kullanılır.
+    - name: "Solana SPL Token Program kimligi (herkese acik sabit)"
+      match: 3df99733e34ba92be4040448ef74357301e4e05f072dad52fc401f17e9834285
+
+    # Wrapped SOL mint adresi. Testlerde örnek cüzdan adresi olarak kullanılır.
+    - name: "Wrapped SOL mint adresi (herkese acik sabit)"
+      match: d77cf5c8a1c79d6b78408a3f545dea88441790fb0245268398f1d09455e29b18
+
+    # Solana ağındaki USDC mint adresi. Testlerde bilinen bir token örneği.
+    - name: "Solana USDC mint adresi (herkese acik sabit)"
+      match: f249bbf137c2e667140519a7e8db0c5ff45a3cb7ad0b26a5ab828657a6c83e24
+
+    # Testlerde uydurulmuş, zincirde karşılığı olmayan sahte mint adresi.
+    - name: "Test icin uydurulmus sahte mint adresi"
+      match: d58258a13cb01cca15faf9e1916f32b2dc186e1c2ae76e73a73f5c951a4edcb5
+
+    # Testlerde uydurulmuş, zincirde karşılığı olmayan sahte cüzdan adresi.
+    - name: "Test icin uydurulmus sahte cuzdan adresi"
+      match: fe726e6cefcf1f5ad93f16342819eb2dbd12f14ce21883b9f286a4d796c4e8c4
+
+    # GEÇMİŞTE KALAN: b712b09..bc491ce arasındaki testlerde duran gerçek bir
+    # Solana adresi. Kullanıcının kendi cüzdanı DEĞİLDİR; geliştirme sırasında
+    # bir örnekten kopyalanmıştır. 8d2b1ac ile sentetik adresle değiştirildi,
+    # güncel sürümde yoktur. Yalnızca geçmiş taraması yapıldığında görülür.
+    # Zincir adresi olduğu için gizli veri değildir; yine de tekrarlanmamalıdır.
+    - name: "Gecmiste kalan gercek Solana adresi (8d2b1ac ile kaldirildi)"
+      match: 4bcd724dce26cd1aedbdc66349a66bd9ec56676ccb5ff40756811dbc2aabc02c
+
+    # --- Fiyat kaynagi testlerindeki halka acik token kontratlari ---
+    # DexScreener/GeckoTerminal sorgularini denemek icin gercek bir kontrat
+    # gerekir; sahte adres 404 doner ve test anlamini yitirir. Bunlar CUZDAN
+    # DEGIL KONTRAT adresleridir: bir tokenin kimligidir, kimsenin varligini
+    # veya kimligini ele vermez. Kullanicinin kayitli adresleriyle
+    # eslesmedikleri dogrulandi (31 Agustos 2026).
+    - name: "Test kontrat adresi (BSC) - karisik yazim"
+      match: 8220783de4507738c3f8424bb5a4009583db3d623115584cc2bf6647fc65a9d0
+    - name: "Test kontrat adresi (BSC) - kucuk harf yazim"
+      match: 2c89d8554d05f299a6dc15e3e017394f95cd40435708d8a26e0cc1662f3729f7
+    - name: "Test kontrat adresi (EVM, sembol kaynagi)"
+      match: 45aad986b41d40ef5fc39f721a92c825c3973222e5ca8a5338987009a7b30ab6
+    - name: "Test mint adresi (Solana, adres dogrulama testi)"
+      match: 0dfc5e3d0e12c2df9b94dd80bca1ac7a5daaecb67a75619387da14210af4fefc
+
+    # Uctan uca kaynak kodu bize ait olmayan, olduğu gibi eklenmis kutuphane:
+    # app/static/vendor/tailwind.min.js icindeki nanoid alfabesi. Rastgele
+    # kimlik URETMEK icin kullanilan sabit bir karakter dizisidir, uretilmis
+    # bir kimlik degildir. Yol tabanli muafiyet YERINE tek dizge muaf tutuldu;
+    # boylece vendor klasorune ileride gercekten bir sir sizarsa yakalanir.
+    - name: "nanoid alfabesi (vendor/tailwind.min.js icinde, ucuncu parti)"
+      match: 9ccb11702b5a88cf23c287cd7dda624532733503f7e465f918258e89999c420b
