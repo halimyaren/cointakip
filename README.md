@@ -104,6 +104,27 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   automatically is deliberately not offered: the chain knows the quantity but
   not the cost, and booking it at zero would fabricate a profit that never
   happened. Done once per asset, after which it behaves like any other position.
+- **Exchange API connections (read-only)** — your spot balance is read straight
+  from the exchange, so there is no monthly file download. Adapters are written
+  per **signing family**, not per exchange, and an exchange lives in
+  `settings.json` as a profile: adding one is filling a form. One family ships
+  today (Binance-style HMAC-SHA256) and it covers Binance and MEXC together; an
+  exchange with a different signing scheme still needs code, and that is
+  **stated plainly** rather than promised away. Unlike a wallet address, an API
+  key is a genuine secret: it is held in the encrypted vault, never written to
+  `settings.json` in plaintext, and a **write-capable key is refused** —
+  permissions are checked *before* anything is stored. Where they cannot be
+  checked (MEXC's API does not report a key's permissions) that is not hidden:
+  rather than passing off the account's permissions as the key's and giving you
+  a guarantee we cannot make, your explicit acknowledgement is required.
+- **What the difference is worth** — every quantity in the comparison table
+  carries its USD value underneath, and rows are ordered by the **size of the
+  difference**: the question is not "where is there a difference?" but "which
+  difference matters?". Differences below a threshold you set are folded away
+  (their count and total stay visible, one click expands them), because after
+  an exchange connection the table fills with fee dust. A row whose price
+  cannot be found shows `—` and is **never folded**: an unknown value is not a
+  zero value.
 - **Misfiled-location detection** — when the same asset shows as "in the ledger,
   not on chain" at one location and "on chain, not in the ledger" at another,
   with similar quantities, that is not two separate gaps but **one asset filed
@@ -207,7 +228,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-570 tests, about 25 seconds. The suite **never touches your real data and never hits
+633 tests, about 25 seconds. The suite **never touches your real data and never hits
 the network**: data paths are redirected to a temporary directory, all external calls
 are mocked, and no test calls the AI API.
 

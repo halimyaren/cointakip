@@ -1405,3 +1405,173 @@ class TestF6eApiUclari:
         r = client.post("/api/connections/token-mark",
                         json={"chain": "bsc", "mark": "spam"})
         assert r.status_code == 400
+
+
+# =====================================================================
+# 11) KARŞILAŞTIRMADA PARASAL DEĞER
+# =====================================================================
+class TestSatirDegerleri:
+    """
+    Miktar tek başına "buna bakmalı mıyım?" sorusunu cevaplamıyor. Kullanıcı
+    bunu doğrudan söyledi: *"0,002 dolarlık bir farkı görünce hiç bakmam."*
+    Borsa bağlantısı geldikten sonra tablo ücret kırıntılarıyla dolduğu için
+    bu bir konfor değil, tablonun kullanılabilirlik şartı.
+    """
+
+    def _rapor(self, monkeypatch, defter, zincir, coin="ETHUSDT",
+               konum="METAMASK", varlik="ETH"):
+        data = dm.load_portfolio()
+        data["transactions"] = [{
+            "id": 1, "date": "2026-01-01", "coin": coin, "exchange": konum,
+            "qty": defter, "cost": 1000.0, "status": dm.ACTIVE_STATUS}]
+        dm.save_portfolio(data)
+        monkeypatch.setattr(cx, "read_all", lambda only_enabled=True: {
+            "c1": _tek_okuma(konum, "ethereum",
+                             [{"asset": varlik, "qty": zincir}])})
+        return cx.compare_with_ledger()
+
+    def test_miktarlarin_usd_karsiligi_yazilir(self, monkeypatch):
+        rapor = self._rapor(monkeypatch, 1.0, 1.5)
+        satir = next(r for r in rapor["rows"] if r["asset"] == "ETH")
+        assert satir["price"] == pytest.approx(2000.0)
+        assert satir["ledger_value"] == pytest.approx(2000.0)
+        assert satir["chain_value"] == pytest.approx(3000.0)
+        assert satir["diff_value"] == pytest.approx(1000.0)
+
+    def test_eksi_fark_eksi_deger_uretir(self, monkeypatch):
+        rapor = self._rapor(monkeypatch, 2.0, 1.0)
+        satir = next(r for r in rapor["rows"] if r["asset"] == "ETH")
+        assert satir["diff_value"] == pytest.approx(-2000.0)
+
+    def test_nano_fiyat_bozulmadan_carpilir(self, monkeypatch):
+        """CPL gibi 1e-9 fiyatlı tokenlar yuvarlamayla sıfıra düşmemeli."""
+        rapor = self._rapor(monkeypatch, 1_000_000_000.0, 1_000_000_000.0,
+                            coin="CPL", varlik="CPL")
+        satir = next(r for r in rapor["rows"] if r["asset"] == "CPL")
+        assert satir["ledger_value"] == pytest.approx(2.0)
+
+    def test_fiyati_bilinmeyen_varlikta_deger_none(self, monkeypatch):
+        """
+        Sıfır değil `None`. Bilinmeyen değeri sıfır yazmak, gerçekten değerli
+        bir varlığı "önemsiz" sanıp katlanmasına yol açardı — projede birkaç
+        kez düzeltilen hatanın aynısı.
+        """
+        rapor = self._rapor(monkeypatch, 5.0, 7.0, coin="ZZZ", varlik="ZZZ")
+        satir = next(r for r in rapor["rows"] if r["asset"] == "ZZZ")
+        assert satir["price"] is None
+        assert satir["ledger_value"] is None
+        assert satir["diff_value"] is None
+
+    def test_kaynaksiz_fiyat_bilinmiyor_sayilir(self, monkeypatch):
+        """
+        `no_source` bayraklı kayıt, değerleme için maliyete düşürülmüş bir
+        VARSAYIMDIR — gerçek fiyat değildir. Burada ona güvenmek, kullanıcıya
+        uydurma bir tutar göstermek olurdu.
+        """
+        from price_service import price_service
+        monkeypatch.setattr(price_service, "prices", {
+            "ZZZUSDT": {"price": 42.0, "no_source": True}})
+        rapor = self._rapor(monkeypatch, 5.0, 7.0, coin="ZZZ", varlik="ZZZ")
+        satir = next(r for r in rapor["rows"] if r["asset"] == "ZZZ")
+        assert satir["price"] is None
+
+    def test_fiyatsiz_varlik_fiyat_takibine_alinir(self, monkeypatch):
+        """
+        İzleme listesi yalnızca DEFTERDEN kuruluyordu. Borsa bağlantısı gelince
+        bu bir boşluğa dönüştü: borsada durup deftere yazılmamış varlıklar hiç
+        fiyat almıyordu — oysa "bunu eklemeye değer mi?" sorusu tam olarak o
+        satırlarda soruluyor.
+        """
+        from price_service import price_service
+        kaydedilen = []
+        monkeypatch.setattr(price_service, "register_external_symbols",
+                            lambda s: kaydedilen.extend(s))
+        self._rapor(monkeypatch, 0.0, 7.0, coin="ZZZ", varlik="ZZZ")
+        assert "ZZZ" in kaydedilen
+
+    def test_spam_token_fiyat_takibine_alinmaz(self, monkeypatch):
+        """Kimsenin umursamadığı token için ücretsiz uçları yormak anlamsız."""
+        from price_service import price_service
+        kaydedilen = []
+        monkeypatch.setattr(price_service, "register_external_symbols",
+                            lambda s: kaydedilen.extend(s))
+        monkeypatch.setattr(cx, "read_all", lambda only_enabled=True: {
+            "c1": _tek_okuma("PHANTOM", "solana", [
+                {"asset": "SPAMCOIN", "qty": 500.0, "contract": "m1",
+                 "chain": "solana", "trust": cx.TRUST_UNLISTED,
+                 "verified": False}])})
+        rapor = cx.compare_with_ledger()
+        assert rapor["spam_count"] == 1
+        assert "SPAMCOIN" not in kaydedilen
+
+    def test_okunamayan_baglantida_zincir_degeri_none(self, monkeypatch):
+        data = dm.load_portfolio()
+        data["transactions"] = [{"id": 1, "coin": "ETHUSDT",
+                                 "exchange": "METAMASK", "qty": 1.0,
+                                 "cost": 1000.0, "status": dm.ACTIVE_STATUS}]
+        dm.save_portfolio(data)
+        monkeypatch.setattr(cx, "read_all", lambda only_enabled=True: {
+            "c1": {"id": "c1", "location": "METAMASK", "ok": False,
+                   "chain": "ethereum", "balances": [], "notes": [],
+                   "incomplete": True}})
+        satir = next(r for r in cx.compare_with_ledger()["rows"]
+                     if r["asset"] == "ETH")
+        assert satir["chain_value"] is None       # bilinmiyor
+        assert satir["ledger_value"] == pytest.approx(2000.0)
+
+
+class TestOnemeGoreSiralama:
+    """
+    Kullanıcının sorusu "hangi fark var?" değil "hangi fark ÖNEMLİ?".
+    Parasal büyüklük sıralamayı belirler.
+    """
+
+    def _rapor(self, monkeypatch, kayitlar, bakiyeler):
+        data = dm.load_portfolio()
+        data["transactions"] = kayitlar
+        dm.save_portfolio(data)
+        monkeypatch.setattr(cx, "read_all", lambda only_enabled=True: {
+            "c1": _tek_okuma("METAMASK", "ethereum", bakiyeler)})
+        return cx.compare_with_ledger()
+
+    def test_buyuk_fark_kucugun_ustunde_durur(self, monkeypatch):
+        rapor = self._rapor(monkeypatch, [
+            {"id": 1, "coin": "ETHUSDT", "exchange": "METAMASK", "qty": 1.0,
+             "cost": 1.0, "status": dm.ACTIVE_STATUS},
+            {"id": 2, "coin": "BTCUSDT", "exchange": "METAMASK", "qty": 1.0,
+             "cost": 1.0, "status": dm.ACTIVE_STATUS},
+        ], [{"asset": "ETH", "qty": 1.5},          # +0,5 ETH  = +$1.000
+            {"asset": "BTC", "qty": 1.5}])         # +0,5 BTC  = +$50.000
+        farklar = [r["asset"] for r in rapor["rows"] if r["status"] == "mismatch"]
+        assert farklar == ["BTC", "ETH"]
+
+    def test_fiyati_bilinmeyen_satir_grubun_sonuna_gider(self, monkeypatch):
+        """
+        En üste koymak gerçek parayı dust'ın altında bırakırdı; katlamak ise
+        değerli ama fiyat kaynağı olmayan bir varlığı gizlemek olurdu. Doğru
+        yer: görünür, ama parası bilinenlerin ardında.
+        """
+        rapor = self._rapor(monkeypatch, [
+            {"id": 1, "coin": "ZZZ", "exchange": "METAMASK", "qty": 1.0,
+             "cost": 1.0, "status": dm.ACTIVE_STATUS},
+            {"id": 2, "coin": "ETHUSDT", "exchange": "METAMASK", "qty": 1.0,
+             "cost": 1.0, "status": dm.ACTIVE_STATUS},
+        ], [{"asset": "ZZZ", "qty": 2.0}, {"asset": "ETH", "qty": 1.5}])
+        farklar = [r["asset"] for r in rapor["rows"] if r["status"] == "mismatch"]
+        assert farklar == ["ETH", "ZZZ"]
+
+    def test_durum_sirasi_paradan_once_gelir(self, monkeypatch):
+        """
+        Para sıralamayı grup İÇİNDE belirler, grupları değil. Küçük bir
+        "fark var" satırı, büyük bir "eşleşiyor" satırının üstünde kalmalı.
+        """
+        rapor = self._rapor(monkeypatch, [
+            {"id": 1, "coin": "BTCUSDT", "exchange": "METAMASK", "qty": 1.0,
+             "cost": 1.0, "status": dm.ACTIVE_STATUS},
+            {"id": 2, "coin": "ETHUSDT", "exchange": "METAMASK", "qty": 1.0,
+             "cost": 1.0, "status": dm.ACTIVE_STATUS},
+        ], [{"asset": "BTC", "qty": 1.0},          # eşleşiyor, $100.000
+            {"asset": "ETH", "qty": 1.02}])        # fark var, yalnızca $40
+        satirlar = {r["asset"]: r["status"] for r in rapor["rows"]}
+        assert satirlar["BTC"] == "match" and satirlar["ETH"] == "mismatch"
+        assert [r["asset"] for r in rapor["rows"]] == ["ETH", "BTC"]

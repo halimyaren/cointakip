@@ -261,6 +261,27 @@ function portfolioApp() {
                 tokens: [] },
     connTokenInput: '',       // eklenecek kontrat adresi
     connTokenBusy: false,
+
+    // ---- Faz F6b: borsa API bağlantıları ----
+    // Cüzdan adresi herkese açıktır; borsa API anahtarı DEĞİLDİR. Bu yüzden
+    // anahtarlar burada tutulmaz, girildikleri anda sunucuya gönderilip
+    // şifreli kasaya yazılır ve form temizlenir.
+    exProfiles: {},
+    exFamilies: [],
+    exBuiltin: [],
+    exCredentials: {},
+    exForm: { location: '', name: '', family: 'binance', base_url: '',
+              account_path: '', time_path: '', restrictions_path: '',
+              balances_field: 'balances', asset_field: 'asset',
+              free_field: 'free', locked_field: 'locked', label: '' },
+    exKeyInput: '',
+    exSecretInput: '',
+    exBusy: false,
+    exTestResult: null,
+    exShowAdvanced: false,
+    // İzinleri doğrulanamayan borsa için kullanıcının açık onayı. Veremeyeceğimiz
+    // bir güvenceyi vermemek için var: onay kutusu işaretlenmeden kaydedilmez.
+    exAcknowledge: false,
     // İşlem formu zincir tablosundan mı açıldı? Kayıttan sonra karşılaştırmayı
     // tazelemek için: satır "Zincirde var"dan "Eşleşiyor"a dönmeli, kullanıcı
     // işin bittiğini görmeli.
@@ -270,6 +291,12 @@ function portfolioApp() {
     connBusy: false,
     connTestResult: null,
     connReport: null,
+    // Bu tutarın altındaki farklar katlanır. Miktar tek başına "buna bakmalı
+    // mıyım?" sorusunu cevaplamıyordu; borsa bağlantısı geldikten sonra tablo
+    // ücret kırıntılarıyla dolduğu için bu bir konfor değil kullanılabilirlik
+    // şartı. Değeri `settings.preferences.reconcile_dust_usd` içinde kalıcı.
+    connDustUsd: 1.0,
+    connShowDust: false,
     // Solana'da istenmeden gönderilen spam token yaygın; gerçek bir cüzdanda
     // yüzlerce satır üretir. Gizlenmiyor, katlanıyor — kullanıcı açabilir.
     connShowSpam: false,
@@ -883,10 +910,59 @@ function portfolioApp() {
         .map(c => c.name).join(', ');
     },
 
+    // Eşiğin altındaki fark "önemsiz"dir — ama yalnızca DEĞERİ BİLİNİYORSA.
+    // Fiyatı bulunamayan satır asla önemsiz sayılmaz: bilinmeyen değer sıfır
+    // değer değildir ve gerçekten değerli bir mikro-cap'i gürültü sanıp
+    // gizlemek, projede birkaç kez düzelttiğimiz hatanın aynısı olurdu.
+    connRowIsDust(r) {
+      if (!r || r.diff_value === null || r.diff_value === undefined) return false;
+      if (r.status === 'match') return false;      // zaten sorun değil
+      const esik = parseFloat(this.connDustUsd);
+      if (!(esik > 0)) return false;
+      return Math.abs(r.diff_value) < esik;
+    },
+
+    get connDustRows() {
+      if (!this.connReport) return [];
+      return (this.connReport.rows || [])
+        .filter(r => !r.likely_spam && this.connRowIsDust(r));
+    },
+
+    get connDustTotal() {
+      return this.connDustRows.reduce((t, r) => t + Math.abs(r.diff_value || 0), 0);
+    },
+
     get connRows() {
       if (!this.connReport) return [];
       const rows = this.connReport.rows || [];
-      return this.connShowSpam ? rows : rows.filter(r => !r.likely_spam);
+      const gorunur = this.connShowSpam ? rows : rows.filter(r => !r.likely_spam);
+      return this.connShowDust ? gorunur : gorunur.filter(r => !this.connRowIsDust(r));
+    },
+
+    // "$1,23" / çok küçükse "<$0,01" / fiyat yoksa "—".
+    // Sıfır göstermek yanlış olurdu: 0,004 dolar sıfır değildir, sadece küçüktür.
+    fmtUsd(v) {
+      if (v === null || v === undefined) return '—';
+      const m = Math.abs(v);
+      if (m === 0) return '$0';
+      if (m < 0.01) return (v < 0 ? '-' : '') + '<$0,01';
+      return (v < 0 ? '-' : '') + '$' + this.formatNum(m, m < 1 ? 4 : 2);
+    },
+
+    async saveDustThreshold() {
+      const esik = parseFloat(this.connDustUsd);
+      if (!(esik >= 0)) return;
+      try {
+        this.settings.preferences = { ...this.settings.preferences,
+                                      reconcile_dust_usd: esik };
+        await fetch('/api/settings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ preferences: this.settings.preferences })
+        });
+      } catch (e) {
+        // Eşik kaydedilemezse tablo yine doğru çalışır; yalnızca kalıcı olmaz.
+        console.warn('Eşik kaydedilemedi:', e);
+      }
     },
 
     chainName(id) {
@@ -923,6 +999,154 @@ function portfolioApp() {
         this.providerKeySet = !!body.provider_key_set;
       } catch (e) {
         this.notify(e.message || 'Bağlantılar okunamadı.', 'error', 5000);
+      }
+    },
+
+    // -------------------------------------------------------------
+    // FAZ F6b: BORSA API BAĞLANTILARI
+    // -------------------------------------------------------------
+    async fetchExchanges() {
+      try {
+        const resp = await fetch('/api/exchanges');
+        if (!resp.ok) throw new Error('Borsa profilleri okunamadı.');
+        this.applyExchangeStatus(await resp.json());
+      } catch (e) {
+        this.notify(e.message || 'Borsa profilleri okunamadı.', 'error', 5000);
+      }
+    },
+
+    applyExchangeStatus(body) {
+      this.exProfiles = body.profiles || {};
+      this.exFamilies = body.families || [];
+      this.exBuiltin = body.builtin || [];
+      this.exCredentials = body.credentials || {};
+    },
+
+    get exProfileList() {
+      return Object.entries(this.exProfiles)
+                   .map(([konum, spec]) => ({ konum, spec }))
+                   .sort((a, b) => a.konum.localeCompare(b.konum));
+    },
+
+    // Hazır profil seçilince form doldurulur. Kullanıcı yine de her alanı
+    // değiştirebilir: profil koda gömülü değil veridir.
+    pickBuiltinExchange(konum) {
+      const hazir = (this.exBuiltin || []).find(p => p.location === konum);
+      if (!hazir) return;
+      this.exForm = { ...this.exForm, ...hazir, label: this.exForm.label || '' };
+      this.exTestResult = null;
+      this.exAcknowledge = false;
+    },
+
+    resetExchangeForm() {
+      this.exForm = { location: '', name: '', family: 'binance', base_url: '',
+                      account_path: '', time_path: '', restrictions_path: '',
+                      balances_field: 'balances', asset_field: 'asset',
+                      free_field: 'free', locked_field: 'locked', label: '' };
+      this.exKeyInput = '';
+      this.exSecretInput = '';
+      this.exTestResult = null;
+      this.exAcknowledge = false;
+    },
+
+    editExchange(konum) {
+      const spec = this.exProfiles[konum];
+      if (!spec) return;
+      this.exForm = { ...this.exForm, ...spec };
+      // Anahtar kasada; buraya geri getirilmez. Değiştirmek isterse yeniden
+      // girer — sırrı ekrana basmak için hiçbir sebep yok.
+      this.exKeyInput = '';
+      this.exSecretInput = '';
+      this.exTestResult = null;
+      this.exAcknowledge = false;
+    },
+
+    get exPermissionUnverifiable() {
+      const r = this.exTestResult;
+      return !!(r && r.permission && r.permission.status === 'unverifiable');
+    },
+
+    async testExchange() {
+      if (this.exBusy) return;
+      if (!this.exKeyInput || !this.exSecretInput) {
+        this.notify('API anahtarı ve gizli anahtar gerekli.', 'error', 4000);
+        return;
+      }
+      this.exBusy = true;
+      this.exTestResult = null;
+      try {
+        const resp = await fetch('/api/exchanges/test', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ profile: this.exForm,
+                                 api_key: this.exKeyInput,
+                                 api_secret: this.exSecretInput })
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Bağlantı denenemedi.');
+        this.exTestResult = body;
+        this.notify(`${body.name}: ${body.asset_count} varlık okundu.`,
+                    'success', 5000);
+      } catch (e) {
+        this.exTestResult = { ok: false, error: e.message };
+        this.notify(e.message || 'Bağlantı denenemedi.', 'error', 9000);
+      } finally {
+        this.exBusy = false;
+      }
+    },
+
+    async saveExchange() {
+      if (this.exBusy) return;
+      if (!this.vaultStatus.unlocked) {
+        this.notify('Borsa anahtarı şifreli kasaya yazılır; önce kasayı açın ' +
+                    '(Anahtar Kasası → PIN → Kasayı Aç).', 'error', 8000);
+        return;
+      }
+      if (!this.exKeyInput || !this.exSecretInput) {
+        this.notify('API anahtarı ve gizli anahtar gerekli.', 'error', 4000);
+        return;
+      }
+      this.exBusy = true;
+      try {
+        const resp = await fetch('/api/exchanges', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ profile: this.exForm,
+                                 api_key: this.exKeyInput,
+                                 api_secret: this.exSecretInput,
+                                 acknowledge_unverified: this.exAcknowledge })
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Borsa kaydedilemedi.');
+        this.applyExchangeStatus(body);
+        const konum = (body.profile || {}).location || this.exForm.location;
+        this.resetExchangeForm();
+        this.notify(`${konum} bağlantısı kaydedildi. Anahtar şifreli kasada ` +
+                    'duruyor.', 'success', 6000);
+      } catch (e) {
+        this.notify(e.message || 'Borsa kaydedilemedi.', 'error', 12000);
+      } finally {
+        this.exBusy = false;
+      }
+    },
+
+    async removeExchange(konum) {
+      const onay = await this.askConfirm({
+        title: 'Borsa bağlantısını sil',
+        message: `${konum} bağlantısı silinecek.`,
+        detail: 'Profil ve kasadaki API anahtarınız birlikte silinir — ' +
+                '"sildim" dediğiniz bir sırrın diskte durmaya devam etmesi ' +
+                'doğru olmazdı. Defterinizdeki kayıtlara DOKUNULMAZ.',
+        confirmText: 'Sil', tone: 'danger'
+      });
+      if (!onay) return;
+      try {
+        const resp = await fetch('/api/exchanges/' + encodeURIComponent(konum),
+                                 { method: 'DELETE' });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Silinemedi.');
+        this.applyExchangeStatus(body);
+        this.notify(`${konum} bağlantısı silindi.`, 'success', 3000);
+      } catch (e) {
+        this.notify(e.message || 'Silinemedi.', 'error', 5000);
       }
     },
 
@@ -3062,6 +3286,10 @@ function portfolioApp() {
             api_keys: { ...this.settings.api_keys, ...(data.api_keys || {}) },
             preferences: { ...this.settings.preferences, ...(data.preferences || {}) }
           };
+          // Karşılaştırma tablosunun katlama eşiği tercihlerde saklanıyor;
+          // her açılışta kullanıcının seçtiği değerle gelsin.
+          const esik = parseFloat(this.settings.preferences.reconcile_dust_usd);
+          if (esik >= 0) this.connDustUsd = esik;
         }
       } catch (e) {
         console.error('Error fetching settings:', e);

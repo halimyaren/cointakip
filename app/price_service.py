@@ -73,6 +73,11 @@ CONFIG_TTL = 10.0
 # Portföy izleme listesi bu aralıkta yenilenir (saniye).
 WATCHLIST_TTL = 20.0
 
+# Canlı bağlantılardan gelen, defterde olmayan sembollerin üst sınırı. Spam
+# token gönderilen bir adres yüzlerce sembol üretebilir; hepsini süresiz
+# fiyat takibine almak hem anlamsız hem de ücretsiz uçlara yüktür.
+EXTERNAL_SYMBOL_LIMIT = 150
+
 # Zincir üstü (DEX) sorgular bu aralıkta tekrarlanır (saniye).
 # DexScreener'a her 4 sn'de bir sembol başına istek atmak hem gereksiz
 # hem de hız sınırına takılma riski.
@@ -106,6 +111,14 @@ class SmartPriceDiscoveryEngine:
         self._watchlist_cache = []
         self._watchlist_ts = 0.0
         self._dex_last_fetch = {}   # { "SCMUSDT": timestamp }
+
+        # FAZ F6b+ — Canlı bağlantılarda görülüp defterde OLMAYAN semboller.
+        # İzleme listesi yalnızca defterden kuruluyordu; borsa bağlantısı
+        # gelince bu bir boşluğa dönüştü: cüzdanınızda/borsanızda duran ama
+        # henüz deftere yazmadığınız varlıklar hiç fiyat almıyordu. Oysa
+        # "bunu deftere eklemeye değer mi?" sorusunu tam olarak o satırlarda
+        # soruyorsunuz ve cevap için fiyat gerekiyor.
+        self._external_symbols = set()
 
         # FAZ F1d — Kaynak sağlığı.
         # Gate.io adaptörü ilk sürümden beri her turda 403 alıp sessizce boş
@@ -654,9 +667,53 @@ class SmartPriceDiscoveryEngine:
         except Exception as e:
             logger.debug("İzleme listesi portföyden okunamadı: %s", e)
 
+        # Canlı bağlantılarda görülen ama defterde olmayan semboller de
+        # listeye girer; yoksa karşılaştırma tablosunda onların yanında
+        # kalıcı olarak "—" yazardı.
+        with self.lock:
+            disaridan = sorted(self._external_symbols)
+        for sembol in disaridan:
+            if sembol not in seen:
+                seen.add(sembol)
+                symbols.append(sembol)
+
         self._watchlist_cache = symbols
         self._watchlist_ts = now
         return symbols
+
+    def register_external_symbols(self, symbols):
+        """
+        Defterde olmayan ama canlı bağlantılarda görülen sembolleri fiyat
+        takibine alır. **Ağa çıkmaz** — yalnızca listeyi genişletir; fiyatlar
+        bir sonraki güncelleme turunda gelir.
+
+        Ağa burada çıkmamak bilinçli: karşılaştırma sırasında onlarca sembol
+        için senkron fiyat isteği atmak hem tabloyu yavaşlatır hem de ücretsiz
+        ve paylaşımlı uçları gereksiz yere yorar.
+
+        Liste sınırlıdır: spam token gönderilen bir adres yüzlerce sembol
+        üretebilir ve hepsini süresiz takip etmek anlamsız olurdu.
+        """
+        temiz = set()
+        for s in symbols or []:
+            sembol = str(s or "").upper().strip()
+            # Kısaltılmış mint adresleri (`ABcd…wXyz`) sembol değildir.
+            if sembol and "…" not in sembol and len(sembol) <= 24:
+                temiz.add(sembol)
+        if not temiz:
+            return 0
+        with self.lock:
+            once = len(self._external_symbols)
+            self._external_symbols |= temiz
+            if len(self._external_symbols) > EXTERNAL_SYMBOL_LIMIT:
+                self._external_symbols = set(
+                    sorted(self._external_symbols)[:EXTERNAL_SYMBOL_LIMIT])
+            yeni = len(self._external_symbols) - once
+        if yeni:
+            self._watchlist_ts = 0.0        # liste tazelensin
+            logger.info("Fiyat takibine %d yeni sembol eklendi "
+                        "(canlı bağlantılardan).", yeni)
+        return yeni
 
     def _store(self, prices, symbol, info):
         """Bir fiyatı tüm arama biçimleriyle (SCM, SCMUSDT, taban) yazar."""

@@ -33,6 +33,7 @@ from price_service import price_service
 import archive
 import reconcile
 import connections
+import exchanges
 import keyvault
 from log_config import get_logger, LOG_FILE
 
@@ -367,6 +368,74 @@ def api_token_info(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Kontrat okunamadı: {e}")
+
+
+# =====================================================================
+# Borsa API bağlantıları (F6b)
+# =====================================================================
+@app.get("/api/exchanges")
+def api_exchange_status():
+    """Tanımlı borsa profilleri, imzalama aileleri ve hazır profiller."""
+    return exchanges.status()
+
+
+@app.post("/api/exchanges/test")
+def api_exchange_test(payload: dict = Body(...)):
+    """
+    Profili ve anahtarı dener. **Hiçbir şey saklamaz.**
+
+    Yazma yetkili anahtar 403 ile reddedilir; bakiye okumaya bile girişilmez.
+    """
+    payload = payload or {}
+    try:
+        return exchanges.test_profile(payload.get("profile") or {},
+                                      payload.get("api_key"),
+                                      payload.get("api_secret"))
+    except exchanges.WriteCapableKey as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except exchanges.ExchangeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/exchanges")
+def api_exchange_save(payload: dict = Body(...)):
+    """
+    Borsa profilini ve anahtarını kaydeder. Anahtar **kasaya** yazılır.
+
+    Sıra bilinçli: önce izin denetimi, sonra saklama. Tersi olsaydı reddedilen
+    bir anahtar bir süre diskte durmuş olurdu.
+    """
+    payload = payload or {}
+    try:
+        sonuc = exchanges.save_credentials(
+            payload.get("profile") or {},
+            payload.get("api_key"), payload.get("api_secret"),
+            acknowledge_unverified=bool(payload.get("acknowledge_unverified")))
+    except exchanges.WriteCapableKey as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except keyvault.VaultLocked as e:
+        raise HTTPException(status_code=423, detail=str(e))
+    except exchanges.ExchangeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"success": True, **sonuc, **exchanges.status()}
+
+
+@app.delete("/api/exchanges/{location}")
+def api_exchange_delete(location: str):
+    """Profili siler ve kasadaki anahtarlarını unutur."""
+    if not exchanges.delete_profile(location):
+        raise HTTPException(status_code=404, detail="Borsa profili bulunamadı.")
+    return {"success": True, **exchanges.status()}
+
+
+@app.get("/api/exchanges/balances")
+def api_exchange_balances():
+    """Tanımlı borsaların canlı spot bakiyeleri. **Salt okunur.**"""
+    return {"readings": exchanges.read_all(), "read_only": True}
 
 
 @app.post("/api/connections/token-mark")

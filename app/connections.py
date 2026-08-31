@@ -1073,6 +1073,27 @@ def read_all(only_enabled=True):
     return sonuc
 
 
+def all_readings(only_enabled=True) -> dict:
+    """
+    Zincir üstü bağlantılar + borsa API bağlantıları, TEK sözlükte.
+
+    İki kaynak aynı şekilde okuma döndürüyor, bu yüzden karşılaştırma ve arayüz
+    ikisini ayırt etmek zorunda değil: bir konumun canlı bakiyesi ister
+    zincirden ister borsadan gelsin, defterle aynı biçimde karşılaştırılır.
+
+    Borsa tarafının düşmesi zincir tarafını düşürmez. Kullanıcının cüzdan
+    okumaları, borsa profilinde bir sorun var diye kaybolmamalı.
+    """
+    okumalar = dict(read_all(only_enabled))
+    try:
+        import exchanges
+        for konum, okuma in exchanges.read_all(only_enabled).items():
+            okumalar[f"ex:{konum}"] = okuma
+    except Exception as e:
+        logger.warning("Borsa bağlantıları okunamadı: %s", e)
+    return okumalar
+
+
 def live_balance(asset, location, readings=None):
     """
     Bir (varlık, konum) için canlı bakiye — o konumun TÜM bağlantıları toplanarak.
@@ -1091,7 +1112,7 @@ def live_balance(asset, location, readings=None):
     from data_manager import normalize_location
     from reconcile import normalize_asset
     konum = normalize_location(location)
-    okumalar = readings if readings is not None else read_all()
+    okumalar = readings if readings is not None else all_readings()
     ilgili = [o for o in okumalar.values() if o.get("location") == konum]
     if not ilgili:
         return None
@@ -1110,6 +1131,81 @@ def live_balance(asset, location, readings=None):
         return toplam
     # Hiçbirinde yok. "Sıfır" diyebilmek için konumun HER zinciri okunmuş olmalı.
     return 0.0 if len(okunabilir) == len(ilgili) else None
+
+
+def _fiyat_bul(fiyatlar, varlik):
+    """
+    Bir varlığın USD fiyatı — **bulunamazsa `None`.**
+
+    Maliyete geri düşmüyoruz. `resolve_price_info` portföy değerlemesinde
+    bilinçli olarak maliyete düşer (yoksa toplam kasa sıfıra çökerdi), ama
+    burada amaç farklı: kullanıcı bu sayıya bakıp "buna bakmaya değer mi?"
+    diye karar verecek. Bilinmeyen fiyatı maliyetle doldurmak, olmayan bir
+    bilgiyi varmış gibi göstermek olurdu.
+    """
+    for anahtar in (f"{varlik}USDT", varlik):
+        bilgi = fiyatlar.get(anahtar)
+        if not bilgi or bilgi.get("no_source"):
+            continue
+        try:
+            fiyat = float(bilgi.get("price") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if fiyat > 0:
+            return fiyat
+    return None
+
+
+def _deger(miktar, fiyat):
+    if miktar is None or fiyat is None:
+        return None
+    return float(miktar) * float(fiyat)
+
+
+def _degerleri_ekle(satirlar):
+    """
+    Her satıra USD karşılığını yazar.
+
+    NEDEN GEREKLİ
+    -------------
+    Miktar tek başına "buna bakmalı mıyım?" sorusunu cevaplamıyor. Kullanıcı
+    bunu doğrudan söyledi: *"0,002 dolarlık bir farkı görünce hiç bakmam
+    oraya."* Borsa bağlantısı geldikten sonra tablo ücret kırıntılarıyla
+    dolduğu için bu artık bir konfor değil, tablonun kullanılabilirlik şartı.
+
+    En önemli sayı **farkın** karşılığı: `+0,00013 BNB` kararı zorlaştırır,
+    `≈ $0,09` anında verdirir.
+    """
+    try:
+        from price_service import price_service
+        fiyatlar = price_service.get_prices() or {}
+    except Exception as e:
+        logger.warning("Karşılaştırma için fiyatlar alınamadı: %s", e)
+        fiyatlar = {}
+
+    eksik = []
+    for r in satirlar:
+        fiyat = _fiyat_bul(fiyatlar, r["asset"])
+        r["price"] = fiyat
+        r["ledger_value"] = _deger(r.get("ledger_qty"), fiyat)
+        r["chain_value"] = _deger(r.get("chain_qty"), fiyat)
+        r["diff_value"] = _deger(r.get("diff_qty"), fiyat)
+        # Fiyatı olmayan ve spam sayılmayan varlıklar fiyat takibine alınır.
+        # İzleme listesi yalnızca DEFTERDEN kuruluyordu; borsa bağlantısı
+        # gelince bu bir boşluğa dönüştü, çünkü "bunu eklemeye değer mi?"
+        # sorusu tam da defterde OLMAYAN satırlarda soruluyor.
+        #
+        # Spam satırları kaydedilmiyor: onlar için fiyat aramak, ücretsiz
+        # uçları kimsenin umursamadığı tokenlar için yormak olurdu.
+        if fiyat is None and not r.get("likely_spam"):
+            eksik.append(r["asset"])
+    if eksik:
+        try:
+            from price_service import price_service
+            price_service.register_external_symbols(eksik)
+        except Exception as e:
+            logger.debug("Semboller fiyat takibine eklenemedi: %s", e)
+    return satirlar
 
 
 def _yanlis_konum_isaretle(satirlar):
@@ -1202,7 +1298,7 @@ def compare_with_ledger(data=None):
     if data is None:
         data = load_portfolio()
 
-    okumalar = read_all()
+    okumalar = all_readings()
     # Bağlantısı olan konumlar — bir konumun birden çok hesabı ve zinciri olabilir.
     bagli_konumlar = {o.get("location") for o in okumalar.values()}
     zincirler = {}
@@ -1297,6 +1393,7 @@ def compare_with_ledger(data=None):
             "misplaced": None,
         })
 
+    _degerleri_ekle(satirlar)
     _yanlis_konum_isaretle(satirlar)
 
     # Ekleme düğmesinin neden olmadığı satırın kendisinde yazsın; kullanıcı
@@ -1311,8 +1408,21 @@ def compare_with_ledger(data=None):
 
     sira = {"mismatch": 0, "only_chain": 1, "only_ledger": 2,
             "unreadable": 3, "match": 4}
+    # Sıralama: önce durum, sonra **farkın parasal büyüklüğü**. Kullanıcının
+    # sorusu "hangi fark var?" değil "hangi fark ÖNEMLİ?" — $412'lik bir fark
+    # $0,002'lik farkın üstünde durmalı.
+    #
+    # Fiyatı bilinmeyen satırlar kendi grubunun SONUNA gider ama asla
+    # katlanmaz. Onları en üste koymak, gerçek parayı dust'ın altında
+    # bırakırdı; katlamak ise değerli ama fiyat kaynağı olmayan bir varlığı
+    # (mikro-cap, delist olmuş coin) gürültü sanıp gizlemek olurdu.
+    # Bilinmeyen değer, sıfır değer değildir.
+    def _onem(r):
+        d = r.get("diff_value")
+        return (1, 0.0) if d is None else (0, -abs(float(d)))
+
     satirlar.sort(key=lambda r: (r["likely_spam"], r.get("needs_review", False),
-                                 sira.get(r["status"], 5),
+                                 sira.get(r["status"], 5), _onem(r),
                                  r["location"], r["asset"]))
     # Sayımlar yalnızca ilgili satırları anlatır; 130 spam token "130 fark var"
     # diye görünseydi gerçek farklar gürültüde kaybolurdu.
@@ -1335,7 +1445,11 @@ def compare_with_ledger(data=None):
                             "label": v.get("label", ""),
                             "notes": v.get("notes", []),
                             "incomplete": bool(v.get("incomplete")),
-                            "token_count": v.get("token_count", 0)}
+                            "token_count": v.get("token_count", 0),
+                            # Zincir mi borsa mı: arayüz ikisini aynı tabloda
+                            # gösteriyor ama satırın nereden geldiğini yazmalı.
+                            "source": v.get("source", "chain"),
+                            "name": v.get("name", "")}
                         for k, v in okumalar.items()},
         "rows": satirlar,
         "status_counts": sayim,

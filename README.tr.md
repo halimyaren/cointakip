@@ -99,6 +99,25 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   yok: zincir miktarı bilir, maliyeti bilmez ve sıfır maliyetle yazmak olmayan
   bir kâr uydurmak olurdu. Varlık başına bir kez yapılır, sonrasında normal bir
   pozisyon gibi Kasa toplamınızda durur.
+- **Borsa API bağlantıları (salt okunur)** — borsadaki spot bakiyeniz doğrudan
+  okunur; her ay dosya indirmeniz gerekmez. Adaptör borsa başına değil
+  **imzalama ailesi** başına yazılıyor, borsa `settings.json` içinde bir profil
+  olarak duruyor: yeni bir borsa eklemek form doldurmak. Şu an bir aile var
+  (Binance tipi HMAC-SHA256) ve Binance ile MEXC'i birlikte kapsıyor; farklı
+  imzalama şeması olan bir borsa yine kod ister ve bu **açıkça söyleniyor**.
+  API anahtarı cüzdan adresinden farklı olarak gerçek bir sırdır: şifreli
+  kasada saklanır, `settings.json`'a düz metin yazılmaz ve **yazma yetkisi
+  taşıyan anahtar kabul edilmez** — izinler saklanmadan ÖNCE denetlenir.
+  Denetlenemiyorsa (MEXC'in API'si anahtar yetkilerini bildirmiyor) bu
+  gizlenmez; hesabın yetkisini anahtarın yetkisi sayıp size veremeyeceğimiz
+  bir güvenceyi vermek yerine açık onayınız istenir.
+- **Farkın parasal karşılığı** — karşılaştırma tablosunda her miktarın altında
+  USD tutarı yazar ve satırlar **farkın büyüklüğüne göre** sıralanır: soru
+  "hangi fark var?" değil "hangi fark önemli?". Belirlediğiniz eşiğin altındaki
+  farklar katlanır (sayısı ve toplamı görünür, tek tıkla açılır), çünkü borsa
+  bağlantısından sonra tablo ücret kırıntılarıyla dolar. Fiyatı bulunamayan
+  satırda `—` yazar ve o satır **asla katlanmaz**: bilinmeyen değer sıfır değer
+  değildir.
 - **Yanlış konum tespiti** — aynı varlık bir konumda "defterde var, zincirde
   yok", başka bir konumda "zincirde var, defterde yok" ve miktarlar yakınsa,
   bu iki ayrı eksiklik değil **yanlış rafa yazılmış tek bir varlıktır**. O
@@ -201,7 +220,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-570 test, yaklaşık 25 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
+633 test, yaklaşık 25 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
 veri yolları geçici bir klasöre yönlendirilir, tüm dış çağrılar taklit edilir ve
 hiçbir test yapay zekâ API'sine istek atmaz.
 

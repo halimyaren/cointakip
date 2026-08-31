@@ -2175,6 +2175,10 @@ DEFAULT_SETTINGS = {
     # tektir. Bu işaret sistemin kendi tahminlerini EZER: gerçek bir airdrop
     # başlangıçta değersiz görünebilir ve son söz kullanıcınındır.
     "token_marks": {},
+    # Borsa API profilleri (F6b). Yalnızca SIR OLMAYAN alanlar burada durur:
+    # taban adres, uç noktalar, imzalama ailesi, alan eşlemesi. API anahtarı ve
+    # gizli anahtar buraya ASLA yazılmaz; onlar şifreli kasadadır.
+    "exchange_profiles": {},
     "api_keys": {
         "gemini_api_key": "",
         "telegram_bot_token": "",
@@ -2184,7 +2188,13 @@ DEFAULT_SETTINGS = {
         "refresh_interval_sec": 3.5,
         "default_tab": "dashboard",
         "sound_alerts": True,
-        "theme": "dark"
+        "theme": "dark",
+        # Canlı bakiye ↔ defter tablosunda bu tutarın altındaki farklar
+        # katlanır. Borsa bağlantısı geldikten sonra tablo ücret
+        # kırıntılarıyla doluyor ve 0,002 dolarlık bir fark kimsenin
+        # dikkatini hak etmiyor. Gizlemek değil KATLAMAK: sayısı yazılır,
+        # kullanıcı açabilir. Fiyatı bilinmeyen satır bu eşiğe hiç girmez.
+        "reconcile_dust_usd": 1.0
     },
     "security": {
         "pin_enabled": False,

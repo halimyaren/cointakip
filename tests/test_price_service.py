@@ -260,3 +260,61 @@ def test_binance_fiyatlari_mexc_tarafindan_ezilmez(motor, monkeypatch):
     motor.update_all_prices()
     assert motor.prices["BTCUSDT"]["source"] == "BINANCE"
     assert motor.prices["BTCUSDT"]["price"] == pytest.approx(100000.0)
+
+
+# =====================================================================
+# CANLI BAĞLANTILARDAN GELEN SEMBOLLER (F6b+)
+# =====================================================================
+# İzleme listesi yalnızca DEFTERDEN kuruluyordu. Borsa bağlantısı gelince bu
+# bir boşluğa dönüştü: borsanızda durup deftere yazmadığınız varlıklar hiç
+# fiyat almıyordu — oysa "bunu eklemeye değer mi?" sorusu tam olarak o
+# satırlarda soruluyor ve cevap için fiyat gerekiyor.
+class TestDisaridanGelenSemboller:
+
+    def test_kaydedilen_sembol_izleme_listesine_girer(self):
+        motor = SmartPriceDiscoveryEngine()
+        assert motor.register_external_symbols(["APT", "tia"]) == 2
+        liste = motor.get_watchlist(force=True)
+        assert "APT" in liste and "TIA" in liste
+
+    def test_kayit_agina_cikmaz(self, monkeypatch):
+        """
+        Karşılaştırma sırasında onlarca sembol için senkron fiyat isteği atmak
+        hem tabloyu yavaşlatır hem de ücretsiz uçları yorar. Kayıt yalnızca
+        listeyi genişletir; fiyatlar bir sonraki turda gelir.
+        """
+        motor = SmartPriceDiscoveryEngine()
+        monkeypatch.setattr(motor, "fetch_url_json",
+                            lambda *a, **k: pytest.fail("ağa çıkıldı"))
+        monkeypatch.setattr(motor, "fetch_dex_screener",
+                            lambda *a, **k: pytest.fail("ağa çıkıldı"))
+        motor.register_external_symbols(["APT"])
+
+    def test_mukerrer_kayit_sayilmaz(self):
+        motor = SmartPriceDiscoveryEngine()
+        motor.register_external_symbols(["APT"])
+        assert motor.register_external_symbols(["APT"]) == 0
+
+    def test_kisaltilmis_mint_adresi_kabul_edilmez(self):
+        """`ABcd…wXyz` bir sembol değil, okunamamış bir mint adresidir."""
+        motor = SmartPriceDiscoveryEngine()
+        assert motor.register_external_symbols(["7yx5…aYRT", ""]) == 0
+
+    def test_liste_sinirsiz_buyumez(self):
+        """Spam gönderilen bir adres yüzlerce sembol üretebilir."""
+        from price_service import EXTERNAL_SYMBOL_LIMIT
+        motor = SmartPriceDiscoveryEngine()
+        motor.register_external_symbols([f"T{i}" for i in range(EXTERNAL_SYMBOL_LIMIT + 50)])
+        assert len(motor._external_symbols) == EXTERNAL_SYMBOL_LIMIT
+
+    def test_defter_sembolleri_kaybolmaz(self, tmp_path, monkeypatch):
+        import data_manager as dm
+        data = dm.load_portfolio()
+        data["transactions"] = [{"id": 1, "coin": "BTCUSDT",
+                                 "exchange": "BINANCE", "qty": 1.0,
+                                 "cost": 1.0, "status": dm.ACTIVE_STATUS}]
+        dm.save_portfolio(data)
+        motor = SmartPriceDiscoveryEngine()
+        motor.register_external_symbols(["APT"])
+        liste = motor.get_watchlist(force=True)
+        assert "BTCUSDT" in liste and "APT" in liste

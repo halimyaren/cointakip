@@ -545,6 +545,34 @@ Kayıttan sonra tablo kendiliğinden tazelenir ve satır **Eşleşiyor**'a döne
 Son iki satırın ayrımı önemli: okunamayan bir cüzdanı "boş" saymak, varlığınızı
 yok saymak olurdu. Sistem bilmediğinde bunu söyler.
 
+#### Miktarın altındaki tutar
+
+Her miktarın altında **USD karşılığı** yazar. Asıl işe yarayan, farkın
+karşılığıdır: `+0,00013 BNB` kararı zorlaştırır, `≈ $0,09` kararı anında
+verdirir. Tablo bu yüzden farkın **parasal büyüklüğüne göre** sıralanır —
+$412'lik bir fark, $0,002'lik farkın üstünde durur.
+
+Fiyatı bulunamayan varlıkta tutar yerine `—` yazar. **Sıfır yazılmaz**, çünkü
+bilinmeyen değer sıfır değer değildir; bir mikro-cap veya delist olmuş coin
+gerçekten değerli olabilir.
+
+> **İlk seferde `—` görebilirsiniz.** Fiyat motoru daha önce yalnızca
+> defterinizdeki coinleri takip ediyordu. Borsanızda veya cüzdanınızda durup
+> deftere yazmadığınız bir varlığı ilk kez gördüğünde onu takibe alır, ama
+> fiyatı bir sonraki güncelleme turunda gelir. Birkaç saniye sonra
+> **Tüm Bakiyeleri Getir**'e tekrar basın; tutarlar dolmuş olur.
+
+#### Önemsiz farkların katlanması
+
+Borsa bağlantısı ekledikten sonra tablo ücret kırıntılarıyla dolar. Belirlediğiniz
+tutarın altındaki farklar bu yüzden **katlanır**: kaç tane oldukları ve toplamları
+tablonun altında yazar, "Yine de göster" ile açarsınız. Eşiği aynı satırdan
+değiştirebilirsiniz; seçtiğiniz değer kalıcı olarak saklanır (varsayılan `$1`).
+
+Katlama, gizleme değildir — ve **fiyatı bilinmeyen satırlar bu eşiğe hiç
+girmez.** Değerini bilmediğimiz bir varlığı "önemsiz" sayıp katlamak, tam olarak
+kaçınmaya çalıştığımız hata olurdu.
+
 ### Varlıklarınızı yanlış konuma girdiyseniz
 
 Cüzdanınızdaki varlıkları `DEX` gibi genel bir adla girmiş olabilirsiniz —
@@ -601,6 +629,70 @@ bilerek yapar.
 Bir token şu üç durumdan birindeyse zaten doğrulanmış sayılır ve hiç
 işaretlemeniz gerekmez: kontratını **elle tanımladıysanız**, sembolü
 **defterinizde geçiyorsa**, veya onun için bir **fiyat kaynağı** tanımlıysa.
+
+### Borsa bağlantıları
+
+Cüzdanlarda olduğu gibi borsadaki bakiyenizi de doğrudan okuyabilirsiniz; her ay
+tarayıcıdan dosya indirip uygulamaya vermeniz gerekmez. Borsa okuması, cüzdan
+okumasıyla **aynı tabloda** görünür ve aynı karşılaştırmaya girer — yanlış konum
+tespiti, deftere ekleme ve not seviyeleri borsalarda da aynen çalışır.
+
+> ⚠️ **Borsa API anahtarı, cüzdan adresinden farklıdır.** Adres herkese açıktır
+> ve paylaşılmak içindir. API anahtarı ise **gerçek bir sırdır**: salt okunur
+> olsa bile tüm işlem geçmişinizi açar. Bu yüzden anahtar **şifreli kasada**
+> saklanır ve `settings.json` içinde düz metin olarak asla bulunmaz.
+
+**Anahtarı borsada oluştururken yalnızca okuma iznini açın.** Para çekme ve emir
+verme izinlerini kapalı bırakın; mümkünse IP kısıtlaması da tanımlayın.
+CoinTakip yazma yetkisi taşıyan bir anahtarı **kabul etmez** — portföy takibi
+için okuma yeterlidir ve yazma yetkili bir anahtarın burada durması gereksiz bir
+risktir.
+
+Bağlantı yalnızca **GET** isteği yapar. Emir verme veya para çekme çağrısı
+uygulamada **yoktur**.
+
+#### İzin doğrulaması ve doğrulanamayan borsalar
+
+| Durum | Ne demek |
+|:---|:---|
+| **Salt okunur (doğrulandı)** | Borsa, anahtarınızın yetkilerini bize söyledi ve anahtar yalnızca okuyabiliyor. |
+| **Reddedildi** | Anahtar para çekebiliyor veya emir verebiliyor. Kaydedilmez. |
+| **İzin doğrulanamadı** | Borsanın API'si bir anahtarın yetkilerini bildiren uç sunmuyor. |
+
+Üçüncü durum Binance'te değil ama **MEXC'te** geçerlidir. Böyle bir borsada
+anahtarınızın gerçekten salt okunur olduğunu doğrulayamayız, bu yüzden size
+açıkça söyler ve onayınızı isteriz. Hesabın `canTrade` gibi alanlarına
+bakmıyoruz: onlar **anahtarın değil hesabın** yetkisidir ve onları anahtar
+yetkisi saymak, size veremeyeceğimiz bir güvence vermek olurdu.
+
+#### Yeni bir borsa eklemek
+
+Hazır profiller (Binance, MEXC) tek tıkla formu doldurur. Ama borsa listesi koda
+gömülü değildir: **Profil ayrıntıları** bölümünden taban adresi, uç noktaları ve
+alan eşlemesini kendiniz tanımlayarak yeni bir borsa ekleyebilirsiniz.
+
+Bunun bir sınırı var ve dürüstçe söylemek gerekir: her borsa isteği **farklı
+imzalar**. Uygulamada şu an bir imzalama ailesi var — Binance tipi (HMAC-SHA256,
+sorgu dizisi). MEXC'in v3 API'si bu ailenin bir klonudur, dolayısıyla aynı
+adaptör iki borsayı birden kapsıyor ve v3'ü klonlayan diğer borsalar da profil
+tanımlayarak eklenebilir. Farklı bir imzalama şeması kullanan bir borsa (Gate.io,
+OKX ailesi, Bybit) yine kod değişikliği ister. **"Her borsa çalışır" demiyoruz.**
+
+#### Konum adı defterinizle aynı olmalı
+
+Profildeki konum adı (`BINANCE`, `MEXC`) defterinizdeki konum adıyla birebir
+aynı olmalıdır. Farklı olursa karşılaştırma iki ayrı yer görür: defteriniz bir
+konumda, borsa bakiyeniz başka bir konumda çıkar.
+
+#### Ne okunur, ne okunmaz
+
+Bu okuma **spot cüzdanı** kapsar. Vadeli, kaldıraçlı ve Earn/Staking
+hesaplarındaki varlıklarınız görünmez; spot bakiyeniz boş çıkıyorsa sebebi
+genellikle budur ve uygulama bunu size söyler.
+
+Bağlantıyı sildiğinizde kasadaki anahtarınız da silinir. "Sildim" dediğiniz bir
+sırrın diskte durmaya devam etmesi doğru olmazdı. Defterinizdeki kayıtlara
+dokunulmaz.
 
 ---
 

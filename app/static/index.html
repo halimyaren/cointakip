@@ -1246,9 +1246,9 @@
             <span>🔍 Borsa Mutabakatı</span>
           </button>
           <!-- FAZ F6 — Cüzdan bağlantıları. Zincirden okur, SALT OKUNUR. -->
-          <button @click="tvSubTab = 'connections'; fetchConnections();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'connections' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
+          <button @click="tvSubTab = 'connections'; fetchConnections(); fetchExchanges();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'connections' ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
             <i data-lucide="wallet" class="w-4 h-4"></i>
-            <span>🔗 Cüzdan Bağlantıları</span>
+            <span>🔗 Canlı Bağlantılar</span>
           </button>
         </div>
 
@@ -2245,6 +2245,201 @@
           </div>
         </div>
 
+        <!-- =========================================================
+             BORSA API BAĞLANTILARI (F6b)
+             Cüzdan adresi herkese açıktır; borsa API anahtarı DEĞİLDİR.
+             Bu yüzden buradaki uyarı ve izin denetimi kalıcıdır.
+             ========================================================= -->
+        <div class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
+          <div class="px-4 py-2.5 border-b border-slate-800">
+            <h3 class="text-[12px] font-bold text-white font-sans">Borsa bağlantıları</h3>
+            <p class="text-[10.5px] text-slate-500 font-sans mt-0.5">
+              Borsadaki spot bakiyeniz doğrudan okunur; her ay dosya indirmeniz
+              gerekmez. <b class="text-slate-400">Yalnızca okuma yapılır</b> —
+              bu bağlantı hiçbir koşulda emir veremez veya para çekemez.
+            </p>
+          </div>
+
+          <!-- Kalıcı uyarı: cüzdan bağlantısından farklı bir risk sınıfı. -->
+          <div class="px-4 py-2.5 bg-amber-950/30 border-b border-amber-900/40 text-[11px] text-amber-200/90 leading-relaxed font-sans">
+            <b class="text-amber-300">API anahtarı gerçek bir sırdır.</b>
+            Cüzdan adresinizin aksine herkese açık değildir: salt okunur olsa
+            bile tüm işlem geçmişinizi açar. Anahtarınız
+            <b class="text-amber-100">şifreli kasada</b> saklanır,
+            <code class="text-amber-100">settings.json</code> içinde düz metin
+            olarak asla bulunmaz. Borsada anahtarı oluştururken
+            <b class="text-amber-100">yalnızca okuma iznini açın</b>; para çekme
+            ve emir verme izinlerini kapalı bırakın. Yazma yetkisi taşıyan bir
+            anahtar <b class="text-amber-100">kabul edilmez</b>. Mümkünse IP
+            kısıtlaması da tanımlayın.
+          </div>
+
+          <div class="p-4 space-y-3">
+            <!-- Hazır profiller: kullanıcının her alanı elle doldurmasına
+                 gerek yok, ama profil koda gömülü değil VERİDİR. -->
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[10px] uppercase text-slate-500 font-sans">Hazır borsa</span>
+              <template x-for="p in exBuiltin" :key="p.location">
+                <button @click="pickBuiltinExchange(p.location)"
+                        class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-teal-700 text-slate-300 hover:text-white text-[10.5px] font-bold transition font-sans"
+                        x-text="p.name"></button>
+              </template>
+              <button @click="resetExchangeForm()"
+                      class="px-2.5 py-1 rounded-lg text-slate-600 hover:text-slate-300 text-[10.5px] transition font-sans">
+                temizle
+              </button>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="text-[10px] uppercase text-slate-500 font-sans">Konum adı</label>
+                <input x-model="exForm.location" placeholder="BINANCE"
+                       class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono-nums">
+                <p class="text-[10px] text-slate-600 font-sans mt-1">
+                  Defterinizdeki konum adıyla aynı olmalı, yoksa karşılaştırma eşleşmez.
+                </p>
+              </div>
+              <div>
+                <label class="text-[10px] uppercase text-slate-500 font-sans">İmzalama ailesi</label>
+                <select x-model="exForm.family"
+                        class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-sans">
+                  <template x-for="f in exFamilies" :key="f.id">
+                    <option :value="f.id" x-text="f.name"></option>
+                  </template>
+                </select>
+                <p class="text-[10px] text-slate-600 font-sans mt-1"
+                   x-text="(exFamilies.find(f => f.id === exForm.family) || {}).exchanges || ''"></p>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="text-[10px] uppercase text-slate-500 font-sans">API anahtarı</label>
+                <input x-model="exKeyInput" type="password" autocomplete="off"
+                       placeholder="borsadan aldığınız anahtar"
+                       class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono-nums">
+              </div>
+              <div>
+                <label class="text-[10px] uppercase text-slate-500 font-sans">Gizli anahtar (secret)</label>
+                <input x-model="exSecretInput" type="password" autocomplete="off"
+                       placeholder="yalnızca oluştururken bir kez gösterilir"
+                       class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono-nums">
+              </div>
+            </div>
+
+            <!-- İleri ayarlar: yeni bir borsa profili tanımlamak isteyen için.
+                 Hazır borsa seçen kullanıcı buraya hiç bakmaz. -->
+            <button @click="exShowAdvanced = !exShowAdvanced"
+                    class="text-[11px] text-slate-500 hover:text-slate-300 font-sans transition"
+                    x-text="exShowAdvanced ? '− Profil ayrıntılarını gizle' : '+ Profil ayrıntıları (yeni borsa tanımlamak için)'"></button>
+
+            <div x-show="exShowAdvanced" class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <div>
+                <label class="text-[10px] uppercase text-slate-500 font-sans">Görünen ad</label>
+                <input x-model="exForm.name" placeholder="Binance"
+                       class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-sans">
+              </div>
+              <div>
+                <label class="text-[10px] uppercase text-slate-500 font-sans">Taban adres</label>
+                <input x-model="exForm.base_url" placeholder="https://api.binance.com"
+                       class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono-nums">
+              </div>
+              <div>
+                <label class="text-[10px] uppercase text-slate-500 font-sans">Hesap ucu</label>
+                <input x-model="exForm.account_path" placeholder="/api/v3/account"
+                       class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono-nums">
+              </div>
+              <div>
+                <label class="text-[10px] uppercase text-slate-500 font-sans">Sunucu saati ucu</label>
+                <input x-model="exForm.time_path" placeholder="/api/v3/time"
+                       class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono-nums">
+              </div>
+              <div class="sm:col-span-2">
+                <label class="text-[10px] uppercase text-slate-500 font-sans">Anahtar yetkileri ucu</label>
+                <input x-model="exForm.restrictions_path" placeholder="/sapi/v1/account/apiRestrictions"
+                       class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono-nums">
+                <p class="text-[10px] text-slate-600 font-sans mt-1">
+                  Boş bırakılırsa anahtarınızın gerçekten salt okunur olduğu
+                  <b class="text-slate-500">doğrulanamaz</b> ve size bu açıkça söylenir.
+                </p>
+              </div>
+            </div>
+
+            <!-- Deneme sonucu ve izin durumu -->
+            <div x-show="exTestResult" class="rounded-lg border p-3 text-[11px] font-sans leading-relaxed"
+                 :class="exTestResult && exTestResult.ok ? 'bg-emerald-950/30 border-emerald-900/50 text-emerald-200' : 'bg-rose-950/30 border-rose-900/50 text-rose-200'">
+              <template x-if="exTestResult && exTestResult.ok">
+                <div>
+                  <b x-text="exTestResult.name + ': ' + exTestResult.asset_count + ' varlık okundu.'"></b>
+                  <div class="mt-1" x-text="(exTestResult.permission || {}).detail"></div>
+                  <div x-show="(exTestResult.assets || []).length" class="mt-1 text-emerald-300/80 font-mono-nums"
+                       x-text="(exTestResult.assets || []).join(' · ')"></div>
+                </div>
+              </template>
+              <template x-if="exTestResult && !exTestResult.ok">
+                <div x-text="exTestResult.error"></div>
+              </template>
+            </div>
+
+            <!-- Doğrulanamayan izin: açık onay. Veremeyeceğimiz bir güvenceyi
+                 vermemek için sessizce geçilmiyor. -->
+            <label x-show="exPermissionUnverifiable"
+                   class="flex items-start gap-2 text-[11px] text-amber-200/90 font-sans leading-relaxed cursor-pointer">
+              <input type="checkbox" x-model="exAcknowledge" class="mt-0.5">
+              <span>
+                Bu borsanın API'si anahtar yetkilerini bildirmiyor; anahtarımın
+                salt okunur olduğunu <b class="text-amber-100">ben doğruladım</b>.
+                Para çekme iznini kapalı bıraktım.
+              </span>
+            </label>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <button @click="testExchange()" :disabled="exBusy"
+                      class="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 text-[11px] font-bold transition">
+                <span x-text="exBusy ? 'Deneniyor…' : 'Önce Dene'"></span>
+              </button>
+              <button @click="saveExchange()" :disabled="exBusy"
+                      class="px-3.5 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white text-[11px] font-bold transition">
+                Kaydet
+              </button>
+              <span x-show="!vaultStatus.unlocked" class="text-[11px] text-amber-400 font-sans">
+                Kasa kilitli — anahtar yazılamaz.
+              </span>
+            </div>
+          </div>
+
+          <!-- Kayıtlı borsa profilleri -->
+          <div x-show="exProfileList.length > 0" class="divide-y divide-slate-800 border-t border-slate-800">
+            <template x-for="p in exProfileList" :key="p.konum">
+              <div class="px-4 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                <div class="min-w-0">
+                  <b class="text-white text-xs font-sans" x-text="p.spec.name || p.konum"></b>
+                  <span class="text-[10px] text-slate-600 font-sans ml-1.5" x-text="p.konum"></span>
+                  <span class="text-[10px] font-bold font-sans ml-1.5 px-1.5 py-0.5 rounded"
+                        :class="exCredentials[p.konum] ? 'bg-emerald-900/40 text-emerald-300' : 'bg-slate-800 text-slate-500'"
+                        x-text="exCredentials[p.konum] ? 'anahtar kasada' : 'anahtar yok'"></span>
+                  <span x-show="p.spec.permission_status === 'unverifiable'"
+                        class="text-[10px] font-bold font-sans ml-1.5 px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300"
+                        title="Bu borsanın API'si anahtar yetkilerini bildirmiyor; salt okunur olduğunu siz doğruladınız.">
+                    izin doğrulanamadı
+                  </span>
+                  <div class="text-[10.5px] text-slate-600 font-mono-nums truncate" x-text="p.spec.base_url"></div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button @click="editExchange(p.konum)"
+                          class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] font-bold transition">
+                    Düzenle
+                  </button>
+                  <button @click="removeExchange(p.konum)"
+                          class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 text-[10.5px] font-bold transition">
+                    Sil
+                  </button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
         <!-- Okuma raporu: hangi bağlantı okundu ve ne eksik kaldı.
              "Bakiyeleri Getir" TÜM açık bağlantıları okur; hangisinden ne
              geldiği görünmezse kullanıcı eksik tokenının sebebini bulamaz. -->
@@ -2275,7 +2470,12 @@
                                                         : 'bg-emerald-500/15 text-emerald-300 border border-emerald-700/50')"
                           x-text="!r.ok ? 'Okunamadı' : (r.incomplete ? 'Eksik okundu' : 'Okundu')"></span>
                     <b class="text-xs text-white font-sans" x-text="r.location"></b>
-                    <span class="text-[11px] text-teal-300 font-sans" x-text="chainName(r.chain)"></span>
+                    <!-- Aynı tabloda iki kaynak var: zincir ve borsa API'si.
+                         Satırın nereden geldiği yazmazsa kullanıcı bir eksiği
+                         yanlış yerde arar. -->
+                    <span class="text-[11px] font-sans"
+                          :class="r.source === 'exchange' ? 'text-sky-300' : 'text-teal-300'"
+                          x-text="r.source === 'exchange' ? ('Borsa API · ' + (r.name || r.location)) : chainName(r.chain)"></span>
                     <span x-show="r.label" class="text-[11px] text-slate-400 font-sans"
                           x-text="'· ' + r.label"></span>
                     <span x-show="(r.token_count || 0) > 0"
@@ -2299,7 +2499,7 @@
         <template x-if="connReport">
           <div class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
             <div class="px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
-              <h3 class="text-[12px] font-bold text-white font-sans">Zincir ↔ Defter</h3>
+              <h3 class="text-[12px] font-bold text-white font-sans">Canlı Bakiye ↔ Defter</h3>
               <div class="flex flex-wrap gap-1.5">
                 <template x-for="[d, n] in Object.entries(connReport.status_counts || {})" :key="d">
                   <span class="px-2 py-0.5 rounded text-[10px] font-bold"
@@ -2324,9 +2524,9 @@
                   <tr>
                     <th class="text-left py-2 px-3">Varlık</th>
                     <th class="text-left py-2 px-3">Konum</th>
-                    <th class="text-right py-2 px-3">Defter</th>
-                    <th class="text-right py-2 px-3">Zincir</th>
-                    <th class="text-right py-2 px-3">Fark</th>
+                    <th class="text-right py-2 px-3">Defter <span class="text-slate-600 normal-case">/ $</span></th>
+                    <th class="text-right py-2 px-3">Canlı <span class="text-slate-600 normal-case">/ $</span></th>
+                    <th class="text-right py-2 px-3">Fark <span class="text-slate-600 normal-case">/ $</span></th>
                     <th class="text-left py-2 px-3">Durum</th>
                     <th class="text-right py-2 px-3"></th>
                   </tr>
@@ -2340,12 +2540,28 @@
                         <div class="text-[10px] text-slate-600"
                              x-text="(r.chains || []).map(c => chainName(c)).join(' · ')"></div>
                       </td>
-                      <td class="py-2 px-3 text-right text-cyan-300" x-text="formatNum(r.ledger_qty, 6)"></td>
-                      <td class="py-2 px-3 text-right text-teal-300"
-                          x-text="r.chain_qty === null ? '—' : formatNum(r.chain_qty, 6)"></td>
-                      <td class="py-2 px-3 text-right"
-                          :class="r.diff_qty === null ? 'text-slate-600' : (r.diff_qty > 0 ? 'text-emerald-400' : (r.diff_qty < 0 ? 'text-rose-400' : 'text-slate-600'))"
-                          x-text="r.diff_qty === null ? '—' : (r.diff_qty > 0 ? '+' : '') + formatNum(r.diff_qty, 6)"></td>
+                      <!-- Miktarın altında USD karşılığı. Miktar tek başına
+                           "buna bakmalı mıyım?" sorusunu cevaplamıyor. -->
+                      <td class="py-2 px-3 text-right">
+                        <div class="text-cyan-300" x-text="formatNum(r.ledger_qty, 6)"></div>
+                        <div class="text-[10px] text-slate-600" x-text="fmtUsd(r.ledger_value)"></div>
+                      </td>
+                      <td class="py-2 px-3 text-right">
+                        <div class="text-teal-300"
+                             x-text="r.chain_qty === null ? '—' : formatNum(r.chain_qty, 6)"></div>
+                        <div class="text-[10px] text-slate-600" x-text="fmtUsd(r.chain_value)"></div>
+                      </td>
+                      <!-- En önemli sayı bu: farkın parasal karşılığı.
+                           `+0,00013 BNB` kararı zorlaştırır, `<$0,01` anında
+                           verdirir. -->
+                      <td class="py-2 px-3 text-right">
+                        <div :class="r.diff_qty === null ? 'text-slate-600' : (r.diff_qty > 0 ? 'text-emerald-400' : (r.diff_qty < 0 ? 'text-rose-400' : 'text-slate-600'))"
+                             x-text="r.diff_qty === null ? '—' : (r.diff_qty > 0 ? '+' : '') + formatNum(r.diff_qty, 6)"></div>
+                        <div class="text-[10px]"
+                             :class="r.diff_value === null ? 'text-amber-500/70' : 'text-slate-500'"
+                             :title="r.diff_value === null ? 'Bu varlık için fiyat kaynağı bulunamadı; değeri bilinmiyor (sıfır değil).' : ''"
+                             x-text="fmtUsd(r.diff_value)"></div>
+                      </td>
                       <td class="py-2 px-3">
                         <span class="px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap"
                               :class="connStatusMeta[r.status] ? connStatusMeta[r.status].badge : 'bg-slate-800 text-slate-400'"
@@ -2395,6 +2611,31 @@
             <div x-show="connRows.length === 0"
                  class="px-4 py-8 text-center text-slate-500 text-xs font-sans">
               Karşılaştırılacak bir şey yok. Önce bir bağlantı ekleyin.
+            </div>
+
+            <!-- Önemsiz farklar. Gizlenmiyor KATLANIYOR: sayısı ve toplamı
+                 yazıyor, tek tıkla açılıyor. Eşik kullanıcınındır ve
+                 tercihlerde kalıcı olarak saklanır. -->
+            <div x-show="connDustRows.length > 0"
+                 class="px-4 py-2.5 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <span class="text-[11px] text-slate-500 font-sans">
+                <b class="text-slate-400" x-text="connDustRows.length"></b>
+                önemsiz fark katlandı — toplamı
+                <b class="text-slate-400" x-text="fmtUsd(connDustTotal)"></b>.
+                <span class="text-slate-600">
+                  Fiyatı bilinmeyen satırlar buraya hiç girmez; bilinmeyen değer
+                  sıfır değer değildir.
+                </span>
+              </span>
+              <span class="flex items-center gap-2 whitespace-nowrap">
+                <label class="text-[10px] uppercase text-slate-600 font-sans">Eşik $</label>
+                <input type="number" min="0" step="0.5" x-model="connDustUsd"
+                       @change="saveDustThreshold()"
+                       class="w-16 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-white font-mono-nums">
+                <button @click="connShowDust = !connShowDust"
+                        class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] font-bold transition font-sans"
+                        x-text="connShowDust ? 'Gizle' : 'Yine de göster'"></button>
+              </span>
             </div>
 
             <!-- Hakkında hüküm olmayan tokenlar. Bunlar GİZLENMİYOR — gizlemek
