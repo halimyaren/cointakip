@@ -49,6 +49,7 @@ import concurrent.futures
 import hashlib
 import hmac
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -120,6 +121,8 @@ SIGNING_FAMILIES = {
     "binance": {
         "name": "Binance tipi (HMAC-SHA256, sorgu dizisi)",
         "sign": _imzala_binance,
+        # Ailenin VARSAYILANI, kuralı değil. Başlık adı imzalama şemasının
+        # değil BORSANIN özelliğidir — bkz. `key_header()`.
         "key_header": "X-MBX-APIKEY",
         # İmza sorgu dizisinin SONUNA eklenir; sırayı değiştirmek imzayı bozar.
         "signature_param": "signature",
@@ -146,6 +149,7 @@ BUILTIN_PROFILES = {
         "account_path": "/api/v3/account",
         "time_path": "/api/v3/time",
         "restrictions_path": "/sapi/v1/account/apiRestrictions",
+        "key_header": "X-MBX-APIKEY",
         "balances_field": "balances",
         "asset_field": "asset",
         "free_field": "free",
@@ -160,6 +164,15 @@ BUILTIN_PROFILES = {
         "time_path": "/api/v3/time",
         # MEXC'te anahtar yetkilerini bildiren belgelenmiş bir uç yok.
         "restrictions_path": "",
+        # MEXC imzalamayı Binance'ten birebir klonlar AMA anahtarı kendi
+        # başlığında bekler. `X-MBX-APIKEY` gönderilirse başlık okunmaz ve
+        # borsa, hiç başlık yollanmamış gibi `400 api key required` döner.
+        # Canlı olarak doğrulandı (3 Eylül 2026, sahte anahtarla):
+        #   X-MBX-APIKEY  → {"code":400,"msg":"api key required"}   (= başlıksuz)
+        #   X-MEXC-APIKEY → {"code":10072,"msg":"Api key info invalid"}
+        # İkincisi başlığın OKUNDUĞUNU, anahtarın sahte olduğu için
+        # reddedildiğini gösterir.
+        "key_header": "X-MEXC-APIKEY",
         "balances_field": "balances",
         "asset_field": "asset",
         "free_field": "free",
@@ -168,6 +181,31 @@ BUILTIN_PROFILES = {
 }
 
 REQUIRED_FIELDS = ("location", "family", "base_url", "account_path")
+
+
+def key_header(profil: dict) -> str:
+    """
+    Anahtarın hangi HTTP başlığıyla gönderileceği.
+
+    Bu, imzalama ailesinin değil **borsanın** özelliğidir. MEXC, Binance'in
+    imzalama şemasını birebir klonlar ama başlığı `X-MEXC-APIKEY` bekler;
+    başlık adı aileye bağlanırsa MEXC hiçbir zaman kimlik doğrulayamaz.
+
+    Sıra: profilin kendi değeri → o konumun hazır profili → ailenin
+    varsayılanı. Ortadaki adım, bu düzeltmeden ÖNCE kaydedilmiş (ve bu yüzden
+    `key_header` alanı taşımayan) bir profilin çalışmaya devam etmesi içindir.
+    """
+    kendi = str((profil or {}).get("key_header") or "").strip()
+    if kendi:
+        return kendi
+
+    konum = str((profil or {}).get("location") or "").upper().strip()
+    hazir = str(BUILTIN_PROFILES.get(konum, {}).get("key_header") or "").strip()
+    if hazir:
+        return hazir
+
+    aile = SIGNING_FAMILIES.get((profil or {}).get("family")) or {}
+    return aile.get("key_header") or "X-MBX-APIKEY"
 
 
 def builtin_profiles() -> list:
@@ -234,7 +272,8 @@ def validate_profile(spec: dict) -> tuple:
     temiz = {}
     for alan in ("location", "name", "family", "base_url", "account_path",
                  "time_path", "restrictions_path", "balances_field",
-                 "asset_field", "free_field", "locked_field", "label"):
+                 "asset_field", "free_field", "locked_field", "label",
+                 "key_header"):
         deger = spec.get(alan)
         temiz[alan] = str(deger).strip() if deger is not None else ""
 
@@ -258,6 +297,15 @@ def validate_profile(spec: dict) -> tuple:
     for alan in ("account_path", "time_path", "restrictions_path"):
         if temiz[alan] and not temiz[alan].startswith("/"):
             temiz[alan] = "/" + temiz[alan]
+
+    # Başlık adı isteğe bağlıdır (boşsa `key_header()` hazır profile veya
+    # aile varsayılanına düşer) ama yazıldıysa geçerli bir HTTP başlık adı
+    # olmalıdır. Serbest metin bırakmak satır sonu karakteriyle isteğe
+    # başka başlık enjekte etmeye açık kapı bırakırdı.
+    if temiz["key_header"] and not re.fullmatch(r"[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}",
+                                                temiz["key_header"]):
+        return None, ("Anahtar başlığı geçerli bir HTTP başlık adı değil "
+                      "(örn. X-MBX-APIKEY). Boşluk veya satır sonu içeremez.")
 
     temiz["name"] = temiz["name"] or temiz["location"].title()
     temiz["balances_field"] = temiz["balances_field"] or "balances"
@@ -380,7 +428,7 @@ def signed_get(profil, path, api_key, api_secret, params=None):
     sorgu = urllib.parse.urlencode(p)
     imza = aile["sign"](api_secret, sorgu)
     url = f"{profil['base_url']}{path}?{sorgu}&{aile['signature_param']}={imza}"
-    return _http_get(url, {aile["key_header"]: api_key})
+    return _http_get(url, {key_header(profil): api_key})
 
 
 # =====================================================================

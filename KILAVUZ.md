@@ -546,6 +546,32 @@ Kayıttan sonra tablo kendiliğinden tazelenir ve satır **Eşleşiyor**'a döne
 Son iki satırın ayrımı önemli: okunamayan bir cüzdanı "boş" saymak, varlığınızı
 yok saymak olurdu. Sistem bilmediğinde bunu söyler.
 
+#### Konuma göre süzme
+
+Tablo tek bir yerden değil, bağladığınız **tüm** kaynaklardan beslenir: cüzdan
+adresleri, Binance, MEXC. Üç kaynak birden geldiğinde liste uzar, bu yüzden
+tablonun üstünde bir **konum şeridi** vardır: `Tümü` ve her konum için ayrı bir
+düğme, yanında o konumda göreceğiniz satır sayısı.
+
+Konumlar sabit bir listeden değil **verinizden** gelir. Gate.io eklediğiniz gün
+düğmesi kendiliğinden çıkar. Seçili düğmeye tekrar basmak `Tümü`ne döndürür.
+
+Bir konum seçtiğinizde üstteki rozetler ve alttaki açıklama bantları da **o
+konumun** sayılarını gösterir; aksi hâlde başlık listeyle çelişirdi.
+
+#### "Sadece farklar"
+
+Şeridin sağındaki bu kutu varsayılan olarak **açıktır** ve **eşleşiyor**
+durumundaki satırları gizler. Sebebi basit: eşleşen satır tanımı gereği sorun
+değildir — defteriniz ile canlı bakiyeniz zaten tutuyor.
+
+Gizlenen satır sayısı kutunun yanında yazar; hiçbir şey sessizce saklanmaz.
+Tüm tabloyu görmek isterseniz kutuyu kapatın.
+
+Süzgeç seçiminiz **kaydedilmez**. Eşik ($1) bir tercihtir ve kalıcıdır, ama
+"şu an neye bakıyorum" oturumluk bir görünüm durumudur; kaydedilseydi ertesi
+gün tabloyu eksik görüp sebebini arardınız.
+
 #### Miktarın altındaki tutar
 
 Her miktarın altında **USD karşılığı** yazar. Asıl işe yarayan, farkın
@@ -678,6 +704,13 @@ sorgu dizisi). MEXC'in v3 API'si bu ailenin bir klonudur, dolayısıyla aynı
 adaptör iki borsayı birden kapsıyor ve v3'ü klonlayan diğer borsalar da profil
 tanımlayarak eklenebilir. Farklı bir imzalama şeması kullanan bir borsa (Gate.io,
 OKX ailesi, Bybit) yine kod değişikliği ister. **"Her borsa çalışır" demiyoruz.**
+
+**Anahtar başlığı** alanına dikkat edin. Anahtarın hangi HTTP başlığıyla
+gönderileceği imzalama ailesinin değil **borsanın** özelliğidir: MEXC imzalamayı
+Binance'ten birebir klonlar ama anahtarı `X-MEXC-APIKEY` başlığında bekler,
+`X-MBX-APIKEY` gönderilirse başlığı hiç okumaz ve "anahtar gerekli" der. Hazır
+bir borsa seçtiyseniz alan kendiliğinden dolar; kendi borsanızı tanımlıyorsanız
+o borsanın belgelerine bakıp doğru başlığı yazmanız gerekir.
 
 #### Konum adı defterinizle aynı olmalı
 

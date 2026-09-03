@@ -492,3 +492,79 @@ class TestApiUclari:
 
     def test_bakiye_ucu_salt_okunur_isaretli(self, client):
         assert client.get("/api/exchanges/balances").json()["read_only"] is True
+
+
+# =====================================================================
+# 8) ANAHTAR BAŞLIĞI BORSAYA AİTTİR, AİLEYE DEĞİL
+#
+# MEXC, Binance'in imzalama şemasını birebir klonlar ama anahtarı kendi
+# başlığında bekler. Başlık adı imzalama ailesine bağlandığı sürece MEXC
+# profili hiçbir zaman kimlik doğrulayamaz — ve bunu hiçbir test yakalamaz,
+# çünkü sahte HTTP hangi başlığın gönderildiğine bakmıyorsa her şey geçer.
+#
+# Canlı olarak doğrulandı (3 Eylül 2026, sahte anahtarla):
+#   X-MBX-APIKEY  → {"code":400,"msg":"api key required"}   (başlıksızla aynı)
+#   X-MEXC-APIKEY → {"code":10072,"msg":"Api key info invalid"}
+# =====================================================================
+class TestAnahtarBasligi:
+
+    def test_mexc_kendi_basligini_kullanir(self, monkeypatch):
+        cagrilar = _sahte_http(monkeypatch, {"/api/v3/account": _hesap_cevabi()})
+        monkeypatch.setattr(ex, "server_time_offset", lambda p, yenile=False: 0)
+        ex.signed_get(MEXC, "/api/v3/account", "ANAHTAR", "GIZLI")
+        basliklar = cagrilar[0]["headers"]
+        assert basliklar["X-MEXC-APIKEY"] == "ANAHTAR"
+        assert "X-MBX-APIKEY" not in basliklar
+
+    def test_binance_kendi_basligini_kullanir(self, monkeypatch):
+        cagrilar = _sahte_http(monkeypatch, {"/api/v3/account": _hesap_cevabi()})
+        monkeypatch.setattr(ex, "server_time_offset", lambda p, yenile=False: 0)
+        ex.signed_get(BINANCE, "/api/v3/account", "ANAHTAR", "GIZLI")
+        basliklar = cagrilar[0]["headers"]
+        assert basliklar["X-MBX-APIKEY"] == "ANAHTAR"
+        assert "X-MEXC-APIKEY" not in basliklar
+
+    def test_iki_borsa_ayni_ailede_ama_farkli_baslikta(self):
+        """Düzeltmenin özü: aynı imzalama ailesi, farklı başlık."""
+        assert BINANCE["family"] == MEXC["family"] == "binance"
+        assert ex.key_header(BINANCE) != ex.key_header(MEXC)
+
+    def test_profilin_kendi_degeri_onceliklidir(self):
+        profil = dict(MEXC, key_header="X-OZEL-KEY")
+        assert ex.key_header(profil) == "X-OZEL-KEY"
+
+    def test_eski_kayitli_profil_konumdan_toparlanir(self):
+        """
+        Bu düzeltmeden ÖNCE kaydedilmiş bir MEXC profilinde `key_header`
+        alanı yoktur. Aile varsayılanına düşerse bozuk kalır; hazır profile
+        düşerse çalışır.
+        """
+        eski = {k: v for k, v in MEXC.items() if k != "key_header"}
+        assert ex.key_header(eski) == "X-MEXC-APIKEY"
+
+    def test_tanimsiz_borsa_aile_varsayilanina_duser(self):
+        profil = {"location": "YENIBORSA", "family": "binance"}
+        assert ex.key_header(profil) == "X-MBX-APIKEY"
+
+    def test_baslik_profil_dogrulamasindan_gecer(self):
+        """
+        `permission_status` bir kez beyaz listede unutulmuş ve sessizce
+        düşmüştü. Aynı tuzak burada tekrarlanmamalı.
+        """
+        temiz, hata = ex.validate_profile(dict(MEXC))
+        assert hata is None
+        assert temiz["key_header"] == "X-MEXC-APIKEY"
+
+    def test_bozuk_baslik_adi_reddedilir(self):
+        temiz, hata = ex.validate_profile(dict(MEXC, key_header="X-Key: kotu\r\nX-Baska"))
+        assert temiz is None and "başlık" in hata
+
+    def test_bosluklu_baslik_adi_reddedilir(self):
+        temiz, hata = ex.validate_profile(dict(MEXC, key_header="X Key"))
+        assert temiz is None
+
+    def test_bos_baslik_kabul_edilir_ve_toparlanir(self):
+        """Boş bırakmak geçerlidir; `key_header()` hazır profile düşer."""
+        temiz, hata = ex.validate_profile(dict(MEXC, key_header=""))
+        assert hata is None
+        assert ex.key_header(temiz) == "X-MEXC-APIKEY"

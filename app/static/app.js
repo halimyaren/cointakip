@@ -272,7 +272,7 @@ function portfolioApp() {
     exCredentials: {},
     exForm: { location: '', name: '', family: 'binance', base_url: '',
               account_path: '', time_path: '', restrictions_path: '',
-              balances_field: 'balances', asset_field: 'asset',
+              key_header: '', balances_field: 'balances', asset_field: 'asset',
               free_field: 'free', locked_field: 'locked', label: '' },
     exKeyInput: '',
     exSecretInput: '',
@@ -297,6 +297,11 @@ function portfolioApp() {
     // şartı. Değeri `settings.preferences.reconcile_dust_usd` içinde kalıcı.
     connDustUsd: 1.0,
     connShowDust: false,
+    // Karşılaştırma tablosunun görünüm durumu. Bilerek KALICI DEĞİL: eşik
+    // ($1) bir tercihtir, ama "şu an neye bakıyorum" oturumluk bir durumdur.
+    // Kaydedilseydi kullanıcı yarın tabloyu eksik görüp sebebini arardı.
+    connLocation: '',        // boş = tüm konumlar
+    connOnlyDiff: true,      // eşleşen satırlar tanımı gereği sorun değildir
     // Solana'da istenmeden gönderilen spam token yaygın; gerçek bir cüzdanda
     // yüzlerce satır üretir. Gizlenmiyor, katlanıyor — kullanıcı açabilir.
     connShowSpam: false,
@@ -927,21 +932,109 @@ function portfolioApp() {
       return Math.abs(r.diff_value) < esik;
     },
 
-    get connDustRows() {
+    // -------------------------------------------------------------
+    // KONUM SÜZGECİ
+    //
+    // Tablo artık üç kaynaktan besleniyor (zincir cüzdanları + Binance +
+    // MEXC) ve konum ayrımı olmadan tek uzun listeye dönüşüyor.
+    //
+    // Konumlar VERİDEN türetilir, koda gömülmez: kullanıcı Gate.io eklediği
+    // gün düğmesi kendiliğinden çıkar. Sabit bir liste, projenin her
+    // katmanında bilinçle kaçınılan şeydir.
+    // -------------------------------------------------------------
+    // Konum süzgecinden GEÇEN ama diğer süzgeçlere girmemiş satırlar.
+    // Sayımların dayanağı budur; böylece rozetler kırıntı katlandığında
+    // değişmez — değişseydi "3 fark var" yazarken tabloda 1 satır görünürdü.
+    get connScopedRows() {
       if (!this.connReport) return [];
-      return (this.connReport.rows || [])
-        .filter(r => !r.likely_spam && this.connRowIsDust(r));
+      const rows = this.connReport.rows || [];
+      if (!this.connLocation) return rows;
+      return rows.filter(r => r.location === this.connLocation);
+    },
+
+    // [{ location, count }] — sayı, o konuma tıklayınca GÖRECEĞİN satır sayısı.
+    get connLocationList() {
+      if (!this.connReport) return [];
+      const sayac = {};
+      for (const r of (this.connReport.rows || [])) {
+        if (!this.connRowPassesFilters(r)) continue;
+        sayac[r.location] = (sayac[r.location] || 0) + 1;
+      }
+      return Object.keys(sayac).sort()
+        .map(location => ({ location, count: sayac[location] }));
+    },
+
+    get connVisibleTotal() {
+      return this.connLocationList.reduce((t, l) => t + l.count, 0);
+    },
+
+    // Konum DIŞINDAKİ tüm süzgeçler tek yerde; hem satır listesi hem konum
+    // sayaçları bunu kullanır, yoksa ikisi ayrışır.
+    connRowPassesFilters(r) {
+      if (!this.connShowSpam && r.likely_spam) return false;
+      if (!this.connShowDust && this.connRowIsDust(r)) return false;
+      if (this.connOnlyDiff && r.status === 'match') return false;
+      return true;
+    },
+
+    get connDustRows() {
+      return this.connScopedRows.filter(r => !r.likely_spam && this.connRowIsDust(r));
     },
 
     get connDustTotal() {
       return this.connDustRows.reduce((t, r) => t + Math.abs(r.diff_value || 0), 0);
     },
 
+    // Rozetler ve bantlar seçili konumu anlatmalı; global sayı gösterirsek
+    // başlık listeyle çelişir ve kullanıcı hangisine inanacağını bilemez.
+    get connStatusCounts() {
+      const sayac = {};
+      for (const r of this.connScopedRows) {
+        if (r.likely_spam) continue;      // sunucudaki kuralla aynı
+        sayac[r.status] = (sayac[r.status] || 0) + 1;
+      }
+      return sayac;
+    },
+
+    get connSpamCount() {
+      return this.connScopedRows.filter(r => r.likely_spam).length;
+    },
+
+    get connReviewCount() {
+      return this.connScopedRows.filter(r => r.needs_review).length;
+    },
+
+    // Bir yanlış konum tabloda İKİ satır üretir (biri defterin yazdığı
+    // konumda, biri varlığın gerçekten durduğu konumda) ama TEK sorundur.
+    //
+    // Sunucu bunu "role == chain" satırlarını sayarak yapıyor; burada
+    // yapamayız, çünkü konum süzgeci çiftin yalnızca bir yarısını kapsama
+    // alabilir. Defterin yanlış yazdığı konumu seçtiğinizde satır görünür
+    // ama sayaç sıfır çıkardı ve satırı açıklayan bant kaybolurdu — yani
+    // uyarı, tam olarak en çok gerektiği yerde yok olurdu.
+    //
+    // Bu yüzden çift, hangi yarısı görünürse görünsün kimliğinden sayılır.
+    get connMisplacedCount() {
+      const ciftler = new Set();
+      for (const r of this.connScopedRows) {
+        const m = r.misplaced;
+        if (!m) continue;
+        ciftler.add(`${m.asset}|${m.ledger_location}|${m.correct_location}`);
+      }
+      return ciftler.size;
+    },
+
+    // "Sadece farklar" ile gizlenen eşleşen satır sayısı. Sessizce gizlemek
+    // yok: kaç satırın saklandığı anahtarın yanında yazar.
+    get connMatchCount() {
+      return this.connScopedRows.filter(r => {
+        if (!this.connShowSpam && r.likely_spam) return false;
+        return r.status === 'match';
+      }).length;
+    },
+
     get connRows() {
-      if (!this.connReport) return [];
-      const rows = this.connReport.rows || [];
-      const gorunur = this.connShowSpam ? rows : rows.filter(r => !r.likely_spam);
-      return this.connShowDust ? gorunur : gorunur.filter(r => !this.connRowIsDust(r));
+      return this.connScopedRows.filter(r => this.connRowPassesFilters(r));
     },
 
     // "$1,23" / çok küçükse "<$0,01" / fiyat yoksa "—".
@@ -1046,7 +1139,7 @@ function portfolioApp() {
     resetExchangeForm() {
       this.exForm = { location: '', name: '', family: 'binance', base_url: '',
                       account_path: '', time_path: '', restrictions_path: '',
-                      balances_field: 'balances', asset_field: 'asset',
+                      key_header: '', balances_field: 'balances', asset_field: 'asset',
                       free_field: 'free', locked_field: 'locked', label: '' };
       this.exKeyInput = '';
       this.exSecretInput = '';
@@ -1527,6 +1620,13 @@ function portfolioApp() {
         if (!resp.ok) throw new Error('Bakiyeler okunamadı.');
         this.connReport = await resp.json();
         this.connWarnings = this.connReport.warnings || [];
+        // Seçili konum bu raporda hiç geçmiyorsa süzgeç tabloyu boşaltırdı
+        // ve kullanıcı sebebini aramak zorunda kalırdı (bağlantı silinmiş
+        // veya kapatılmış olabilir). Sessizce tüm konumlara dönülür.
+        if (this.connLocation &&
+            !(this.connReport.rows || []).some(r => r.location === this.connLocation)) {
+          this.connLocation = '';
+        }
         // Kasa durumu rapordan tazelenir: kullanıcı başka bir sekmede kasayı
         // açmış veya kilitlemiş olabilir ve ekrandaki rozet yanıltmamalı.
         if (this.connReport.vault) {

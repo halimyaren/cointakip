@@ -2363,6 +2363,18 @@
                   <b class="text-slate-500">doğrulanamaz</b> ve size bu açıkça söylenir.
                 </p>
               </div>
+              <div class="sm:col-span-2">
+                <label class="text-[10px] uppercase text-slate-500 font-sans">Anahtar başlığı</label>
+                <input x-model="exForm.key_header" placeholder="X-MBX-APIKEY"
+                       class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono-nums">
+                <p class="text-[10px] text-slate-600 font-sans mt-1">
+                  Anahtarın gönderileceği HTTP başlığı. <b class="text-slate-500">İmzalama
+                  ailesinin değil borsanın özelliğidir</b> — MEXC, Binance'in imzalamasını
+                  birebir klonlar ama <span class="font-mono-nums">X-MEXC-APIKEY</span> bekler.
+                  Hazır bir borsa seçtiyseniz kendiliğinden dolar; boş bırakırsanız o borsanın
+                  bilinen başlığı kullanılır.
+                </p>
+              </div>
             </div>
 
             <!-- Deneme sonucu ve izin durumu -->
@@ -2500,13 +2512,48 @@
           <div class="rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
             <div class="px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
               <h3 class="text-[12px] font-bold text-white font-sans">Canlı Bakiye ↔ Defter</h3>
+              <!-- Rozetler seçili konumu anlatır; global sayı gösterselerdi
+                   başlık listeyle çelişirdi. -->
               <div class="flex flex-wrap gap-1.5">
-                <template x-for="[d, n] in Object.entries(connReport.status_counts || {})" :key="d">
+                <template x-for="[d, n] in Object.entries(connStatusCounts)" :key="d">
                   <span class="px-2 py-0.5 rounded text-[10px] font-bold"
                         :class="connStatusMeta[d] ? connStatusMeta[d].badge : 'bg-slate-800 text-slate-400'"
                         x-text="(connStatusMeta[d] ? connStatusMeta[d].label : d) + ' · ' + n"></span>
                 </template>
               </div>
+            </div>
+
+            <!-- Konum süzgeci ve "sadece farklar".
+                 Konumlar VERİDEN türetilir: Gate.io eklendiği gün düğmesi
+                 kendiliğinden çıkar, kodda sabit liste yoktur. -->
+            <div x-show="connLocationList.length > 1 || connOnlyDiff"
+                 class="px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center gap-x-3 gap-y-2">
+
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="text-[10px] uppercase text-slate-600 font-sans font-bold mr-0.5">Konum</span>
+                <button @click="connLocation = ''"
+                        class="px-2.5 py-1 rounded-lg text-[10.5px] font-bold border transition font-sans"
+                        :class="connLocation === '' ? 'bg-teal-950/80 text-teal-300 border-teal-500/40' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'">
+                  Tümü · <span x-text="connVisibleTotal"></span>
+                </button>
+                <template x-for="l in connLocationList" :key="l.location">
+                  <button @click="connLocation = (connLocation === l.location ? '' : l.location)"
+                          class="px-2.5 py-1 rounded-lg text-[10.5px] font-bold border transition font-sans"
+                          :class="connLocation === l.location ? 'bg-teal-950/80 text-teal-300 border-teal-500/40' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'"
+                          x-text="l.location + ' · ' + l.count"></button>
+                </template>
+              </div>
+
+              <!-- Eşleşen satırlar tanımı gereği sorun değil. Gizleniyorlar
+                   ama kaç tanesinin gizlendiği burada yazar; sessizce
+                   saklamak, kullanıcıya varlığı yokmuş gibi gösterirdi. -->
+              <label class="flex items-center gap-1.5 text-[10.5px] text-slate-400 font-sans cursor-pointer ml-auto">
+                <input type="checkbox" x-model="connOnlyDiff"
+                       class="rounded bg-slate-800 border-slate-600 text-teal-500 focus:ring-0 w-3.5 h-3.5">
+                <span>Sadece farklar</span>
+                <span class="text-slate-600" x-show="connOnlyDiff && connMatchCount > 0"
+                      x-text="'(' + connMatchCount + ' eşleşen satır gizli)'"></span>
+              </label>
             </div>
             <!-- Neden maliyet soruluyor? Kullanıcı "otomatik çekseydin ya"
                  diye haklı olarak sorabilir; cevabı burada durmalı. -->
@@ -2608,9 +2655,28 @@
                 </tbody>
               </table>
             </div>
-            <div x-show="connRows.length === 0"
+            <!-- Boş tablonun sebebi ayrıştırılır: "veri yok" ile "süzgeç
+                 hepsini gizledi" aynı şey değildir. İkincisini birincisi gibi
+                 göstermek, kullanıcıya varlığı yokmuş gibi okutur. -->
+            <div x-show="connRows.length === 0 && (connReport.rows || []).length === 0"
                  class="px-4 py-8 text-center text-slate-500 text-xs font-sans">
               Karşılaştırılacak bir şey yok. Önce bir bağlantı ekleyin.
+            </div>
+            <div x-show="connRows.length === 0 && (connReport.rows || []).length > 0"
+                 class="px-4 py-8 text-center text-slate-500 text-xs font-sans space-y-2">
+              <div>
+                Bu süzgeçlerle gösterilecek satır kalmadı —
+                <b class="text-slate-400">veri yok demek değil.</b>
+                <span x-show="connLocation">Seçili konum: <b class="text-slate-400" x-text="connLocation"></b>.</span>
+                <span x-show="connOnlyDiff && connMatchCount > 0">
+                  <b class="text-slate-400" x-text="connMatchCount"></b> satırda defter ile
+                  canlı bakiye zaten tutuyor.
+                </span>
+              </div>
+              <button @click="connLocation = ''; connOnlyDiff = false;"
+                      class="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] font-bold transition font-sans">
+                Süzgeçleri temizle
+              </button>
             </div>
 
             <!-- Önemsiz farklar. Gizlenmiyor KATLANIYOR: sayısı ve toplamı
@@ -2641,9 +2707,9 @@
             <!-- Hakkında hüküm olmayan tokenlar. Bunlar GİZLENMİYOR — gizlemek
                  gerçek varlığı saklamak olurdu. Yalnızca deftere ekleme
                  önerilmiyor; kullanıcı "Bu gerçek" deyince düğme geliyor. -->
-            <div x-show="(connReport.review_count || 0) > 0"
+            <div x-show="connReviewCount > 0"
                  class="px-4 py-2.5 border-t border-slate-800 text-[11px] text-slate-500 leading-relaxed font-sans">
-              <b class="text-slate-400" x-text="connReport.review_count"></b>
+              <b class="text-slate-400" x-text="connReviewCount"></b>
               token yalnızca zincir keşfinden geldi: elle tanımlamadınız,
               defterinizde geçmiyorlar ve fiyat kaynakları yok. EVM adreslerine
               istenmeden token gönderilmesi yaygın olduğu için bunlara
@@ -2658,9 +2724,9 @@
             <!-- Yanlış konum uyarısı. Bu tablo iki satır gösterir ama sorun
                  tektir; kullanıcı bunu bilmezse iki ayrı eksiklik sanıp
                  zincir tarafına yeni kayıt açar ve varlığını iki kez sayar. -->
-            <div x-show="(connReport.misplaced_count || 0) > 0"
+            <div x-show="connMisplacedCount > 0"
                  class="px-4 py-2.5 border-t border-slate-800 text-[11px] text-slate-500 leading-relaxed font-sans">
-              <b class="text-amber-300" x-text="connReport.misplaced_count"></b>
+              <b class="text-amber-300" x-text="connMisplacedCount"></b>
               <b class="text-amber-300">varlık yanlış konumda yazılı görünüyor.</b>
               Aynı varlık bir konumda “defterde var, zincirde yok”, başka bir
               konumda “zincirde var, defterde yok” çıkıyor ve miktarlar
@@ -2674,10 +2740,10 @@
 
             <!-- Spam tokenlar gizlenmiyor, katlanıyor. Gizlemek de bir tür
                  yalandır; kullanıcı ne olduğunu bilmeli ve açabilmeli. -->
-            <div x-show="(connReport.spam_count || 0) > 0"
+            <div x-show="connSpamCount > 0"
                  class="px-4 py-2.5 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
               <span class="text-[11px] text-slate-500 font-sans">
-                <b class="text-slate-400" x-text="connReport.spam_count"></b>
+                <b class="text-slate-400" x-text="connSpamCount"></b>
                 doğrulanmamış token katlandı — defterinizde geçmiyorlar, elle
                 tanımlanmamışlar ve fiyat kaynakları yok. Hem Solana'da hem EVM
                 zincirlerinde adreslere istenmeden token gönderilmesi yaygındır.
