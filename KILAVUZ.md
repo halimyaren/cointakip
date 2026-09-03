@@ -19,9 +19,10 @@ yapıldığını öğrenmek için [README.tr.md](README.tr.md) dosyasına bakın
 10. [Borsa mutabakatı ve düzeltme](#10-borsa-mutabakatı-ve-düzeltme)
 11. [Cüzdan bağlantıları](#11-cüzdan-bağlantıları) — MetaMask, Phantom ve diğerleri
 12. [Arşiv ve net varlık eğrisi](#12-arşiv-ve-net-varlık-eğrisi)
-13. [Güvenlik: PIN ve gizlilik modu](#13-güvenlik-pin-ve-gizlilik-modu)
-14. [Yedekleme ve geri yükleme](#14-yedekleme-ve-geri-yükleme)
-15. [Sık sorulanlar](#15-sık-sorulanlar)
+13. [Vergi-hazır dışa aktarım](#13-vergi-hazır-dışa-aktarım) — mali müşavirinize vereceğiniz dosya
+14. [Güvenlik: PIN ve gizlilik modu](#14-güvenlik-pin-ve-gizlilik-modu)
+15. [Yedekleme ve geri yükleme](#15-yedekleme-ve-geri-yükleme)
+16. [Sık sorulanlar](#16-sık-sorulanlar)
 
 ---
 
@@ -717,7 +718,90 @@ eğrisi oluşur.
 
 ---
 
-## 13. Güvenlik: PIN ve gizlilik modu
+## 13. Vergi-hazır dışa aktarım
+
+**Grafikler → 📊 Performans & Dağılım → Vergi-Hazır Dışa Aktarım**
+
+Yılda bir kez, mali müşavirinize verebileceğiniz bir dosya üretir. Dönemi
+seçersiniz (`Tüm yıllar` veya tek bir yıl), **Excel (.xlsx)** ya da **CSV**
+indirirsiniz.
+
+### Bu dosya bir vergi hesabı değildir
+
+Dosya matrah, oran, istisna veya mahsup **içermez** ve içermemesi bilinçlidir.
+Yaptığı tek şey, defterinizdeki gerçekleşmiş olayları denetlenebilir düz bir
+tabloya dökmektir. Hesaplanmış bir yükümlülük üretmek sorumluluk doğurur ve
+Türkiye'de kripto vergilendirmesi henüz oturmuş değildir.
+
+### Neden TRY yok
+
+Tüm tutarlar **USD** cinsindendir. Beyan TRY üzerinden yapılır ve **işlem
+tarihindeki kur** gerekir — ama "hangi kur" sorusunun üç ayrı cevabı vardır:
+hangi kurum (TCMB, borsa), hangi kur (alış, satış, efektif) ve tatil günlerinde
+hangi günün kuru. Bunlar uygulamanın sizin adınıza veremeyeceği kararlardır ve
+yanlış kur, doğru veriden yanlış beyan üretir. Kuru mali müşaviriniz uygular.
+
+### Dosyanın içinde ne var
+
+Excel dosyası dört sayfadır:
+
+| Sayfa | İçeriği |
+|:---|:---|
+| **Özet** | Dönem, para birimi, kapsam beyanı ve toplamlar |
+| **Gerçekleşmiş İşlemler** | Asıl tablo — her kapanmış olay bir satır |
+| **Eksik Veri** | Kapanmış ama çıkış fiyatı olmayan kayıtlar |
+| **Kapsam Dışı** | Transferler, mutabakat kapanışları, açık pozisyonlar |
+
+Ana tabloda her satır şunları taşır: kayıt numarası (deftere geri izlemek için),
+varlık, konum, olay türü, alış ve çıkış tarihi, miktar, birim fiyatlar, toplam
+maliyet, toplam hasılat, komisyon, gerçekleşmiş K/Z, maliyet yöntemi ve açıklama.
+
+**Olay türü üç değer alır** ve bunlar aynı şey değildir:
+
+- **Satış** — normal bir elden çıkarma.
+- **Yazım (değersiz)** — sıfıra kapatılmış pozisyon. Hasılatı yoktur; gider
+  yazılabilirliği mali müşavirinizin kararıdır.
+- **Mutabakat özeti (toplu)** — **tek bir işlem değildir.** Borsa dosyasından
+  yeniden kurulmuş, kapanmış birçok işlemin toplu sonucudur.
+
+### "Eksik Veri" sayfasına mutlaka bakın
+
+Defterinizde kapanmış görünen ama çıkış fiyatı taşımayan kayıtlar olabilir.
+Bunlar büyük ihtimalle satılmış ama satış fiyatı girilmemiş pozisyonlardır.
+
+Uygulama bunları dosyadan **atmaz.** Atsaydı tablo hem kazancınızı hem zararınızı
+eksik gösterirdi ve siz bunu fark edemezdiniz. Bunun yerine ayrı bir sayfada,
+kayıt numarası ve maliyetiyle listelenirler. Panelde de indirmeden önce sarı bir
+uyarı olarak görünür.
+
+Bir kayıt oraya düştüyse yapmanız gereken, İşlem Defteri'nden o kaydı bulup satış
+fiyatını ve tarihini girmektir. Sonra dosyayı yeniden indirin.
+
+### Neden "Kapsam Dışı" diye bir sayfa var
+
+Bir vergi dosyasının denetlenebilir olması, dışarıda bıraktığı şeyi de göstermesi
+demektir. Defterinizdeki her kayıt dört kümeden birindedir ve toplamları defterin
+tamamını verir:
+
+```
+Gerçekleşmiş  +  Eksik Veri  +  Kapsam Dışı  =  Defterdeki toplam kayıt
+```
+
+Kapsam dışı bırakılanlar ve nedenleri:
+
+- **Transfer** — kendi cüzdanınıza taşımak satış değildir, K/Z üretmez.
+- **Mutabakat kapanışı** — hatalı kaydın düzeltilmesidir, elden çıkarma değil.
+- **Açık pozisyon** — henüz satılmamıştır.
+
+### CSV ne zaman işe yarar
+
+Aynı içeriği taşır, noktalı virgülle ayrılmış ve UTF-8'dir. Excel'i olmayan ya da
+veriyi başka bir programa aktaracak bir müşavir için pratiktir. Excel dosyası
+biçimli olduğu için okumaya daha uygundur.
+
+---
+
+## 14. Güvenlik: PIN ve gizlilik modu
 
 **PIN koruması** Ayarlar'dan açılır. Kuruluma özel bir salt ile SHA-256 kullanılır;
 PIN'in kendisi hiçbir yerde saklanmaz.
@@ -734,7 +818,7 @@ olduğu durumlarda kullanışlıdır.
 
 ---
 
-## 14. Yedekleme ve geri yükleme
+## 15. Yedekleme ve geri yükleme
 
 Uygulama her gün otomatik yedek alır: `data/backups/portfolio_backup_YYYYMMDD.json`.
 
@@ -770,7 +854,7 @@ açılışta veriye dokunan bir düzeltme, kendisini gerektiren kod değişikli�
 
 ---
 
-## 15. Sık sorulanlar
+## 16. Sık sorulanlar
 
 **İnternet gerekiyor mu?**
 Fiyatlar için evet. Arayüz kütüphaneleri paketli olduğu için CDN erişimi olmasa da

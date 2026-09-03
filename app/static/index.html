@@ -1229,7 +1229,7 @@
             <span>⚖️ Kategori & Sepet Sağlığı</span>
           </button>
 
-          <button @click="tvSubTab = 'pnl'" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'pnl' ? 'bg-gradient-to-r from-amber-600 to-yellow-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
+          <button @click="tvSubTab = 'pnl'; fetchTaxSummary();" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'pnl' ? 'bg-gradient-to-r from-amber-600 to-yellow-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
             <i data-lucide="bar-chart-2" class="w-4 h-4"></i>
             <span>📊 Performans & Dağılım</span>
           </button>
@@ -2989,6 +2989,116 @@
             </template>
           </div>
 
+        </div>
+
+        <!-- ============================================================= -->
+        <!-- VERGİ-HAZIR DIŞA AKTARIM                                       -->
+        <!-- Rapor değil, dışa aktarım: vergi hesaplanmaz, TRY uygulanmaz.  -->
+        <!-- ============================================================= -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg space-y-3">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+            <h3 class="text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-2">
+              <i data-lucide="file-spreadsheet" class="w-4 h-4 text-emerald-400"></i>
+              <span>Vergi-Hazır Dışa Aktarım</span>
+            </h3>
+            <button @click="fetchTaxSummary()" class="text-[10.5px] text-slate-400 hover:text-emerald-300 font-semibold px-2 py-1 rounded bg-slate-800/80 hover:bg-slate-700 border border-slate-700 transition">
+              ↻ Yenile
+            </button>
+          </div>
+
+          <!-- Kalıcı kapsam notu: dosyanın ne OLMADIĞI -->
+          <div class="px-3 py-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-[11.5px] text-slate-400 leading-relaxed">
+            Bu dosya bir <b class="text-slate-300">vergi hesabı değildir</b>; matrah, oran veya mahsup içermez.
+            Yaptığı şey, defterdeki gerçekleşmiş olayları mali müşavirinizin denetleyebileceği düz bir tabloya
+            dökmektir. Tüm tutarlar <b class="text-slate-300">USD</b> cinsindendir —
+            <b class="text-amber-300">TRY kuru uygulanmaz</b>, çünkü beyan için gereken "işlem tarihindeki kur"
+            seçimi (hangi kurum, hangi kur, tatil günleri) bizim verebileceğimiz bir karar değildir.
+          </div>
+
+          <template x-if="!taxSummary">
+            <div class="text-center py-4 text-slate-500 text-xs">Özet yükleniyor…</div>
+          </template>
+
+          <template x-if="taxSummary">
+            <div class="space-y-3">
+
+              <!-- Dönem seçimi -->
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-[11px] text-slate-400 font-semibold">Dönem:</span>
+                <button @click="taxYear = ''"
+                        class="px-2.5 py-1 rounded-lg text-[11px] font-bold border transition"
+                        :class="taxYear === '' ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'">
+                  Tüm yıllar
+                </button>
+                <template x-for="y in (taxSummary.available_years || [])" :key="y">
+                  <button @click="taxYear = y"
+                          class="px-2.5 py-1 rounded-lg text-[11px] font-bold border transition font-mono-nums"
+                          :class="taxYear === y ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'"
+                          x-text="y + ' (' + ((taxSummary.year_counts || {})[y] || 0) + ')'"></button>
+                </template>
+                <template x-if="(taxSummary.available_years || []).length === 0">
+                  <span class="text-[11px] text-slate-500 italic">Defterde kapanmış hiçbir olay yok.</span>
+                </template>
+              </div>
+
+              <!-- Dosyaya ne girecek -->
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono-nums">
+                <div class="bg-slate-800/60 rounded-lg p-2.5 border border-slate-700/60">
+                  <span class="text-[10px] text-slate-400 block font-sans">Gerçekleşmiş olay</span>
+                  <b class="text-emerald-400 text-sm" x-text="taxYearEventCount"></b>
+                </div>
+                <div class="bg-slate-800/60 rounded-lg p-2.5 border border-slate-700/60">
+                  <span class="text-[10px] text-slate-400 block font-sans">Eksik veri</span>
+                  <b class="text-sm" :class="(taxSummary.gap_count || 0) > 0 ? 'text-amber-400' : 'text-slate-300'" x-text="taxSummary.gap_count || 0"></b>
+                </div>
+                <div class="bg-slate-800/60 rounded-lg p-2.5 border border-slate-700/60">
+                  <span class="text-[10px] text-slate-400 block font-sans">Kapsam dışı</span>
+                  <b class="text-slate-300 text-sm" x-text="taxSummary.excluded_count || 0"></b>
+                </div>
+                <div class="bg-slate-800/60 rounded-lg p-2.5 border border-slate-700/60">
+                  <span class="text-[10px] text-slate-400 block font-sans">Defterdeki kayıt</span>
+                  <b class="text-slate-300 text-sm" x-text="taxSummary.ledger_tx_count || 0"></b>
+                </div>
+              </div>
+
+              <!-- Eksik veri uyarısı: dosya açılmadan ÖNCE görünmeli -->
+              <template x-if="(taxSummary.gap_count || 0) > 0">
+                <div class="px-3 py-2.5 rounded-lg bg-amber-950/40 border border-amber-600/40 text-[11.5px] text-amber-200/90 leading-relaxed">
+                  ⚠️ <b x-text="taxSummary.gap_count"></b> kayıt kapanmış görünüyor ama
+                  <b>çıkış fiyatı taşımıyor.</b> Bunlar dosyadan sessizce atılmadı; ayrı bir
+                  <b>"Eksik Veri"</b> sayfasında listeleniyor. Aralarında satılmış ama satış fiyatı
+                  girilmemiş pozisyonlar varsa bu tablo hem kazancı hem zararı eksik gösterir —
+                  dosyayı mali müşavirinize vermeden önce o sayfaya bakın.
+                </div>
+              </template>
+
+              <template x-if="(taxSummary.event_types || {})['Mutabakat özeti (toplu)']">
+                <div class="px-3 py-2 rounded-lg bg-violet-950/40 border border-violet-600/30 text-[11px] text-violet-200/80 leading-relaxed">
+                  <b x-text="taxSummary.event_types['Mutabakat özeti (toplu)']"></b> satır
+                  <b>"Mutabakat özeti"</b> türünde: tek bir işlem değil, borsa dosyasından yeniden kurulmuş
+                  birçok kapanmış işlemin toplu sonucu. Dosyada ayrıca işaretli.
+                </div>
+              </template>
+
+              <!-- İndirme -->
+              <div class="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-800">
+                <button @click="downloadTaxExport('xlsx')" :disabled="taxLoading"
+                        class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 disabled:opacity-50 text-emerald-300 border border-emerald-500/40 text-xs font-bold transition"
+                        title="Dört sayfalı Excel: Özet, Gerçekleşmiş İşlemler, Eksik Veri, Kapsam Dışı">
+                  <i data-lucide="download" class="w-3.5 h-3.5"></i>
+                  <span x-text="taxLoading ? 'Hazırlanıyor…' : 'Excel (.xlsx) indir'"></span>
+                </button>
+                <button @click="downloadTaxExport('csv')" :disabled="taxLoading"
+                        class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 border border-slate-700 text-xs font-bold transition"
+                        title="Aynı içerik, taşınabilir düz metin (noktalı virgülle ayrılmış, UTF-8)">
+                  <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
+                  <span>CSV indir</span>
+                </button>
+                <span class="text-[10.5px] text-slate-500 font-mono-nums" x-text="'şema v' + (taxSummary.schema_version || '') + ' · ' + (taxSummary.currency || 'USD')"></span>
+              </div>
+
+            </div>
+          </template>
         </div>
 
       </div>

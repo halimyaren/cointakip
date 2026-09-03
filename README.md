@@ -154,6 +154,22 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   anywhere until you unlock it. Changing your PIN re-seals the vault; resetting it
   via the recovery key clears the vault instead of keeping undecryptable data
   around and pretending your keys survived.
+- **Tax-ready export — an export, not a report.** One file per year for your
+  accountant: every realised event as a row, with acquisition and disposal
+  dates, quantities, unit prices, fees and realised P&L. It deliberately
+  computes **no tax** — no taxable base, no rate, no offset — because producing
+  a calculated liability creates responsibility, and crypto taxation in Turkey
+  is not settled. Amounts stay in **USD**: applying a TRY rate would mean
+  deciding *which* institution's rate, *which* rate (buying, selling,
+  effective) and which day's rate on a holiday — decisions the app cannot make
+  for you, and a wrong rate turns correct data into a wrong filing.
+  What makes it auditable is that **nothing is silently dropped**: every ledger
+  record lands in exactly one of four buckets — realised, missing-data,
+  out-of-scope, still open — and they sum to the ledger. Positions closed
+  without an exit price (probably sold but never recorded) get their own sheet
+  and a warning *before* you download, rather than quietly vanishing and
+  understating both your gains and your losses. Transfers and reconciliation
+  closures are listed too, each with the reason it is not a disposal.
 - **Excel export**, daily automatic backups, privacy mode.
 
 ---
@@ -228,7 +244,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-633 tests, about 25 seconds. The suite **never touches your real data and never hits
+679 tests, about 25 seconds. The suite **never touches your real data and never hits
 the network**: data paths are redirected to a temporary directory, all external calls
 are mocked, and no test calls the AI API.
 
@@ -245,6 +261,9 @@ app/
 ├── reconcile.py      Exchange export ↔ ledger reconciliation and repair
 │                     proposals (read-only; writes go through data_manager)
 ├── connections.py    Connection registry + on-chain readers (EVM, Solana)
+├── exchanges.py      Exchange API profiles + read-only balance reader,
+│                     written per signing family (GET only, never trades)
+├── tax_export.py     Tax-ready export (read-only; calculates no tax, USD only)
 ├── keyvault.py       PIN-derived encryption for API keys (session-only)
 ├── ai_service.py     Gemini integration + local fallback engine
 └── static/           Alpine.js single-page UI + bundled libraries

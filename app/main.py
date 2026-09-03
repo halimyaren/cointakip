@@ -35,6 +35,7 @@ import reconcile
 import connections
 import exchanges
 import keyvault
+import tax_export
 from log_config import get_logger, LOG_FILE
 
 logger = get_logger("main")
@@ -1243,6 +1244,50 @@ def export_excel():
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+# -------------------------------------------------------------
+# VERGİ-HAZIR DIŞA AKTARIM
+#
+# Bu uçlar **rapor değil, dışa aktarım** üretir: vergi hesaplanmaz, TRY kuru
+# uygulanmaz. Ayrıntılı gerekçe `tax_export.py` başlığındadır.
+# -------------------------------------------------------------
+@app.get("/api/export/tax/summary")
+def get_tax_summary():
+    """Arayüzün indirmeden önce gösterdiği özet. Dosya üretmez."""
+    return tax_export.tax_summary(load_portfolio())
+
+
+@app.get("/api/export/tax")
+def export_tax(year: Optional[str] = None, format: str = "xlsx"):
+    bicim = (format or "xlsx").lower().strip()
+    if bicim not in ("xlsx", "csv"):
+        raise HTTPException(status_code=400, detail="Biçim 'xlsx' veya 'csv' olmalı.")
+
+    # Yıl doğrudan dosya adına giriyor; serbest metin kabul edilmez.
+    donem = (year or "").strip()
+    if donem and not (len(donem) == 4 and donem.isdigit()):
+        raise HTTPException(status_code=400, detail="Yıl dört haneli olmalı (örn. 2026).")
+
+    data = load_portfolio()
+    etiket = donem or "TumYillar"
+
+    if bicim == "csv":
+        icerik = tax_export.export_tax_csv(data, donem or None)
+        tur = "text/csv; charset=utf-8"
+        uzanti = "csv"
+    else:
+        icerik = tax_export.export_tax_excel(data, donem or None)
+        tur = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        uzanti = "xlsx"
+
+    filename = f"CoinTakip_Vergi_{etiket}.{uzanti}"
+    return Response(
+        content=icerik,
+        media_type=tur,
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
 
 # -------------------------------------------------------------
 # FAZ 8: SECURITY & PIN AUTHENTICATION MODELS & ENDPOINTS

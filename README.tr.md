@@ -146,6 +146,22 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   uygulama hiçbir yere bağlanmaz. PIN'i değiştirmek kasayı yeniden mühürler;
   kurtarma anahtarıyla sıfırlamak ise kasayı temizler — çözülemeyen veriyi tutup
   "anahtarlarınız duruyor" izlenimi vermektense.
+- **Vergi-hazır dışa aktarım — rapor değil, dışa aktarım.** Mali müşavirinize
+  vereceğiniz yıllık dosya: her gerçekleşmiş olay bir satır; alış ve çıkış
+  tarihi, miktar, birim fiyatlar, komisyon ve gerçekleşmiş K/Z ile. **Vergi
+  hesaplamaz** — matrah, oran, mahsup yoktur; hesaplanmış bir yükümlülük
+  üretmek sorumluluk doğurur ve Türkiye'de kripto vergilendirmesi oturmuş
+  değildir. Tutarlar **USD** kalır: TRY kuru uygulamak "hangi kurum, hangi kur,
+  tatilde hangi gün" kararlarını vermek demektir; bunlar uygulamanın sizin
+  adınıza veremeyeceği kararlardır ve yanlış kur doğru veriden yanlış beyan
+  üretir. Dosyayı denetlenebilir yapan şey **hiçbir satırın sessizce
+  düşmemesi**: defterdeki her kayıt tam olarak dört kümeden birine girer —
+  gerçekleşmiş, eksik veri, kapsam dışı, hâlâ açık — ve toplamları defteri
+  verir. Çıkış fiyatı girilmeden kapatılmış pozisyonlar (büyük ihtimalle
+  satılmış ama kaydedilmemiş) kendi sayfasına düşer ve **indirmeden önce**
+  uyarı olarak görünür; sessizce kaybolsalardı hem kazancınızı hem zararınızı
+  eksik gösterirlerdi. Transferler ve mutabakat kapanışları da, neden bir elden
+  çıkarma sayılmadıkları yazılarak listelenir.
 - **Excel dışa aktarım**, günlük otomatik yedekleme, gizlilik modu.
 
 ---
@@ -220,7 +236,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-633 test, yaklaşık 25 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
+679 test, yaklaşık 25 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
 veri yolları geçici bir klasöre yönlendirilir, tüm dış çağrılar taklit edilir ve
 hiçbir test yapay zekâ API'sine istek atmaz.
 
@@ -237,6 +253,9 @@ app/
 ├── reconcile.py      Borsa dışa aktarımı ↔ defter mutabakatı ve düzeltme
 │                     önerileri (salt okunur; yazma data_manager'dan geçer)
 ├── connections.py    Bağlantı kayıt defteri + zincir okuyucuları (EVM, Solana)
+├── exchanges.py      Borsa API profilleri + salt-okunur bakiye okuyucu,
+│                     imza ailesi başına yazılır (yalnızca GET, emir vermez)
+├── tax_export.py     Vergi-hazır dışa aktarım (salt okunur; vergi hesaplamaz)
 ├── keyvault.py       API anahtarları için PIN'den türetilmiş şifreleme
 ├── ai_service.py     Gemini entegrasyonu + yerel yedek motor
 └── static/           Alpine.js tek sayfa arayüz + paketlenmiş kütüphaneler

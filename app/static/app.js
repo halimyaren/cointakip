@@ -406,6 +406,11 @@ function portfolioApp() {
     // Faz 7: Gerçekleşmiş Kâr/Zarar (Realized PnL) & Dışa Aktarma
     realizedMetrics: null,
     exportLoading: false,
+
+    // Vergi-hazır dışa aktarım. `taxYear` boş = tüm yıllar.
+    taxSummary: null,
+    taxYear: '',
+    taxLoading: false,
     copiedRichSuccess: false,
 
     // Chart instances
@@ -4432,6 +4437,50 @@ function portfolioApp() {
 
     printPortfolioReport() {
       window.print();
+    },
+
+    // ---------------------------------------------------------------
+    // VERGİ-HAZIR DIŞA AKTARIM
+    //
+    // Panel indirmeden ÖNCE dosyanın içinde ne olacağını söyler. Sebep:
+    // eksik veri sayısını dosyayı açtıktan sonra fark etmek, mali müşavire
+    // yanlış dosyayı göndermiş olmak demektir.
+    // ---------------------------------------------------------------
+    async fetchTaxSummary() {
+      try {
+        const res = await fetch('/api/export/tax/summary');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        this.taxSummary = await res.json();
+        const yillar = this.taxSummary.available_years || [];
+        if (this.taxYear && !yillar.includes(this.taxYear)) this.taxYear = '';
+      } catch (err) {
+        console.error('Vergi özeti alınamadı:', err);
+        this.taxSummary = null;
+      }
+    },
+
+    // Seçili dönemde dosyaya girecek olay sayısı. "Tüm yıllar" seçiliyken
+    // toplam, bir yıl seçiliyken o yılın sayısı.
+    get taxYearEventCount() {
+      if (!this.taxSummary) return 0;
+      if (!this.taxYear) return this.taxSummary.total_events || 0;
+      return (this.taxSummary.year_counts || {})[this.taxYear] || 0;
+    },
+
+    downloadTaxExport(format) {
+      this.taxLoading = true;
+      try {
+        const donem = this.taxYear ? `year=${encodeURIComponent(this.taxYear)}&` : '';
+        const link = document.createElement('a');
+        link.href = `/api/export/tax?${donem}format=${format}`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } catch (err) {
+        this.notify('Vergi dosyası indirilemedi: ' + err.message, 'error');
+      } finally {
+        setTimeout(() => { this.taxLoading = false; }, 1500);
+      }
     },
 
     async copyAiReportRich() {
