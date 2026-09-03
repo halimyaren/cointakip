@@ -112,6 +112,49 @@ def izole_veri(tmp_path, monkeypatch):
         kok_logger.addHandler(h)
 
 
+# ===========================================================================
+# BEKÇİ: FİYAT MOTORUNUN ARKA PLAN THREAD'İ TESTLERDE ÇALIŞMAMALI
+#
+# `main.py`'nin gövdesi import anında `price_service.start_background_updater()`
+# çağırır. Bu fixture'ların dışında (örneğin bir test modülü `main`'i modül
+# seviyesinde import ederse, yani TOPLAMA anında) gerçekleşirse thread gerçekten
+# başlar ve tüm oturum boyunca 4 saniyede bir AĞA çıkar.
+#
+# Bu bir kez oldu ve üç ayrı zarar verdi:
+#   1. Veri düzeltmeleri gerçek `data/portfolio.json` üzerinde koşabilirdi.
+#   2. README'nin "testler ağa dokunmaz" sözü sessizce bozuldu.
+#   3. Thread `price_service.prices`'ı arka planda değiştirdiği için testler
+#      seyrek ve TEKRAR ÜRETİLEMEZ şekilde kırıldı. Teşhisi zor olan buydu:
+#      tam takım koşumlarının yaklaşık beşte birinde tek bir test düşüyordu.
+#
+# Sebebi düzeltmek yetmez; aynı hata sessizce geri gelebilir. Bu yüzden oturum
+# sonunda açıkça denetlenir ve takım KIRILIR.
+# ===========================================================================
+def pytest_sessionfinish(session, exitstatus):
+    import threading
+
+    motor = price_module.price_service
+    if not getattr(motor, "is_running", False):
+        return
+
+    motor.is_running = False          # döngüyü durdur, sonraki koşumu kurtar
+    canli = [t.name for t in threading.enumerate()
+             if t is not threading.main_thread() and t.is_alive()]
+    session.exitstatus = 1
+    print(
+        "\n\nHATA: Fiyat motorunun arka plan thread'i test oturumu boyunca "
+        "ÇALIŞTI.\n"
+        "Bu, testlerin ağa çıktığı ve fiyatların arka planda değiştiği anlamına "
+        "gelir;\nkararsız (flaky) test üretir.\n"
+        f"Canlı thread'ler: {canli or 'yok'}\n"
+        "Muhtemel sebep: bir test modülü `main`'i MODÜL SEVİYESİNDE import "
+        "ediyor.\n"
+        "`main` yalnızca fixture içinden import edilmelidir "
+        "(bkz. tests/test_packaging.py).\n",
+        file=sys.stderr,
+    )
+
+
 @pytest.fixture
 def ornek_portfoy():
     """

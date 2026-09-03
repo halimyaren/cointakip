@@ -712,6 +712,45 @@ Binance'ten birebir klonlar ama anahtarı `X-MEXC-APIKEY` başlığında bekler,
 bir borsa seçtiyseniz alan kendiliğinden dolar; kendi borsanızı tanımlıyorsanız
 o borsanın belgelerine bakıp doğru başlığı yazmanız gerekir.
 
+#### Anahtarın süresi dolabilir
+
+Borsaların çoğu API anahtarına ömür biçer. **MEXC, dinamik IP kullanıyorsanız
+anahtara 90 gün verir.** Süre dolduğunda anahtar sessizce ölür: bakiye okuma
+"başarısız" görünür ve borsanın döndürdüğü hata sebebi anlatmaz
+(`Api key info invalid` gibi bir şey yazar). Sebebi bağlantıda, internetinizde
+veya uygulamada ararsınız — oysa yapılacak tek şey yeni anahtar almaktır.
+
+Bunu API'den öğrenmenin yolu yok; hiçbir borsa anahtarın bitiş tarihini
+bildirmiyor. Bu yüzden tarihi **siz** girersiniz:
+
+- Anahtar eklerken **Anahtar bitiş tarihi** alanını doldurun. MEXC için
+  **+90 gün** düğmesi hesabı sizin yerinize yapar.
+- Bitişe **14 gün** kala kayıtlı bağlantı satırında sarı bir rozet ve panelin
+  üstünde bir uyarı çıkar. Okuma hâlâ çalışırken uyarılırsınız — uyarının
+  değeri buradadır.
+- Süre dolduğunda rozet kırmızıya döner ve okuma hatası artık sebebi söyler.
+
+Alanı boş bırakabilirsiniz. Boş bırakmak **"sonsuz geçerli" demek değildir**,
+"bilinmiyor" demektir — uygulama size olmayan bir güvence vermez, sadece
+uyaramaz.
+
+Anahtarı yenilediğinizde bitiş tarihini de güncellemeyi unutmayın.
+
+**Tarihi sonradan girmek için anahtarı yeniden yazmanız gerekmez.** Kayıtlı
+bağlantıda **Düzenle**'ye basın, tarihi girin ve **Yalnızca ayarları kaydet**
+düğmesini kullanın. Bu düğme ad, etiket ve bitiş tarihini günceller; anahtarınıza
+dokunmaz ve kasanın açık olmasını bile gerektirmez.
+
+Bu ayrımın sebebi pratik: gizli anahtar borsada yalnızca oluşturulurken bir kez
+gösterilir. Sadece bir tarih girmek için anahtarın tamamını istemek, elinde
+secret olmayan kullanıcıyı yepyeni bir API anahtarı almaya zorlardı.
+
+Ama kolaylık güvenliği yemiyor: **taban adres, uç noktalar, imzalama ailesi ve
+anahtar başlığı bu yolla değiştirilemez.** Onlar anahtarınızın *nereye* ve
+*nasıl* gönderileceğini belirler; değiştirmek için anahtarı yeniden girip izin
+denetiminden geçmeniz gerekir. Aksi hâlde kasadaki anahtarınız bir sonraki
+okumada başka bir sunucuya gönderilebilirdi.
+
 #### Konum adı defterinizle aynı olmalı
 
 Profildeki konum adı (`BINANCE`, `MEXC`) defterinizdeki konum adıyla birebir

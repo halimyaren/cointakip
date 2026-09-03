@@ -51,6 +51,7 @@ import hmac
 import json
 import re
 import time
+from datetime import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -273,7 +274,7 @@ def validate_profile(spec: dict) -> tuple:
     for alan in ("location", "name", "family", "base_url", "account_path",
                  "time_path", "restrictions_path", "balances_field",
                  "asset_field", "free_field", "locked_field", "label",
-                 "key_header"):
+                 "key_header", "key_expires_at"):
         deger = spec.get(alan)
         temiz[alan] = str(deger).strip() if deger is not None else ""
 
@@ -307,6 +308,15 @@ def validate_profile(spec: dict) -> tuple:
         return None, ("Anahtar başlığı geçerli bir HTTP başlık adı değil "
                       "(örn. X-MBX-APIKEY). Boşluk veya satır sonu içeremez.")
 
+    # Anahtarın bitiş tarihi isteğe bağlıdır ama yazıldıysa gerçek bir tarih
+    # olmalı. Bozuk bir tarihi sessizce kabul edip "süresi dolmuş" ya da
+    # "sonsuz geçerli" diye yorumlamak, uyarının kendisini güvenilmez yapardı.
+    if temiz["key_expires_at"]:
+        try:
+            datetime.strptime(temiz["key_expires_at"], "%Y-%m-%d")
+        except ValueError:
+            return None, "Anahtar bitiş tarihi YYYY-AA-GG biçiminde olmalı."
+
     temiz["name"] = temiz["name"] or temiz["location"].title()
     temiz["balances_field"] = temiz["balances_field"] or "balances"
     temiz["asset_field"] = temiz["asset_field"] or "asset"
@@ -332,6 +342,71 @@ def save_profile(spec: dict) -> dict:
     _kaydet(profiller)
     logger.info("Borsa profili kaydedildi: %s (%s)",
                 temiz["location"], temiz["family"])
+    return temiz
+
+
+# Anahtar yeniden girilmeden değiştirilebilecek alanlar.
+#
+# Sınır güvenlik sınırıdır, kolaylık sınırı değil: `base_url`, `account_path`,
+# `key_header`, `family` ve `restrictions_path` anahtarın NEREYE ve NASIL
+# gönderileceğini belirler. Bunlardan biri anahtar yeniden denetlenmeden
+# değiştirilebilseydi, kasadaki anahtar bir sonraki okumada başka bir sunucuya
+# gönderilebilirdi. Bu alanları değiştirmek anahtarı yeniden girmeyi ve izin
+# denetiminden geçmeyi gerektirir.
+SAFE_PROFILE_FIELDS = ("name", "label", "key_expires_at", "enabled")
+
+
+def update_profile_fields(location: str, alanlar: dict) -> dict:
+    """
+    Var olan bir profilin **anahtara dokunmayan** alanlarını günceller.
+
+    Buna neden ihtiyaç var: anahtarın bitiş tarihi profilde duruyor ama gizli
+    anahtar (secret) borsada yalnızca oluşturulurken bir kez gösterilir.
+    Sadece tarih girmek için anahtarın tamamını yeniden istemek, elinde secret
+    olmayan kullanıcıyı yepyeni bir API anahtarı almaya zorlardı.
+
+    Kasa gerekmez: burada hiçbir sır okunmaz veya yazılmaz.
+    """
+    konum = str(location or "").upper().strip()
+    profiller = list_profiles()
+    mevcut = profiller.get(konum)
+    if not mevcut:
+        raise ValueError(f"{konum} için tanımlı bir borsa profili yok.")
+
+    istek = dict(alanlar or {})
+    # Korumalı bir alan FARKLI bir değerle gelirse sessizce yok sayılmaz.
+    # Yok saymak, kullanıcının kaydettiğini sandığı bir değişikliğin hiç
+    # olmaması demekti; bunu söylemek zorundayız.
+    for alan in ("location", "family", "base_url", "account_path",
+                 "time_path", "restrictions_path", "key_header"):
+        if alan not in istek:
+            continue
+        yeni = str(istek[alan] or "").strip()
+        eski = str(mevcut.get(alan) or "").strip()
+        if alan == "location":
+            yeni = yeni.upper()
+        if yeni and yeni != eski:
+            raise ValueError(
+                f"'{alan}' alanı anahtar yeniden girilmeden değiştirilemez. "
+                "Bu alanlar anahtarınızın nereye gönderileceğini belirler; "
+                "değiştirmek için API anahtarını ve gizli anahtarı yeniden "
+                "girip Kaydet'e basın.")
+
+    guncel = dict(mevcut)
+    for alan in SAFE_PROFILE_FIELDS:
+        if alan in istek:
+            guncel[alan] = istek[alan]
+
+    temiz, hata = validate_profile(guncel)
+    if hata:
+        raise ValueError(hata)
+    # Son izin denetiminin sonucu korunur; bu güncelleme onu doğrulamadı.
+    if mevcut.get("permission_status"):
+        temiz["permission_status"] = mevcut["permission_status"]
+
+    profiller[konum] = temiz
+    _kaydet(profiller)
+    logger.info("Borsa profili guncellendi (anahtara dokunulmadi): %s", konum)
     return temiz
 
 
@@ -586,15 +661,37 @@ def read_exchange(location, profil=None):
                 "Borsa cevap verdi ama spot bakiyeniz boş görünüyor. "
                 "Varlıklarınız vadeli, kaldıraçlı veya Earn hesabında olabilir; "
                 "bu okuma yalnızca spot cüzdanı kapsıyor."))
+        # Okuma başarılı olsa bile süresi yaklaşan anahtar söylenir: uyarının
+        # değeri, anahtar HÂLÂ çalışırken görülmesindedir.
+        sure = key_expiry_state(profil)
+        if sure["state"] == "expiring":
+            notlar.append(_not(NOTE_INFO,
+                f"{profil.get('name', konum)} API anahtarınızın süresi "
+                f"{sure['days_left']} gün sonra doluyor ({sure['expires_at']}). "
+                "Dolduğunda bu okuma sessizce başarısız olmaya başlar; "
+                "borsadan yeni bir salt-okunur anahtar alıp buradan "
+                "güncelleyin."))
         return {**temel, "ok": True, "balances": bakiyeler, "notes": notlar,
                 "incomplete": is_incomplete(notlar),
                 "elapsed_ms": int((time.time() - baslangic) * 1000),
                 "read_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
     except Exception as e:
         logger.warning("Borsa okunamadı (%s): %s", konum, e)
+        # Süresi dolmuş bir anahtarın hatası genellikle anlamsız görünür
+        # ("Api key info invalid"). Sebebi biliyorsak söyleriz; kullanıcı
+        # sebebi ağda, bağlantıda veya kodda aramasın.
+        sure = key_expiry_state(profil)
+        if sure["state"] == "expired":
+            aciklama = (
+                f"{profil.get('name', konum)} okunamadı ve muhtemel sebep belli: "
+                f"API anahtarınızın süresi {sure['expires_at']} tarihinde doldu "
+                f"({abs(sure['days_left'])} gün önce). Borsadan yeni bir "
+                f"salt-okunur anahtar alıp buradan güncelleyin. "
+                f"Borsanın verdiği hata: {e}")
+        else:
+            aciklama = f"{profil.get('name', konum)} okunamadı: {e}"
         return {**temel, "ok": False, "balances": [], "incomplete": True,
-                "notes": [_not(NOTE_ERROR, f"{profil.get('name', konum)} "
-                               f"okunamadı: {e}")]}
+                "notes": [_not(NOTE_ERROR, aciklama)]}
 
 
 def test_profile(profil, api_key, api_secret) -> dict:
@@ -707,6 +804,43 @@ def read_all(only_enabled=True) -> dict:
     return {o["location"]: o for o in sonuc}
 
 
+# Kaç gün kala uyarılır. Bir anahtarı yenilemek borsada birkaç dakikalık iş
+# ama fark edilmesi haftalar alabilir; iki hafta rahat bir pay.
+KEY_EXPIRY_WARN_DAYS = 14
+
+
+def key_expiry_state(profil) -> dict:
+    """
+    Anahtarın ne kadar ömrü kaldığı.
+
+    Bunu API'den öğrenmenin yolu yok — hiçbir borsa anahtarın bitiş tarihini
+    bildirmiyor — bu yüzden tarih kullanıcıdan gelir ve **isteğe bağlıdır**.
+    Girilmediyse `unknown` döner; "sonsuz geçerli" DEĞİL. Bilmediğimiz şeyi
+    bildiğimiz gibi göstermek, bu projede birkaç kez düzelttiğimiz hatanın
+    aynısı olurdu.
+
+    Neden gerekli: MEXC dinamik IP'de anahtara **90 gün** ömür veriyor.
+    Süre dolduğunda anahtar sessizce ölür ve okuma "başarısız" görünür;
+    kullanıcı sebebini bağlantıda, ağda veya kodda arar.
+    """
+    ham = str((profil or {}).get("key_expires_at") or "").strip()
+    if not ham:
+        return {"state": "unknown", "days_left": None, "expires_at": ""}
+    try:
+        biter = datetime.strptime(ham, "%Y-%m-%d").date()
+    except ValueError:
+        return {"state": "unknown", "days_left": None, "expires_at": ham}
+
+    kalan = (biter - datetime.now().date()).days
+    if kalan < 0:
+        durum = "expired"
+    elif kalan <= KEY_EXPIRY_WARN_DAYS:
+        durum = "expiring"
+    else:
+        durum = "ok"
+    return {"state": durum, "days_left": kalan, "expires_at": ham}
+
+
 def status() -> dict:
     """Arayüzün özet ihtiyacı: hangi borsa tanımlı, anahtarı var mı."""
     profiller = list_profiles()
@@ -715,4 +849,9 @@ def status() -> dict:
         "families": signing_families(),
         "builtin": builtin_profiles(),
         "credentials": {k: credentials_stored(k) for k in profiller},
+        # Süre bilgisi yalnızca anahtarı OLAN profiller için anlamlıdır;
+        # anahtarsız bir profilde "süresi doldu" demek kafa karıştırırdı.
+        "key_expiry": {k: key_expiry_state(p) for k, p in profiller.items()
+                       if credentials_stored(k)},
+        "expiry_warn_days": KEY_EXPIRY_WARN_DAYS,
     }

@@ -18,11 +18,35 @@ import re
 
 import pytest
 
-import main
+# DİKKAT: `main` burada MODÜL SEVİYESİNDE import EDİLMEZ.
+#
+# `main.py`'nin gövdesi import anında iş yapar: veri dosyasını hazırlar,
+# bekleyen veri düzeltmelerini çalıştırır ve fiyat motorunun arka plan
+# thread'ini başlatır. Modül seviyesinde import edilirse bunlar **toplama
+# (collection) anında**, yani `izole_veri` fixture'ı devreye girmeden ÖNCE
+# çalışır. Bu üç ayrı ihlale yol açıyordu:
+#
+#   1. Veri düzeltmeleri GERÇEK `data/portfolio.json` üzerinde koşabilirdi.
+#      (Zarar görmedi çünkü iki migration da zaten "yapıldı" işaretliydi —
+#      tasarım değil, şans.)
+#   2. Fiyat thread'i tüm oturum boyunca canlı kalıp 4 saniyede bir AĞA
+#      çıkıyordu; README'nin "testler ağa dokunmaz" sözü bozuluyordu.
+#   3. O thread `price_service.prices`'ı arka planda değiştirdiği için
+#      testler seyrek ve tekrar üretilemez şekilde kırılıyordu.
+#
+# Bu yüzden `main` yalnızca fixture içinden import edilir.
+# `conftest.py::fiyat_ipligi_calismadi` kuralı ayrıca bekçilikle korur.
 
-
-STATIC_DIR = main.static_dir
+STATIC_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "static")
 VENDOR_DIR = os.path.join(STATIC_DIR, "vendor")
+
+
+@pytest.fixture
+def main():
+    """`main` modülü — fixture'lar aktifken, izole veri yollarıyla."""
+    import main as main_modulu
+    return main_modulu
 
 # TradingView bilinçli olarak uzakta bırakıldı — bkz. index.html'deki not.
 IZINLI_UZAK_KAYNAKLAR = ("s3.tradingview.com",)
@@ -85,7 +109,7 @@ def test_fontlar_yerel_dosyalari_gosterir():
 # ÖNBELLEK KIRMA
 # ===========================================================================
 
-def test_icerik_hash_dosyaya_gore_degisir(tmp_path):
+def test_icerik_hash_dosyaya_gore_degisir(main, tmp_path):
     a = tmp_path / "a.js"
     a.write_text("birinci", encoding="utf-8")
     h1 = main._icerik_hash(str(a))
@@ -96,11 +120,11 @@ def test_icerik_hash_dosyaya_gore_degisir(tmp_path):
     assert h1 != h2, "İçerik değişince hash değişmeli"
 
 
-def test_olmayan_dosyanin_hashi_bostur():
+def test_olmayan_dosyanin_hashi_bostur(main):
     assert main._icerik_hash("/olmayan/dosya.js") == ""
 
 
-def test_uretilen_index_surum_etiketi_ekler():
+def test_uretilen_index_surum_etiketi_ekler(main):
     html = main._index_html_uret()
     yerel = re.findall(r'(?:src|href)="(/static/[^"]+)"', html)
     assert yerel, "Yerel referans bulunamadı"
@@ -108,7 +132,7 @@ def test_uretilen_index_surum_etiketi_ekler():
         assert "?v=" in yol, f"{yol} sürüm etiketi taşımıyor"
 
 
-def test_elle_yazilmis_surum_etiketi_degistirilir():
+def test_elle_yazilmis_surum_etiketi_degistirilir(main):
     """
     Regresyon: index.html'de `app.js?v=2.2` gibi elle yazılmış bir sürüm
     varsa, üretilen çıktıda onun yerine içerik hash'i olmalı.
@@ -139,7 +163,7 @@ def test_kok_yol_surum_etiketli_html_doner(client):
     assert "/static/vendor/alpine.min.js?v=" in r.text
 
 
-def test_index_onbellegi_dosya_degisince_yenilenir(monkeypatch):
+def test_index_onbellegi_dosya_degisince_yenilenir(main, monkeypatch):
     """
     Üretilen HTML önbelleğe alınıyor; dosya değiştiğinde damga değişmeli ve
     HTML yeniden üretilmeli. Aksi halde kullanıcı sunucu yeniden başlatılana

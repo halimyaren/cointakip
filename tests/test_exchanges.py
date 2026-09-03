@@ -568,3 +568,239 @@ class TestAnahtarBasligi:
         temiz, hata = ex.validate_profile(dict(MEXC, key_header=""))
         assert hata is None
         assert ex.key_header(temiz) == "X-MEXC-APIKEY"
+
+
+# =====================================================================
+# 9) ANAHTAR ÖMRÜ
+#
+# Hiçbir borsa API'si bir anahtarın bitiş tarihini bildirmiyor, bu yüzden
+# tarih kullanıcıdan gelir ve isteğe bağlıdır. MEXC dinamik IP'de anahtara
+# 90 gün ömür veriyor; süre dolduğunda anahtar SESSİZCE ölür ve okuma
+# "başarısız" görünür. Kullanıcı sebebini bağlantıda, ağda veya kodda arar.
+#
+# En kritik güvence: girilmemiş tarih "sonsuz geçerli" DEĞİL "bilinmiyor"dur.
+# =====================================================================
+class TestAnahtarOmru:
+
+    def _tarih(self, gun_sonra):
+        from datetime import datetime, timedelta
+        return (datetime.now().date() + timedelta(days=gun_sonra)).strftime("%Y-%m-%d")
+
+    def test_tarih_yoksa_bilinmiyor_doner(self):
+        """Boş bırakmak 'sonsuz geçerli' anlamına GELMEZ."""
+        d = ex.key_expiry_state(dict(MEXC))
+        assert d["state"] == "unknown"
+        assert d["days_left"] is None
+
+    def test_uzak_tarih_sorunsuz(self):
+        d = ex.key_expiry_state(dict(MEXC, key_expires_at=self._tarih(89)))
+        assert d["state"] == "ok" and d["days_left"] == 89
+
+    def test_esik_icindeki_tarih_uyarir(self):
+        d = ex.key_expiry_state(dict(MEXC, key_expires_at=self._tarih(10)))
+        assert d["state"] == "expiring" and d["days_left"] == 10
+
+    def test_esigin_tam_ustu_uyarmaz(self):
+        d = ex.key_expiry_state(
+            dict(MEXC, key_expires_at=self._tarih(ex.KEY_EXPIRY_WARN_DAYS + 1)))
+        assert d["state"] == "ok"
+
+    def test_esigin_tam_kendisi_uyarir(self):
+        d = ex.key_expiry_state(
+            dict(MEXC, key_expires_at=self._tarih(ex.KEY_EXPIRY_WARN_DAYS)))
+        assert d["state"] == "expiring"
+
+    def test_bugun_biten_anahtar_henuz_dolmamis(self):
+        d = ex.key_expiry_state(dict(MEXC, key_expires_at=self._tarih(0)))
+        assert d["state"] == "expiring" and d["days_left"] == 0
+
+    def test_gecmis_tarih_dolmus(self):
+        d = ex.key_expiry_state(dict(MEXC, key_expires_at=self._tarih(-3)))
+        assert d["state"] == "expired" and d["days_left"] == -3
+
+    def test_bozuk_tarih_bilinmiyor_sayilir(self):
+        """Bozuk tarihi 'dolmuş' saymak yanlış alarm, 'geçerli' saymak yalan olurdu."""
+        d = ex.key_expiry_state({"key_expires_at": "yarin"})
+        assert d["state"] == "unknown"
+
+    def test_bozuk_tarih_kaydedilemez(self):
+        temiz, hata = ex.validate_profile(dict(MEXC, key_expires_at="31/12/2026"))
+        assert temiz is None and "YYYY-AA-GG" in hata
+
+    def test_gecerli_tarih_profilde_saklanir(self):
+        """`permission_status` bir kez beyaz listede unutulmuştu; tuzak tekrarlanmasın."""
+        temiz, hata = ex.validate_profile(dict(MEXC, key_expires_at="2026-12-31"))
+        assert hata is None and temiz["key_expires_at"] == "2026-12-31"
+
+    def test_bos_tarih_kabul_edilir(self):
+        temiz, hata = ex.validate_profile(dict(MEXC, key_expires_at=""))
+        assert hata is None and temiz["key_expires_at"] == ""
+
+    def test_status_yalnizca_anahtari_olan_profili_bildirir(self):
+        """Anahtarsız profilde 'süresi doldu' demek kafa karıştırırdı."""
+        _kasa_ac()
+        ex.save_profile(dict(MEXC, key_expires_at=self._tarih(-1)))
+        durum = ex.status()
+        assert "MEXC" in durum["profiles"]
+        assert "MEXC" not in durum["key_expiry"]      # anahtar yok
+
+    def test_status_anahtar_varken_sure_bildirir(self, monkeypatch):
+        _kasa_ac()
+        _sahte_http(monkeypatch, {"/api/v3/account": _hesap_cevabi()})
+        monkeypatch.setattr(ex, "server_time_offset", lambda p, yenile=False: 0)
+        ex.save_credentials(dict(MEXC, key_expires_at=self._tarih(5)),
+                            "A", "S", acknowledge_unverified=True)
+        durum = ex.status()
+        assert durum["key_expiry"]["MEXC"]["state"] == "expiring"
+        assert durum["expiry_warn_days"] == ex.KEY_EXPIRY_WARN_DAYS
+
+    def test_okuma_basarili_ama_sure_yaklasiyorsa_soylenir(self, monkeypatch):
+        """Uyarının değeri, anahtar HÂLÂ çalışırken görülmesindedir."""
+        _kasa_ac()
+        _sahte_http(monkeypatch, {"/api/v3/account": _hesap_cevabi()})
+        monkeypatch.setattr(ex, "server_time_offset", lambda p, yenile=False: 0)
+        ex.save_credentials(dict(MEXC, key_expires_at=self._tarih(3)),
+                            "A", "S", acknowledge_unverified=True)
+        okuma = ex.read_exchange("MEXC")
+        assert okuma["ok"] is True
+        assert any("3 gün sonra doluyor" in n["message"] for n in okuma["notes"])
+
+    def test_okuma_hatasinda_dolmus_anahtar_sebep_olarak_soylenir(self, monkeypatch):
+        """
+        Borsanın hatası genellikle anlamsız görünür ("Api key info invalid").
+        Sebebi biliyorsak söyleriz; kullanıcı ağda veya kodda aramasın.
+        """
+        _kasa_ac()
+        _sahte_http(monkeypatch, {"/api/v3/account": _hesap_cevabi()})
+        monkeypatch.setattr(ex, "server_time_offset", lambda p, yenile=False: 0)
+        ex.save_credentials(dict(MEXC), "A", "S", acknowledge_unverified=True)
+        ex.save_profile(dict(MEXC, key_expires_at=self._tarih(-2)))
+
+        _sahte_http(monkeypatch, {"/api/v3/account":
+                                  ex.ExchangeError("Api key info invalid")})
+        okuma = ex.read_exchange("MEXC")
+        assert okuma["ok"] is False
+        metin = " ".join(n["message"] for n in okuma["notes"])
+        assert "süresi" in metin and "doldu" in metin
+        assert "Api key info invalid" in metin      # ham hata da kaybolmuyor
+
+    def test_suresi_bilinmeyen_anahtarin_hatasi_uydurulmaz(self, monkeypatch):
+        _kasa_ac()
+        _sahte_http(monkeypatch, {"/api/v3/account": _hesap_cevabi()})
+        monkeypatch.setattr(ex, "server_time_offset", lambda p, yenile=False: 0)
+        ex.save_credentials(dict(MEXC), "A", "S", acknowledge_unverified=True)
+
+        _sahte_http(monkeypatch, {"/api/v3/account": ex.ExchangeError("ag hatasi")})
+        okuma = ex.read_exchange("MEXC")
+        metin = " ".join(n["message"] for n in okuma["notes"])
+        assert "süresi" not in metin
+
+
+# =====================================================================
+# 10) ANAHTARA DOKUNMADAN PROFİL GÜNCELLEME
+#
+# Gizli anahtar borsada yalnızca oluşturulurken BİR KEZ gösterilir. Sadece
+# bitiş tarihi girmek için anahtarın tamamını yeniden istemek, elinde secret
+# olmayan kullanıcıyı yepyeni bir API anahtarı almaya zorlardı.
+#
+# Ama kolaylık güvenliği yemez: `base_url`, `account_path`, `key_header` ve
+# `family` anahtarın NEREYE ve NASIL gönderileceğini belirler. Bunlar anahtar
+# yeniden denetlenmeden değiştirilebilseydi, kasadaki anahtar bir sonraki
+# okumada başka bir sunucuya gönderilebilirdi.
+# =====================================================================
+class TestAyarlariAnahtarsizGuncelleme:
+
+    @pytest.fixture
+    def kayitli(self, monkeypatch):
+        _kasa_ac()
+        _sahte_http(monkeypatch, {"/api/v3/account": _hesap_cevabi()})
+        monkeypatch.setattr(ex, "server_time_offset", lambda p, yenile=False: 0)
+        ex.save_credentials(dict(MEXC), "A", "S", acknowledge_unverified=True)
+        return "MEXC"
+
+    def test_bitis_tarihi_anahtarsiz_yazilir(self, kayitli):
+        p = ex.update_profile_fields("MEXC", {"key_expires_at": "2026-12-01"})
+        assert p["key_expires_at"] == "2026-12-01"
+
+    def test_anahtar_kasada_kalir(self, kayitli):
+        ex.update_profile_fields("MEXC", {"key_expires_at": "2026-12-01"})
+        assert ex.credentials_stored("MEXC") is True
+        assert ex._kasadan("MEXC") == ("A", "S")
+
+    def test_izin_durumu_korunur(self, kayitli):
+        """Bu güncelleme izin denetimi yapmadı; sonucu da uydurmamalı."""
+        ex.update_profile_fields("MEXC", {"key_expires_at": "2026-12-01"})
+        assert ex.list_profiles()["MEXC"]["permission_status"] == ex.PERM_UNKNOWN
+
+    def test_ad_ve_etiket_guncellenebilir(self, kayitli):
+        p = ex.update_profile_fields("MEXC", {"name": "MEXC Ana", "label": "ana hesap"})
+        assert p["name"] == "MEXC Ana" and p["label"] == "ana hesap"
+
+    def test_taban_adres_degistirilemez(self, kayitli):
+        """En kritik güvence: anahtar başka bir sunucuya yönlendirilemez."""
+        with pytest.raises(ValueError, match="base_url"):
+            ex.update_profile_fields("MEXC", {"base_url": "https://kotu.example.com"})
+
+    def test_hesap_ucu_degistirilemez(self, kayitli):
+        with pytest.raises(ValueError, match="account_path"):
+            ex.update_profile_fields("MEXC", {"account_path": "/baska/uc"})
+
+    def test_anahtar_basligi_degistirilemez(self, kayitli):
+        with pytest.raises(ValueError, match="key_header"):
+            ex.update_profile_fields("MEXC", {"key_header": "X-BASKA"})
+
+    def test_imzalama_ailesi_degistirilemez(self, kayitli):
+        with pytest.raises(ValueError, match="family"):
+            ex.update_profile_fields("MEXC", {"family": "baska_aile"})
+
+    def test_ayni_degeri_gondermek_engel_degil(self, kayitli):
+        """Arayüz formun tamamını yolluyor; değişmemiş alan hata sayılmamalı."""
+        p = ex.update_profile_fields("MEXC", dict(MEXC, key_expires_at="2026-12-01"))
+        assert p["key_expires_at"] == "2026-12-01"
+
+    def test_olmayan_profil_reddedilir(self):
+        with pytest.raises(ValueError, match="tanımlı bir borsa profili yok"):
+            ex.update_profile_fields("YOKBORSA", {"label": "x"})
+
+    def test_bozuk_tarih_yine_reddedilir(self, kayitli):
+        with pytest.raises(ValueError, match="YYYY-AA-GG"):
+            ex.update_profile_fields("MEXC", {"key_expires_at": "01.12.2026"})
+
+    def test_kasa_kilitliyken_de_calisir(self, kayitli):
+        """Burada hiçbir sır okunmuyor; kasayı açtırmak gereksiz sürtünme olurdu."""
+        kv.lock()
+        p = ex.update_profile_fields("MEXC", {"key_expires_at": "2026-12-01"})
+        assert p["key_expires_at"] == "2026-12-01"
+
+
+class TestAyarGuncellemeUcu:
+
+    @pytest.fixture
+    def client(self):
+        from fastapi.testclient import TestClient
+        import main
+        return TestClient(main.app)
+
+    def test_patch_ucu_tarihi_yazar(self, client, monkeypatch):
+        _kasa_ac()
+        _sahte_http(monkeypatch, {"/api/v3/account": _hesap_cevabi()})
+        monkeypatch.setattr(ex, "server_time_offset", lambda p, yenile=False: 0)
+        ex.save_credentials(dict(MEXC), "A", "S", acknowledge_unverified=True)
+
+        r = client.patch("/api/exchanges/MEXC", json={"key_expires_at": "2026-12-01"})
+        assert r.status_code == 200
+        assert r.json()["profile"]["key_expires_at"] == "2026-12-01"
+        assert r.json()["credentials"]["MEXC"] is True
+
+    def test_patch_taban_adresi_reddeder(self, client, monkeypatch):
+        _kasa_ac()
+        _sahte_http(monkeypatch, {"/api/v3/account": _hesap_cevabi()})
+        monkeypatch.setattr(ex, "server_time_offset", lambda p, yenile=False: 0)
+        ex.save_credentials(dict(MEXC), "A", "S", acknowledge_unverified=True)
+
+        r = client.patch("/api/exchanges/MEXC",
+                         json={"base_url": "https://kotu.example.com"})
+        assert r.status_code == 400
+
+    def test_patch_olmayan_profilde_400(self, client):
+        assert client.patch("/api/exchanges/YOK", json={"label": "x"}).status_code == 400

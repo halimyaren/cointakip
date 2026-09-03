@@ -2275,6 +2275,33 @@
           </div>
 
           <div class="p-4 space-y-3">
+            <!-- Süresi dolan anahtar uyarısı. En üstte, çünkü kullanıcı bu
+                 panele başka bir iş için geldiğinde bile görmeli. -->
+            <template x-for="k in exExpiringKeys" :key="k.konum">
+              <div class="px-3 py-2.5 rounded-lg border text-[11.5px] leading-relaxed font-sans"
+                   :class="k.state === 'expired'
+                           ? 'bg-rose-950/40 border-rose-600/40 text-rose-200/90'
+                           : 'bg-amber-950/40 border-amber-600/40 text-amber-200/90'">
+                <template x-if="k.state === 'expired'">
+                  <span>
+                    ⛔ <b x-text="k.konum"></b> API anahtarınızın süresi
+                    <b x-text="k.expires_at"></b> tarihinde <b>doldu</b>. Bu borsadan
+                    bakiye okuma artık çalışmayacak ve borsanın döndürdüğü hata
+                    ("Api key info invalid" gibi) sebebi anlatmayacak. Borsadan yeni bir
+                    <b>salt-okunur</b> anahtar alıp aşağıdan güncelleyin.
+                  </span>
+                </template>
+                <template x-if="k.state === 'expiring'">
+                  <span>
+                    ⏳ <b x-text="k.konum"></b> API anahtarınızın süresi
+                    <b x-text="k.days_left + ' gün'"></b> sonra doluyor
+                    (<span x-text="k.expires_at"></span>). Şimdi yenilemek beş dakikalık
+                    iş; dolduktan sonra fark etmek haftalar alabilir.
+                  </span>
+                </template>
+              </div>
+            </template>
+
             <!-- Hazır profiller: kullanıcının her alanı elle doldurmasına
                  gerek yok, ama profil koda gömülü değil VERİDİR. -->
             <div class="flex flex-wrap items-center gap-2">
@@ -2324,6 +2351,33 @@
                 <input x-model="exSecretInput" type="password" autocomplete="off"
                        placeholder="yalnızca oluştururken bir kez gösterilir"
                        class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono-nums">
+              </div>
+            </div>
+
+            <!-- Anahtarın ömrü. Hiçbir borsa bunu API'den bildirmiyor, bu
+                 yüzden kullanıcıdan gelir ve isteğe bağlıdır. -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="text-[10px] uppercase text-slate-500 font-sans">Anahtar bitiş tarihi (isteğe bağlı)</label>
+                <div class="flex items-center gap-2 mt-1">
+                  <input x-model="exForm.key_expires_at" type="date"
+                         class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono-nums">
+                  <button @click="setKeyExpiryInDays(90)" type="button"
+                          class="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] font-bold transition font-sans whitespace-nowrap">
+                    +90 gün
+                  </button>
+                  <button x-show="exForm.key_expires_at" @click="exForm.key_expires_at = ''" type="button"
+                          class="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-500 text-[10.5px] font-bold transition font-sans">
+                    Temizle
+                  </button>
+                </div>
+                <p class="text-[10px] text-slate-600 font-sans mt-1">
+                  <b class="text-slate-500">MEXC, dinamik IP'de anahtara 90 gün ömür verir.</b>
+                  Süre dolduğunda anahtar sessizce ölür ve okuma "başarısız" görünür —
+                  sebebini bağlantıda veya ağda ararsınız. Tarihi girerseniz
+                  <b class="text-slate-500">dolmadan 14 gün önce</b> uyarılırsınız.
+                  Boş bırakmak "sonsuz geçerli" demek değil, "bilinmiyor" demektir.
+                </p>
               </div>
             </div>
 
@@ -2414,10 +2468,28 @@
                       class="px-3.5 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white text-[11px] font-bold transition">
                 Kaydet
               </button>
-              <span x-show="!vaultStatus.unlocked" class="text-[11px] text-amber-400 font-sans">
+              <!-- Anahtara dokunmadan kaydetme. Gizli anahtar borsada yalnızca
+                   bir kez gösterildiği için, sadece bitiş tarihi girmek uğruna
+                   anahtarın tamamını istemek kullanıcıyı yeni bir API anahtarı
+                   almaya zorlardı. Kasa da gerekmez: burada sır okunmaz. -->
+              <button x-show="exCanSaveSettingsOnly" @click="saveExchangeSettings()"
+                      :disabled="exBusy"
+                      class="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 text-[11px] font-bold transition border border-slate-600">
+                Yalnızca ayarları kaydet
+              </button>
+              <span x-show="!vaultStatus.unlocked && !exCanSaveSettingsOnly"
+                    class="text-[11px] text-amber-400 font-sans">
                 Kasa kilitli — anahtar yazılamaz.
               </span>
             </div>
+            <p x-show="exCanSaveSettingsOnly" class="text-[10.5px] text-slate-500 font-sans leading-relaxed">
+              <b class="text-slate-400" x-text="exEditing"></b> anahtarı kasada duruyor.
+              <b class="text-slate-400">Yalnızca ayarları kaydet</b> ad, etiket ve
+              <b class="text-slate-400">anahtar bitiş tarihini</b> günceller; anahtarınıza
+              dokunmaz ve kasanın açık olmasını gerektirmez. Taban adres, uç noktalar veya
+              anahtar başlığı değişecekse anahtarı yeniden girmeniz gerekir — o alanlar
+              anahtarınızın <b class="text-slate-400">nereye gönderileceğini</b> belirler.
+            </p>
           </div>
 
           <!-- Kayıtlı borsa profilleri -->
@@ -2435,6 +2507,20 @@
                         title="Bu borsanın API'si anahtar yetkilerini bildirmiyor; salt okunur olduğunu siz doğruladınız.">
                     izin doğrulanamadı
                   </span>
+                  <!-- Anahtar ömrü. "Bilinmiyor" için rozet YOK: her profile
+                       gri bir rozet asmak gürültü olurdu ve tarih girmek
+                       zorunlu değil. -->
+                  <template x-if="exKeyExpiry[p.konum] && exKeyExpiry[p.konum].state === 'expired'">
+                    <span class="text-[10px] font-bold font-sans ml-1.5 px-1.5 py-0.5 rounded bg-rose-900/50 text-rose-300"
+                          :title="'Anahtarın süresi ' + exKeyExpiry[p.konum].expires_at + ' tarihinde doldu.'">
+                      anahtarın süresi doldu
+                    </span>
+                  </template>
+                  <template x-if="exKeyExpiry[p.konum] && exKeyExpiry[p.konum].state === 'expiring'">
+                    <span class="text-[10px] font-bold font-sans ml-1.5 px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300"
+                          :title="'Bitiş: ' + exKeyExpiry[p.konum].expires_at"
+                          x-text="exKeyExpiry[p.konum].days_left + ' gün sonra doluyor'"></span>
+                  </template>
                   <div class="text-[10.5px] text-slate-600 font-mono-nums truncate" x-text="p.spec.base_url"></div>
                 </div>
                 <div class="flex items-center gap-2">

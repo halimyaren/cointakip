@@ -425,6 +425,25 @@ def api_exchange_save(payload: dict = Body(...)):
     return {"success": True, **sonuc, **exchanges.status()}
 
 
+@app.patch("/api/exchanges/{location}")
+def api_exchange_update(location: str, payload: dict = Body(...)):
+    """
+    Profilin **anahtara dokunmayan** alanlarını günceller (ad, etiket,
+    anahtar bitiş tarihi).
+
+    Ayrı bir uç olmasının sebebi: gizli anahtar borsada yalnızca bir kez
+    gösterilir. Sadece bitiş tarihi girmek için anahtarın tamamını yeniden
+    istemek, elinde secret olmayan kullanıcıyı yeni bir anahtar almaya
+    zorlardı. Anahtarın nereye gönderileceğini belirleyen alanlar bu uçtan
+    DEĞİŞTİRİLEMEZ; onlar için tam kayıt ve izin denetimi gerekir.
+    """
+    try:
+        profil = exchanges.update_profile_fields(location, payload or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "profile": profil, **exchanges.status()}
+
+
 @app.delete("/api/exchanges/{location}")
 def api_exchange_delete(location: str):
     """Profili siler ve kasadaki anahtarlarını unutur."""

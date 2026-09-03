@@ -270,9 +270,12 @@ function portfolioApp() {
     exFamilies: [],
     exBuiltin: [],
     exCredentials: {},
+    exKeyExpiry: {},
+    exEditing: null,          // duzenlenen profilin konumu (yeni kayitta null)
+    exExpiryWarnDays: 14,
     exForm: { location: '', name: '', family: 'binance', base_url: '',
               account_path: '', time_path: '', restrictions_path: '',
-              key_header: '', balances_field: 'balances', asset_field: 'asset',
+              key_header: '', key_expires_at: '', balances_field: 'balances', asset_field: 'asset',
               free_field: 'free', locked_field: 'locked', label: '' },
     exKeyInput: '',
     exSecretInput: '',
@@ -1118,6 +1121,29 @@ function portfolioApp() {
       this.exFamilies = body.families || [];
       this.exBuiltin = body.builtin || [];
       this.exCredentials = body.credentials || {};
+      this.exKeyExpiry = body.key_expiry || {};
+      this.exExpiryWarnDays = body.expiry_warn_days || 14;
+    },
+
+    // Süresi dolmuş veya dolmak üzere olan anahtarlar. Bağlantı paneli
+    // açılmasa bile görülebilsin diye ayrı bir liste.
+    get exExpiringKeys() {
+      return Object.entries(this.exKeyExpiry)
+        .filter(([, d]) => d && (d.state === 'expired' || d.state === 'expiring'))
+        .map(([konum, d]) => ({ konum, ...d }))
+        .sort((a, b) => (a.days_left ?? 0) - (b.days_left ?? 0));
+    },
+
+    // "+90 gün" düğmesi. Borsanın verdiği süreyi elle hesaplatmak, kullanıcıyı
+    // takvim açmaya zorlamak demekti.
+    setKeyExpiryInDays(gun) {
+      const d = new Date();
+      d.setDate(d.getDate() + gun);
+      // YYYY-AA-GG, yerel saate göre — toISOString() UTC'ye kaydırıp
+      // tarihi bir gün geriye alabiliyor.
+      const ay = String(d.getMonth() + 1).padStart(2, '0');
+      const gunAd = String(d.getDate()).padStart(2, '0');
+      this.exForm.key_expires_at = `${d.getFullYear()}-${ay}-${gunAd}`;
     },
 
     get exProfileList() {
@@ -1139,12 +1165,13 @@ function portfolioApp() {
     resetExchangeForm() {
       this.exForm = { location: '', name: '', family: 'binance', base_url: '',
                       account_path: '', time_path: '', restrictions_path: '',
-                      key_header: '', balances_field: 'balances', asset_field: 'asset',
+                      key_header: '', key_expires_at: '', balances_field: 'balances', asset_field: 'asset',
                       free_field: 'free', locked_field: 'locked', label: '' };
       this.exKeyInput = '';
       this.exSecretInput = '';
       this.exTestResult = null;
       this.exAcknowledge = false;
+      this.exEditing = null;
     },
 
     editExchange(konum) {
@@ -1157,6 +1184,41 @@ function portfolioApp() {
       this.exSecretInput = '';
       this.exTestResult = null;
       this.exAcknowledge = false;
+      this.exEditing = konum;
+    },
+
+    // Var olan bir profili düzenliyoruz ve anahtarı zaten kasada mı?
+    // Öyleyse ad/etiket/bitiş tarihi için anahtarı yeniden istemeye gerek yok.
+    get exCanSaveSettingsOnly() {
+      return !!this.exEditing && !!this.exCredentials[this.exEditing];
+    },
+
+    // Anahtara DOKUNMADAN profili günceller.
+    //
+    // Buna neden ayrı bir yol gerekiyor: gizli anahtar (secret) borsada
+    // yalnızca oluşturulurken bir kez gösterilir. Sadece bitiş tarihi girmek
+    // için anahtarın tamamını yeniden istemek, elinde secret olmayan
+    // kullanıcıyı yepyeni bir API anahtarı almaya zorlardı.
+    async saveExchangeSettings() {
+      if (this.exBusy || !this.exEditing) return;
+      this.exBusy = true;
+      try {
+        const resp = await fetch(`/api/exchanges/${encodeURIComponent(this.exEditing)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.exForm)
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Ayarlar kaydedilemedi.');
+        this.applyExchangeStatus(body);
+        const konum = this.exEditing;
+        this.resetExchangeForm();
+        this.notify(`${konum} ayarları güncellendi. Anahtarınıza dokunulmadı.`,
+                    'success', 5000);
+      } catch (e) {
+        this.notify(e.message || 'Ayarlar kaydedilemedi.', 'error', 12000);
+      } finally {
+        this.exBusy = false;
+      }
     },
 
     get exPermissionUnverifiable() {
