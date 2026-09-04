@@ -3,11 +3,69 @@ import json
 import urllib.request
 import urllib.parse
 from datetime import datetime
-from data_manager import load_settings, load_portfolio, calculate_portfolio_metrics
+from data_manager import (
+    load_settings, load_portfolio, calculate_portfolio_metrics,
+    calculate_realized_metrics,
+)
 from price_service import price_service
 from log_config import get_logger
 
+import archive
+
 logger = get_logger("ai_service")
+
+
+# ===========================================================================
+# MODELE VERİLEN ÇERÇEVE
+#
+# Gerçek bir kullanım hatasından doğdu. Kullanıcı üst üste günlerde analiz
+# istedi ve model her seferinde aynı şeyi söyledi: "BTC bakiyenin %25'ini
+# sat (~55 USDT)". Oysa kullanıcı 24 Ağustos'ta bunu ZATEN yapmıştı ve
+# deftere notunu bile düşmüştü: "Gerçekleşen Kısmi Satış @$79000 YZ Önerisi".
+#
+# İki ayrı eksik vardı:
+#
+# 1. GEÇMİŞ YOK. `get_portfolio_context` yalnızca AÇIK pozisyonları ve
+#    KPI'ları yolluyordu. Kapanmış satışlar, gerçekleşmiş K/Z ve modelin
+#    kendi önceki raporu hiç gitmiyordu. Model ne dediğini de, kullanıcının
+#    ne yaptığını da bilemiyordu.
+#
+# 2. ÇERÇEVE YOK. `take_profit` talimatı "serbest nakit kasasını büyüt"
+#    diyordu ama "yeterli" diye bir kavram vermiyordu. Kullanıcının nakdi
+#    zaten kasasının ~%49'uydu. Böyle bir talimat alan model her seferinde
+#    satacak bir şey bulur — işi bu. Ayrıca asgari pozisyon büyüklüğü
+#    eşiği olmadığı için $220'lık bir pozisyonun %25'ini satmayı, yani
+#    ~$55 için işlem yapmayı öneriyordu.
+#
+# ÖNEMLİ AYRIM: amaç modeli "tutarlı" olmaya zorlamak DEĞİL. Koşullar
+# değişmediyse aynı tavsiyeyi tekrar vermesi doğrudur; kendini tekrar
+# etmemek için tavsiye değiştiren bir model, taze görünmek adına yeni işlem
+# sebepleri uydurur ve bu daha kötüdür. Amaç tekrarı GÖRÜNÜR kılmak.
+# ===========================================================================
+
+# İki ayrı eşik, çünkü iki ayrı soru var.
+#
+# MIN_POZISYON_DEGERI_USD — pozisyonun kendisi bu kadar küçükse onunla
+#   uğraşmaya değmez; kısmi işlem değil, "kapat ya da dokunma" denir.
+#
+# MIN_ISLEM_TUTARI_USD — asıl mesele bu. Şikâyete konu olan vakada pozisyon
+#   ~$220'dı, yani "küçük pozisyon" eşiğini rahatça geçiyordu; ama modelin
+#   önerdiği %25'lik satış ~$55 ediyordu. Sorun pozisyonun büyüklüğü değil,
+#   ÖNERİLEN İŞLEMİN büyüklüğüydü. Sadece pozisyona bakan bir eşik bu vakayı
+#   kaçırıyor — ilk denemede tam olarak bu oldu.
+#
+# İkisi de kullanıcının kasa ölçeğine (~$2.5K) göre seçildi; dogma değil.
+MIN_POZISYON_DEGERI_USD = 150.0
+MIN_ISLEM_TUTARI_USD = 75.0
+
+# Kısmi satış önerileri tipik olarak bu oranda yapılıyor; "önerilen işlem ne
+# kadar eder" sorusunu somutlaştırmak için kullanılıyor.
+TIPIK_KISMI_SATIS_ORANI = 0.25
+
+# Modele geri verilecek kapanmış işlem sayısı. Tam liste istem boyutunu
+# şişirir; kullanıcı ücretsiz Gemini katmanında.
+GECMIS_ISLEM_SINIRI = 12
+
 
 class AIFinancialAdvisor:
     def __init__(self):
@@ -17,7 +75,7 @@ class AIFinancialAdvisor:
         data = load_portfolio()
         prices = price_service.get_prices()
         metrics = calculate_portfolio_metrics(data, prices)
-        
+
         coins_summary = []
         for c in metrics.get("consolidated_coins", []):
             # NET BAŞA BAŞ — modele MUTLAKA verilmeli. Aksi halde elindeki tek
@@ -58,7 +116,19 @@ class AIFinancialAdvisor:
                 "breakeven_req_rise_pct": round(c.get("breakeven_req_rise_pct", 0), 2),
                 "profit_margin_pct": round(c.get("profit_margin_pct", 0), 2),
                 "portfolio_share_pct": round(c.get("portfolio_share_pct", 0), 2),
-                "is_dead": c.get("is_dead", False),
+                # `is_dead` KALDIRILDI: data_manager bu alanı hiç üretmiyordu,
+                # yani modele her zaman False gidiyordu. Ölü alan, dolu alan
+                # gibi okunuyor. Yerine ölçütün kendisi aşağıda.
+                "deeply_underwater": round(c.get("pnl_pct", 0), 2) <= -50.0,
+                # Pozisyonun kendisi uğraşmaya değer mi?
+                "too_small_to_trade": round(c.get("current_value", 0), 2) < MIN_POZISYON_DEGERI_USD,
+                # ASIL ÖLÇÜT: önerilecek kısmi satış kaç dolar eder? Model
+                # $220'lık pozisyonun %25'ini satmayı öneriyordu — ~$55. Pozisyon
+                # eşiğini geçiyordu ama işlem tutarı anlamsızdı.
+                "value_of_25pct_usd": round(c.get("current_value", 0) * TIPIK_KISMI_SATIS_ORANI, 2),
+                "partial_sale_not_worth_it": (
+                    round(c.get("current_value", 0) * TIPIK_KISMI_SATIS_ORANI, 2)
+                    < MIN_ISLEM_TUTARI_USD),
                 "target": c.get("target")
             })
 
@@ -80,7 +150,99 @@ class AIFinancialAdvisor:
             "coins": coins_summary,
             "analysis_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
+
+        # --- Nakit oranı: "daha çok nakit yap" tavsiyesinin çerçevesi ---
+        # Bu sayı olmadan model her seferinde satacak bir şey buluyordu.
+        toplam = context["total_equity"] or 0.0
+        nakit = context["total_usdt_cash"] or 0.0
+        context["cash_ratio_pct"] = round((nakit / toplam * 100.0), 1) if toplam > 0 else 0.0
+
+        # --- Geçmiş: model ne dediğini ve kullanıcının ne yaptığını bilmeli ---
+        context["realized_history"] = self._gerceklesmis_ozet(data)
+        context["previous_analysis"] = self._onceki_analiz_ozeti(mode=None)
         return context
+
+    # -------------------------------------------------------------------
+    def _gerceklesmis_ozet(self, data):
+        """Kapanmış işlemlerin modele gidecek özeti.
+
+        `notes` alanı BİLEREK dahil: kullanıcı YZ önerisiyle yaptığı satışa
+        deftere "YZ Önerisi" diye not düşüyor. Model kendi tavsiyesinin
+        uygulandığını ancak buradan görebiliyor.
+        """
+        try:
+            rm = calculate_realized_metrics(data) or {}
+        except Exception as e:
+            logger.debug("Gerçekleşmiş özet üretilemedi: %s", e)
+            return {}
+
+        islemler = []
+        for t in (rm.get("closed_transactions") or [])[:GECMIS_ISLEM_SINIRI]:
+            islemler.append({
+                "coin": t.get("coin"),
+                "exit_date": t.get("exit_date"),
+                "qty": t.get("qty"),
+                "exit_price": t.get("exit_price"),
+                "realized_pnl_usd": t.get("realized_pnl_usd"),
+                "notes": (t.get("notes") or "")[:120],
+            })
+
+        return {
+            "total_realized_pnl_usd": rm.get("total_realized_pnl_usd"),
+            "closed_tx_count": rm.get("closed_tx_count"),
+            "win_rate_pct": rm.get("win_rate_pct"),
+            "recent_closed_trades": islemler,
+            "note": ("Bunlar KAPANMIS islemler. Kullanicinin gecmiste ne yaptigini "
+                     "gosterir. 'notes' alaninda 'YZ Onerisi' yazan bir satis, "
+                     "kullanicinin daha onceki bir YZ tavsiyesini UYGULADIGI "
+                     "anlamina gelir."),
+        }
+
+    def _onceki_analiz_ozeti(self, mode=None):
+        """En son üretilen raporun özeti ve o günden bu yana neyin değiştiği."""
+        try:
+            son = archive.last_ai_report(mode)
+        except Exception as e:
+            logger.debug("Önceki analiz okunamadı: %s", e)
+            return None
+        if not son:
+            return None
+
+        metin = (son.get("report_markdown") or "")
+        kisa = metin[:archive.ONCEKI_RAPOR_KARAKTER_SINIRI]
+        if len(metin) > len(kisa):
+            kisa += "\n…(kisaltildi)"
+
+        return {
+            "created_at": son.get("created_at"),
+            "mode": son.get("mode"),
+            "portfolio_digest": son.get("portfolio_digest") or {},
+            "report_excerpt": kisa,
+            "note": ("Bu, EN SON verdigin rapordur. Ayni tavsiyeyi tekrar vermen "
+                     "kosullar degismediyse DOGRUDUR — ama bunu acikca soyle. "
+                     "Kullanicinin uygulayip uygulamadigini 'realized_history' ile "
+                     "karsilastirarak anla."),
+        }
+
+    def _kasa_ozeti(self, context):
+        """Rapora iliştirilen küçük kasa fotoğrafı.
+
+        Bir sonraki analizde "geçen sefer şu haldeydi, şimdi bu halde"
+        karşılaştırması buradan yapılıyor; ham geçmişi modele yollamaya gerek
+        kalmıyor.
+        """
+        return {
+            "total_equity": context.get("total_equity"),
+            "cash": context.get("total_usdt_cash"),
+            "cash_ratio_pct": context.get("cash_ratio_pct"),
+            "spot_value": context.get("total_spot_current_value"),
+            "net_pnl_usd": context.get("total_net_pnl_usd"),
+            "positions": {
+                c["symbol"]: {"qty_value_usd": c["current_value"],
+                              "pnl_usd": c["pnl_usd"]}
+                for c in (context.get("coins") or [])
+            },
+        }
 
     def analyze(self, mode: str = "full_audit", custom_question: str = ""):
         context = self.get_portfolio_context()
@@ -91,14 +253,12 @@ class AIFinancialAdvisor:
             try:
                 llm_response, model_display = self._call_gemini_api(api_key, mode, context, custom_question)
                 if llm_response:
-                    return {
-                        "success": True,
-                        "source": "GEMINI_AI",
-                        "model_name": model_display or "Google Gemini AI",
-                        "mode": mode,
-                        "report_markdown": llm_response,
-                        "generated_at": datetime.now().strftime("%H:%M:%S")
-                    }
+                    return self._sonuc(
+                        context, mode, custom_question,
+                        source="GEMINI_AI",
+                        model_name=model_display or "Google Gemini AI",
+                        report_markdown=llm_response,
+                    )
             except Exception as e:
                 logger.warning("Gemini çağrısı başarısız, yerel kural motoruna düşülüyor: %s", e)
 
@@ -108,20 +268,50 @@ class AIFinancialAdvisor:
         else:
             logger.info("Gemini modellerinin hiçbiri yanıt vermedi — yerel kural motoruna düşülüyor (mod: %s).", mode)
         local_report = self._generate_local_report(mode, context, custom_question)
+        return self._sonuc(
+            context, mode, custom_question,
+            source="LOCAL_EXPERT_ENGINE",
+            model_name="Yerel Finansal Motor",
+            report_markdown=local_report,
+        )
+
+    def _sonuc(self, context, mode, custom_question, source, model_name, report_markdown):
+        """Raporu arşive yazar ve yanıtı kurar.
+
+        Arşive yazma BAŞARISIZ OLSA BİLE rapor kullanıcıya döner — arşiv
+        konfor katmanıdır, kritik yol değildir (bkz. archive.py tasarım
+        kuralı 1).
+        """
+        rapor_id = archive.save_ai_report(
+            mode=mode,
+            report_markdown=report_markdown,
+            source=source,
+            model_name=model_name,
+            custom_question=custom_question,
+            portfolio_digest=self._kasa_ozeti(context),
+        )
+        onceki = context.get("previous_analysis") or {}
         return {
             "success": True,
-            "source": "LOCAL_EXPERT_ENGINE",
-            "model_name": "Yerel Finansal Motor",
+            "source": source,
+            "model_name": model_name,
             "mode": mode,
-            "report_markdown": local_report,
-            "generated_at": datetime.now().strftime("%H:%M:%S")
+            "report_markdown": report_markdown,
+            "generated_at": datetime.now().strftime("%H:%M:%S"),
+            "report_id": rapor_id,
+            "archived": rapor_id is not None,
+            # Arayüz "bu analiz öncekini biliyordu" diyebilsin.
+            "previous_report_at": onceki.get("created_at"),
         }
 
     def _call_gemini_api(self, api_key: str, mode: str, context: dict, custom_question: str):
         mode_instructions = {
             "recovery": """Sen kıdemli bir Kripto Risk ve Portföy Kurtarma Stratejistisin. GÖREV: Kullanıcının zarardaki pozisyonlarını (pnl_usd < 0) detaylı incele. Hangi varlıkların toparlanma potansiyeli yüksek, hangilerinin riskli olduğunu belirle ve serbest nakitle DCA planı çıkar. Türkçe Markdown ile yaz.""",
             "brutal": """Sen tavizsiz ve acı gerçekleri söyleyen bir Kripto Başuzmanısın. GÖREV: Kullanıcının sepetindeki %50+ zararda olan veya likiditesi bitmiş varlıkları tespit et. Kalan son bakiyeyi kurtarıp BTC/SOL/XAUT gibi sağlam varlıklara aktarmanın avantajını anlat ve net stop-loss / kol kesme tavsiyeleri ver. Türkçe Markdown ile yaz.""",
-            "take_profit": """Sen bir Kripto Kâr Realizasyonu Danışmanısın. GÖREV: Kârdaki pozisyonları incele, kısmi kâr alma (%25-%50 anapara çekme) ve serbest nakit kasasını büyütme planı çıkar. Türkçe Markdown ile yaz.""",
+            # "serbest nakit kasasını büyüt" talimatı tek başına tehlikeliydi:
+            # "yeterli" kavramı olmadığı için model her seferinde satacak bir
+            # şey buluyordu. Kullanıcının nakdi zaten kasasının ~%49'uydu.
+            "take_profit": """Sen bir Kripto Kâr Realizasyonu Danışmanısın. GÖREV: Kârdaki pozisyonları incele ve kısmi kâr alma planı çıkar. ÖNEMLİ: Önce `cash_ratio_pct` değerine bak. Nakit oranı zaten %30'un üzerindeyse daha fazla nakde geçmeyi VARSAYILAN olarak önerme; bunun yerine mevcut nakdin nasıl değerlendirileceğini tartış ve satış önereceksen bunun nakit oranına rağmen neden gerekli olduğunu ayrıca gerekçelendir. Türkçe Markdown ile yaz.""",
             "full_audit": """Sen bir Kurumsal Kripto Portföy Yöneticisisin. GÖREV: Tüm portföyü, borsa nakitlerini ve risk oranlarını 360 derece denetle. En acil yapılması gereken 3 somut eylem maddesi çıkar. Türkçe Markdown ile yaz."""
         }
 
@@ -129,8 +319,48 @@ class AIFinancialAdvisor:
         if custom_question:
             system_instruction += f"\n\nKULLANICININ ÖZEL SORUSU/TALEBİ:\n{custom_question}"
 
-        prompt = f"""{system_instruction}
+        # Her modda geçerli çerçeve. Bunlar olmadan model sürekli aynı işlemi
+        # öneriyor, kullanıcının o işlemi zaten yaptığını göremiyor ve
+        # uğraşmaya değmeyecek büyüklükte pozisyonlarda işlem tarif ediyordu.
+        cerceve = f"""
+HER MODDA GEÇERLİ KURALLAR:
 
+1. SÜREKLİLİK. `previous_analysis` alanı en son verdiğin raporu içerir.
+   Aynı tavsiyeyi tekrar vermen, koşullar değişmediyse DOĞRUDUR — kendini
+   tekrar etmemek için tavsiye DEĞİŞTİRME. Ama tekrar ediyorsan bunu AÇIKÇA
+   söyle ve şu ikisinden birini yap:
+     • Kullanıcı önceki tavsiyeni uygulamamışsa: "Bu, {{tarih}} tarihli
+       önerimin aynısı, uygulanmamış" de ve tezin hâlâ geçerli olup
+       olmadığını yeniden tartış.
+     • Uygulamışsa: bunu teyit et ve bir SONRAKİ adımı anlat, aynı adımı
+       tekrar isteme.
+
+2. KULLANICININ NE YAPTIĞINI OKU. `realized_history.recent_closed_trades`
+   kapanmış satışları verir. `notes` alanında "YZ Önerisi" geçen bir satış,
+   kullanıcının daha önceki bir yapay zekâ tavsiyesini UYGULADIĞI anlamına
+   gelir. Bunu görmeden "şunu sat" deme.
+
+3. UĞRAŞMAYA DEĞER BÜYÜKLÜK. Kısmi satış önermeden ÖNCE o satışın kaç dolar
+   edeceğini hesapla; `value_of_25pct_usd` bunu hazır veriyor.
+     • `partial_sale_not_worth_it: true` ise elde edilecek tutar
+       {MIN_ISLEM_TUTARI_USD:.0f} USD'nin altındadır. KISMİ SATIŞ ÖNERME —
+       ya "tamamen kapat" ya da "dokunma" de. Pozisyonun toplam değeri makul
+       görünse bile bu geçerlidir; ölçüt işlemin tutarıdır, pozisyonun değil.
+     • `too_small_to_trade: true` ise pozisyonun tamamı
+       {MIN_POZISYON_DEGERI_USD:.0f} USD'nin altındadır; burada da kademeli
+       plan tarif etme.
+
+4. NAKİT ORANI. `cash_ratio_pct` kasanın yüzde kaçının nakit olduğunu
+   söyler. "Nakde geç" tavsiyesi vermeden önce bu sayıya bak; zaten yüksekse
+   daha fazla nakit üretmek bir çözüm değil, atıl para demektir.
+
+5. NET BAŞA BAŞ. Bir coinde `net_breakeven` doluysa gerçek kurtulma eşiği
+   odur; `avg_cost` yalnızca elde kalan lotları anlatır ve geçmiş zararları
+   KAPSAMAZ. "Az kaldı" derken doğru eşiğe bak.
+"""
+
+        prompt = f"""{system_instruction}
+{cerceve}
 ---
 KULLANICININ CANLI PORTFÖY VERİLERİ (JSON):
 ```json
@@ -185,6 +415,57 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
 
         return "", ""
 
+    def _sureklilik_notu(self, context):
+        """Yerel motorun rapor sonuna eklediği "geçen sefer ne demiştik" bloğu.
+
+        Yerel motor bir dil modeli değil, kural motoru — önceki raporu okuyup
+        yorumlayamaz. Ama en azından kullanıcıya şunu söyleyebilir: bir önceki
+        analiz ne zaman üretildi ve o günden bu yana kasa nasıl değişti.
+        Modelin göremediği için sürekli aynı şeyi tekrarlaması sorununun
+        yerel motordaki karşılığı buydu.
+        """
+        onceki = context.get("previous_analysis")
+        if not onceki:
+            return []
+
+        satirlar = ["\n---", "### 🔁 Önceki Analize Göre Ne Değişti",
+                    f"* **Bir önceki rapor:** `{onceki.get('created_at', '—')}` "
+                    f"(mod: `{onceki.get('mode', '—')}`)"]
+
+        eski = onceki.get("portfolio_digest") or {}
+        eski_kasa = eski.get("total_equity")
+        yeni_kasa = context.get("total_equity")
+        if isinstance(eski_kasa, (int, float)) and isinstance(yeni_kasa, (int, float)):
+            fark = yeni_kasa - eski_kasa
+            isaret = "+" if fark >= 0 else "−"
+            satirlar.append(
+                f"* **Kasa:** `${eski_kasa:,.2f}` → `${yeni_kasa:,.2f}` "
+                f"({isaret}${abs(fark):,.2f})")
+
+        eski_nakit = eski.get("cash_ratio_pct")
+        yeni_nakit = context.get("cash_ratio_pct")
+        if isinstance(eski_nakit, (int, float)) and isinstance(yeni_nakit, (int, float)):
+            satirlar.append(f"* **Nakit oranı:** `%{eski_nakit:.1f}` → `%{yeni_nakit:.1f}`")
+
+        # Önceki rapordan sonra kapanan işlemler: tavsiye uygulanmış mı?
+        gecmis = (context.get("realized_history") or {}).get("recent_closed_trades") or []
+        kesim = str(onceki.get("created_at") or "")[:10]
+        sonrakiler = [t for t in gecmis if str(t.get("exit_date") or "") >= kesim and kesim]
+        if sonrakiler:
+            satirlar.append("* **O tarihten beri kapanan işlemler:**")
+            for t in sonrakiler[:5]:
+                not_ = (t.get("notes") or "").strip()
+                ek = f" — _{not_[:70]}_" if not_ else ""
+                satirlar.append(
+                    f"  * `{t.get('exit_date')}` **{t.get('coin')}** "
+                    f"K/Z `${t.get('realized_pnl_usd', 0):,.2f}`{ek}")
+        else:
+            satirlar.append(
+                "* **O tarihten beri kapanan işlem yok** — önceki rapordaki "
+                "satış önerileri uygulanmamış görünüyor.")
+
+        return satirlar
+
     def _generate_local_report(self, mode: str, context: dict, custom_question: str) -> str:
         coins = context.get("coins", [])
         total_cash = context.get("total_usdt_cash", 0.0)
@@ -194,7 +475,11 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
 
         losers = [c for c in coins if c.get("pnl_usd", 0) < 0]
         gainers = [c for c in coins if c.get("pnl_usd", 0) > 0]
-        dead_coins = [c for c in coins if c.get("is_dead") or c.get("pnl_pct", 0) <= -50.0]
+        # Eskiden burada `c.get("is_dead")` de vardı; data_manager o alanı hiç
+        # üretmediği için her zaman False'tu ve ölçüt aslında tek başına
+        # pnl_pct'ydi. Alan kaldırıldı, ölçüt olduğu gibi kaldı.
+        dead_coins = [c for c in coins if c.get("deeply_underwater")
+                      or c.get("pnl_pct", 0) <= -50.0]
 
         losers.sort(key=lambda x: x.get("pnl_usd", 0))
         gainers.sort(key=lambda x: x.get("pnl_usd", 0), reverse=True)
@@ -231,6 +516,7 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
                     f"* **Öncelikli Kurtarma Hedefi:** `{losers[0].get('name')}` (Zarar: `-${abs(losers[0].get('pnl_usd', 0)):,.2f}`) varlığına serbest kasanızdan kademeli ekleme yaparak ortalama maliyetinizi düşürebilirsiniz.",
                     "* **Kritik Kural:** Tek seferde tüm nakitle DCA yapmayın; kasadaki USDT'yi 3 parçaya bölerek (%30 - %30 - %40) kademeli giriş yapın."
                 ])
+            lines.extend(self._sureklilik_notu(context))
             return "\n".join(lines)
 
         elif mode == "brutal":
@@ -256,6 +542,7 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
                     "* Likiditesi bitmiş veya %80+ düşmüş altcoinlerde 'nasılsa maliyete gelir' diye beklemek en büyük portföy tuzağıdır.",
                     "* Kalan son bakiyeyi sağlam majör varlıklara aktarmak, sermaye bileşik getirisini yeniden çalıştırmanın en sağlıklı yoludur."
                 ])
+            lines.extend(self._sureklilik_notu(context))
             return "\n".join(lines)
 
         elif mode == "take_profit":
@@ -265,18 +552,40 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
                 "---",
                 "### 💰 1. Kârdaki Varlıklar ve Kâr Alma Kademeleri",
             ]
+            # Nakit oranı zaten yüksekse "daha çok nakit yap" bir çözüm değil,
+            # atıl para demektir. Bu uyarı olmadan motor her koşumda satış
+            # öneriyordu — Gemini tarafındaki kusurun yerel eşdeğeriydi.
+            if cash_ratio >= 30.0:
+                lines.append(
+                    f"> [!NOTE]\n> Kasanızın **%{cash_ratio:.1f}**'i zaten nakit "
+                    f"(`${total_cash:,.2f}`). Bu seviyede daha fazla nakde geçmek "
+                    "genellikle bir çözüm değil, atıl para demektir. Aşağıdaki "
+                    "önerileri bu çerçevede değerlendirin.\n")
+
             if not gainers:
                 lines.append("Şu anda kârda olan aktif pozisyon bulunmuyor. Piyasa fırsatları ve DCA toparlanmaları takip ediliyor.")
             else:
                 lines.append("| Varlık | Borsa | Net Kâr ($) | Getiri (%) | Portföy Payı | Tavsiye Edilen Kâr Alma Planı |")
                 lines.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
                 for c in gainers[:5]:
-                    lines.append(f"| **{c.get('name')}** | `{c.get('exchange')}` | `+${c.get('pnl_usd', 0):,.2f}` | `+%{c.get('pnl_pct', 0):.1f}` | `%{c.get('portfolio_share_pct', 0):.1f}` | 🎯 **%25-%35 Kısmi Satış:** Anaparayı serbest kasaya çekip kalan kârı ana hedefte bekletin. |")
+                    # Ölçüt pozisyonun değil, ÖNERİLEN İŞLEMİN büyüklüğü.
+                    # Şikâyete konu vakada pozisyon ~$220'dı (eşiği geçiyordu)
+                    # ama %25'i ~$55 ediyordu ve asıl saçmalık oradaydı.
+                    if c.get("partial_sale_not_worth_it") or c.get("too_small_to_trade"):
+                        plan = (f"⚪ **Kısmi satış önerilmez:** %25'i yalnızca "
+                                f"`${c.get('value_of_25pct_usd', 0):,.2f}` eder "
+                                f"({MIN_ISLEM_TUTARI_USD:.0f} USD eşiğinin altında). "
+                                "Ya tamamen kapatın ya da dokunmayın.")
+                    else:
+                        plan = ("🎯 **%25-%35 Kısmi Satış:** Anaparayı serbest kasaya "
+                                "çekip kalan kârı ana hedefte bekletin.")
+                    lines.append(f"| **{c.get('name')}** | `{c.get('exchange')}` | `+${c.get('pnl_usd', 0):,.2f}` | `+%{c.get('pnl_pct', 0):.1f}` | `%{c.get('portfolio_share_pct', 0):.1f}` | {plan} |")
 
                 lines.extend([
                     "\n### 🛡️ 2. Kasa Zırhlama Tavsiyesi",
                     "* Kârdaki varlıklardan düzenli kâr realize etmek, serbest nakit kasanızı büyüterek olası piyasa düzeltmelerinde yeni fırsatlar yakalamanızı sağlar."
                 ])
+            lines.extend(self._sureklilik_notu(context))
             return "\n".join(lines)
 
         else: # full_audit
@@ -296,6 +605,7 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
 
         # Append standard YTD disclaimer to all reports
         disclaimer = "\n\n---\n> [!NOTE]\n> ⚠️ **Yasal Bilgilendirme:** Bu analizler yapay zeka modelleri ve algoritmalar tarafından simülasyon ve karar destek amaçlı üretilmiştir. Kesinlikle yatırım tavsiyesi (YTD) niteliği taşımaz. Yatırım kararlarınızı kendi risk tercihlerinize göre alınız."
+        lines.extend(self._sureklilik_notu(context))
         return "\n".join(lines) + disclaimer
 
 ai_advisor = AIFinancialAdvisor()

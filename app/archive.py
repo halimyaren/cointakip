@@ -45,6 +45,7 @@ TASARIM KURALLARI
 """
 
 import os
+import json
 import sqlite3
 import time
 from datetime import datetime, timedelta
@@ -59,7 +60,10 @@ ARCHIVE_FILENAME = "archive.db"
 # Amaç: bir günün satırı o günün son gözlemine yakınsasın.
 SNAPSHOT_REFRESH_TTL = 3600.0
 
-SCHEMA_VERSION = 1
+# 2 — `ai_reports` tablosu eklendi. Şema `CREATE TABLE IF NOT EXISTS` ile
+# kurulduğu için mevcut arşivler açıldıklarında kendiliğinden tamamlanır;
+# göç adımı gerekmiyor, eski satırlar da olduğu gibi kalıyor.
+SCHEMA_VERSION = 2
 
 
 def archive_path():
@@ -150,13 +154,44 @@ def init_archive():
                     FOREIGN KEY (snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
                 );
 
+                -- YZ analiz raporları.
+                --
+                -- Eskiden raporlar YALNIZCA tarayıcı belleğinde duruyordu
+                -- (Alpine durumu); sayfa yenilenince yok oluyorlardı. Bunun iki
+                -- sonucu vardı: kullanıcı geçen hafta ne önerildiğini geri
+                -- okuyamıyordu ve modelin kendi geçmişinden hiç haberi olmuyordu.
+                -- Gerçek örnek: model üst üste günlerde "BTC'nin %25'ini sat"
+                -- dedi; kullanıcı 24 Ağustos'ta bunu zaten yapmıştı ve deftere
+                -- "YZ Önerisi" diye not düşmüştü. Model bunu göremediği için
+                -- aynı tavsiyeyi tekrarlayıp durdu.
+                --
+                -- `portfolio_digest` o anki kasanın küçük bir özeti: bir sonraki
+                -- analizde "o günden bu yana ne değişti" sorusu buradan
+                -- yanıtlanıyor, ham geçmişi modele yollamadan.
+                CREATE TABLE IF NOT EXISTS ai_reports (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at        TEXT NOT NULL,          -- ISO8601
+                    created_ts        REAL NOT NULL,
+                    mode              TEXT NOT NULL,
+                    source            TEXT,                   -- GEMINI_AI / LOCAL_EXPERT_ENGINE
+                    model_name        TEXT,
+                    custom_question   TEXT,
+                    report_markdown   TEXT NOT NULL,
+                    portfolio_digest  TEXT                    -- JSON
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_snapshots_date ON snapshots(taken_date);
                 CREATE INDEX IF NOT EXISTS idx_pos_symbol ON snapshot_positions(symbol);
+                CREATE INDEX IF NOT EXISTS idx_ai_reports_ts ON ai_reports(created_ts);
+                CREATE INDEX IF NOT EXISTS idx_ai_reports_mode ON ai_reports(mode, created_ts);
             """)
-            conn.execute(
-                "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
-                (str(SCHEMA_VERSION),),
-            )
+            # OR IGNORE değil UPSERT: eski bir arşiv açıldığında meta satırı
+            # "1"de takılı kalıyordu ve dosya aslında güncellenmiş olmasına
+            # rağmen eski sürüm gibi görünüyordu.
+            conn.execute("""
+                INSERT INTO meta (key, value) VALUES ('schema_version', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """, (str(SCHEMA_VERSION),))
         return True
     except Exception as e:
         logger.warning("Arşiv şeması oluşturulamadı: %s", e)
@@ -464,3 +499,148 @@ def archive_status():
         logger.debug("Arşiv durumu okunamadı: %s", e)
         return {"enabled": False, "snapshot_count": 0, "gaps": [],
                 "error": str(e)[:200]}
+
+
+# ---------------------------------------------------------------------
+# YZ ANALİZ RAPORLARI
+#
+# Raporlar eskiden yalnızca tarayıcı belleğindeydi; sayfa yenilenince
+# kayboluyorlardı. Kalıcılaştırmanın iki ayrı faydası var:
+#
+#   1. Kullanıcı geçen hafta ne önerildiğini geri okuyabiliyor.
+#   2. Bir sonraki analize "en son şunu demiştin" bilgisi verilebiliyor.
+#      Amaç modeli tutarlı olmaya ZORLAMAK değil — koşullar değişmediyse
+#      aynı şeyi tekrar söylemesi zaten doğrudur. Amaç tekrarı GÖRÜNÜR
+#      kılmak: model "bu, 30 Ağustos'taki önerimin aynısı, bakiye
+#      değişmemiş" diyebilsin.
+# ---------------------------------------------------------------------
+
+# Modele geri verilen rapor metni bu uzunlukta kesilir. Tam metni göndermek
+# istem boyutunu hızla şişirir; kullanıcı ücretsiz Gemini katmanında ve kota
+# sınırına takılıyor. Özet, tekrarı fark ettirmeye yetiyor.
+ONCEKI_RAPOR_KARAKTER_SINIRI = 1200
+
+
+def save_ai_report(mode, report_markdown, source=None, model_name=None,
+                   custom_question="", portfolio_digest=None):
+    """Bir YZ raporunu arşive yazar. Başarılıysa id, değilse None döner.
+
+    ASLA istisna fırlatmaz — arşiv konfor katmanıdır; kaydetme başarısız
+    olsa bile kullanıcı raporunu görmeye devam etmeli.
+    """
+    try:
+        if not init_archive():
+            return None
+        if not (report_markdown or "").strip():
+            return None
+        simdi = datetime.now()
+        with _connect() as conn:
+            cur = conn.execute("""
+                INSERT INTO ai_reports
+                    (created_at, created_ts, mode, source, model_name,
+                     custom_question, report_markdown, portfolio_digest)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                simdi.isoformat(timespec="seconds"),
+                simdi.timestamp(),
+                str(mode or "full_audit"),
+                str(source or ""),
+                str(model_name or ""),
+                str(custom_question or "")[:2000],
+                report_markdown,
+                json.dumps(portfolio_digest or {}, ensure_ascii=False),
+            ))
+            return cur.lastrowid
+    except Exception as e:
+        logger.warning("YZ raporu arşive yazılamadı: %s", e)
+        return None
+
+
+def _rapor_satiri(row, metin_dahil=False):
+    try:
+        ozet = json.loads(row["portfolio_digest"] or "{}")
+    except Exception:
+        ozet = {}
+    kayit = {
+        "id": row["id"],
+        "created_at": row["created_at"],
+        "created_ts": row["created_ts"],
+        "mode": row["mode"],
+        "source": row["source"],
+        "model_name": row["model_name"],
+        "custom_question": row["custom_question"],
+        "portfolio_digest": ozet,
+    }
+    if metin_dahil:
+        kayit["report_markdown"] = row["report_markdown"]
+    return kayit
+
+
+def list_ai_reports(limit=50, mode=None):
+    """Rapor geçmişi — yeniden eskiye. Metin DAHİL DEĞİL (liste hafif kalsın)."""
+    try:
+        init_archive()
+        sorgu = "SELECT * FROM ai_reports"
+        params = []
+        if mode:
+            sorgu += " WHERE mode = ?"
+            params.append(str(mode))
+        sorgu += " ORDER BY created_ts DESC LIMIT ?"
+        params.append(int(limit))
+        with _connect() as conn:
+            return [_rapor_satiri(r) for r in conn.execute(sorgu, params).fetchall()]
+    except Exception as e:
+        logger.debug("YZ rapor listesi okunamadı: %s", e)
+        return []
+
+
+def get_ai_report(report_id):
+    """Tek bir raporun tam metni."""
+    try:
+        init_archive()
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM ai_reports WHERE id = ?", (int(report_id),)).fetchone()
+        return _rapor_satiri(row, metin_dahil=True) if row else None
+    except Exception as e:
+        logger.debug("YZ raporu okunamadı: %s", e)
+        return None
+
+
+def last_ai_report(mode=None):
+    """En son rapor (metniyle). Bir sonraki analize bağlam olarak verilir."""
+    try:
+        init_archive()
+        sorgu = "SELECT * FROM ai_reports"
+        params = []
+        if mode:
+            sorgu += " WHERE mode = ?"
+            params.append(str(mode))
+        sorgu += " ORDER BY created_ts DESC LIMIT 1"
+        with _connect() as conn:
+            row = conn.execute(sorgu, params).fetchone()
+        return _rapor_satiri(row, metin_dahil=True) if row else None
+    except Exception as e:
+        logger.debug("Son YZ raporu okunamadı: %s", e)
+        return None
+
+
+def delete_ai_report(report_id):
+    """Tek bir raporu siler. Kullanıcının kendi verisi, silebilmeli."""
+    try:
+        init_archive()
+        with _connect() as conn:
+            cur = conn.execute("DELETE FROM ai_reports WHERE id = ?", (int(report_id),))
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.warning("YZ raporu silinemedi: %s", e)
+        return False
+
+
+def ai_report_count():
+    try:
+        init_archive()
+        with _connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) AS a FROM ai_reports").fetchone()["a"] or 0)
+    except Exception:
+        return 0

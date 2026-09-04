@@ -57,7 +57,13 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   hesaplar.
 - **Kâr alma hedefleri** — hedef fiyat tanımlayıp tek tıkla satışı deftere işleme.
 - **Yapay zekâ danışmanı** — Gemini API anahtarınızı girerseniz portföy analizi
-  üretir. Anahtar girmezseniz yerel kural motoruna düşer.
+  üretir. Anahtar girmezseniz yerel kural motoruna düşer. Her rapor arşivlenir ve
+  yeni analiz, bir önceki raporu ve kapanmış işlemlerinizi görerek üretilir; böylece
+  model önceki tavsiyesini uygulayıp uygulamadığınızı bilir. Nakit oranınız ve
+  önereceği işlemin kaç dolar edeceği de kendisine verilir — bunlar olmadan,
+  kasasının yarısı zaten nakit olan birine 220 dolarlık pozisyonun 55 dolarlık
+  %25'ini satmayı günlerce tekrar önerebiliyordu. Koşullar değişmediyse aynı
+  tavsiyeyi tekrarlamak doğrudur; tekrarı gizlemek değil.
 - **PIN koruması** — SHA-256 + kuruluma özel salt, kurtarma anahtarı ile sıfırlama.
 - **Net varlık arşivi** — borsalar geçmişi süresiz saklamaz ve pencereleri kayar
   (Binance ~2 yıl, MEXC 1 ay). Uygulama her çalıştığında portföyünüzün o günkü
@@ -243,7 +249,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-764 test, yaklaşık 50 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
+801 test, yaklaşık 55 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
 veri yolları geçici bir klasöre yönlendirilir, tüm dış çağrılar taklit edilir ve
 hiçbir test yapay zekâ API'sine istek atmaz.
 

@@ -1001,6 +1001,56 @@ Google'a gider.
 **Yapay zekâ zorunlu mu?**
 Hayır. Gemini anahtarı girmezseniz yerel kural motoru devreye girer.
 
+**Yapay zekâ her seferinde aynı şeyi söylüyor. Normal mi?**
+Kısmen. Koşullar değişmediyse ve siz önceki tavsiyeyi uygulamadıysanız,
+aynı şeyi tekrar söylemesi **doğrudur** — kendini tekrar etmemek için tavsiye
+değiştiren bir model, taze görünmek adına yeni işlem sebepleri uydurur ve bu
+daha kötüdür.
+
+Sorun tekrarın kendisi değil, tekrarın *görünmez* olmasıydı. Artık:
+
+- **Her rapor arşivleniyor.** Rapor başlığındaki **Geçmiş Raporlar** düğmesinden
+  eski analizleri açabilirsiniz. Her kayıtta o günkü kasa büyüklüğü ve nakit
+  oranı da duruyor, böylece raporu yazıldığı günün koşullarıyla okursunuz.
+- **Yeni analiz bir öncekini görüyor.** Başlıkta `🗄️ arşivlendi · öncekini gördü`
+  yazıyorsa o rapor, bir önceki raporu bilerek üretildi.
+- **Raporun sonunda "Önceki Analize Göre Ne Değişti" bölümü var:** kasa ve nakit
+  oranı ne oldu, o tarihten beri hangi işlemler kapandı. Hiçbir işlem
+  kapanmadıysa bunu açıkça söyler.
+- **Sattığınız görülüyor.** Uygulama üzerinden yaptığınız satışlar deftere
+  `YZ Önerisi` notuyla düşüyor ve bu not modele gidiyor. Yani tavsiyeyi
+  uyguladığınızı görebiliyor ve bir sonraki adımı anlatabiliyor.
+
+**Yapay zekâ küçücük bir pozisyonda "%25'ini sat" diyordu. Düzeldi mi?**
+Evet. Model artık önerdiği satışın **kaç dolar edeceğini** hesaplıyor. Elde
+edilecek tutar 75 USD'nin altındaysa kısmi satış önermiyor; "ya tamamen kapat
+ya da dokunma" diyor. Gerçek örnek: 220 dolarlık bir BTC pozisyonunun %25'i
+55 dolar eder — komisyon ve harcanan emek bu tutarı yer.
+
+Ayrıca modele **nakit oranınız** da veriliyor. Kasanızın yarısı zaten
+nakitken "daha çok nakde geç" bir çözüm değil, atıl para demektir; model bunu
+artık görüyor.
+
+**Yazdırdığım PDF'lerin adı hep aynıydı, düzeldi mi?**
+Evet. Tarayıcı, kaydedilecek PDF'in adını sayfa başlığından alır ve başlık
+sabit olduğu için her ekran aynı adla iniyordu. Artık dosya adı bulunduğunuz
+ekrana göre kuruluyor ve tarih içeriyor:
+
+    CoinTakip_Kar_Realizasyonu_2026-09-05
+    CoinTakip_Zarardan_Kurtarma_2026-09-05
+    CoinTakip_Net_Varlik_Arsivi_2026-09-05
+    CoinTakip_Kasa_Ozeti_2026-09-05
+
+Arşivden eski bir rapor açıp yazdırırsanız dosya adı **o raporun** tarihini
+taşır, bugünün değil. Adlar ASCII'dir (`Kar`, `Kâr` değil); Türkçe karakterli
+dosya adları bazı sistemlerde bozuluyor.
+
+**Yapay zekâ piyasayı biliyor mu?**
+Hayır. Yalnızca **sizin** portföyünüzü, maliyetlerinizi, geçmiş işlemlerinizi
+ve coinlerin anlık fiyat/24s/7g değişimini görüyor. BTC dominansı, korku-açgözlülük
+endeksi veya haber akışı gibi piyasa göstergeleri **verilmiyor**. Raporları bu
+sınırın içinde okuyun.
+
 **Aynı coini iki borsada tutuyorum, neden iki satır görüyorum?**
 Bilerek. Ayrı maliyet tabanları ayrı takip edilir. Konsolide görünüm için Kasa
 sekmesindeki toplamlara bakın.

@@ -59,7 +59,12 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   net exposure and hedge ratio, and model "what if the price drops 20%".
 - **Take-profit targets** — define a target price and book the sale in one click.
 - **AI advisor** — supply a Gemini API key for portfolio analysis; falls back to a
-  local rule engine without one.
+  local rule engine without one. Every report is archived, and each new analysis is
+  given the previous one plus your closed trades, so the model can see whether you
+  acted on its last recommendation. It is told your cash ratio and the dollar value
+  of the trade it is about to propose — without those it kept recommending the same
+  $55 sale of a $220 position, day after day, to someone already half in cash.
+  Repeating advice is correct when nothing changed; hiding the repetition is not.
 - **PIN protection** — SHA-256 with a per-install salt, recovery key for reset.
 - **Net-worth archive** — exchanges do not keep history forever and their windows
   slide (Binance ~2 years, MEXC 1 month). Every time the app runs it records the
@@ -250,7 +255,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-764 tests, about 50 seconds. The suite **never touches your real data and never hits
+801 tests, about 55 seconds. The suite **never touches your real data and never hits
 the network**: data paths are redirected to a temporary directory, all external calls
 are mocked, and no test calls the AI API.
 

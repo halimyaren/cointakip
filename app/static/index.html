@@ -3775,9 +3775,21 @@
             <template x-if="aiReportTimes[aiMode]">
               <span class="text-[11px] text-slate-400 font-mono-nums" x-text="'• Saat: ' + aiReportTimes[aiMode]"></span>
             </template>
+            <!-- Raporun arşive yazıldığını ve bir öncekini gördüğünü söylemek,
+                 kullanıcının "bunun önceki analizden haberi var mı?" sorusuna
+                 rapor metnine girmeden cevap verir. -->
+            <template x-if="aiArchivedAt[aiMode]">
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-sky-950 text-sky-300 border border-sky-800/60"
+                    :title="'Bu rapor arşive kaydedildi.' + (aiPreviousAt[aiMode] ? ' Üretilirken ' + aiPreviousAt[aiMode].replace('T', ' ') + ' tarihli önceki rapor da dikkate alındı.' : ' Bu, arşivdeki ilk rapor.')"
+                    x-text="aiPreviousAt[aiMode] ? '🗄️ arşivlendi · öncekini gördü' : '🗄️ arşivlendi'"></span>
+            </template>
           </div>
 
           <div class="flex flex-wrap items-center gap-2">
+            <button @click="toggleAiHistory()" class="px-3 py-1.5 rounded-lg bg-sky-950/80 hover:bg-sky-900 text-sky-300 border border-sky-500/40 text-xs font-medium transition flex items-center space-x-1.5" title="Daha önce üretilmiş analiz raporlarını aç">
+              <i data-lucide="history" class="w-3.5 h-3.5"></i>
+              <span x-text="showAiHistory ? 'Geçmişi Kapat' : ('Geçmiş Raporlar' + (aiHistoryTotal ? ' (' + aiHistoryTotal + ')' : ''))"></span>
+            </button>
             <template x-if="aiReports[aiMode]">
               <button @click="runAiAnalysis(aiMode, true)" :disabled="aiLoading" class="px-3 py-1.5 rounded-lg bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-500/40 text-xs font-medium transition flex items-center space-x-1.5">
                 <i data-lucide="refresh-cw" class="w-3.5 h-3.5" :class="{'animate-spin': aiLoading}"></i>
@@ -3797,6 +3809,76 @@
           </div>
         </div>
 
+        <!-- GEÇMİŞ RAPORLAR
+             Raporlar eskiden yalnızca tarayıcı belleğindeydi; sayfa yenilenince
+             kayboluyorlardı. Kullanıcı "geçen hafta ne önerilmişti" sorusunu
+             cevaplayamıyordu ve modelin de kendi geçmişinden haberi yoktu. -->
+        <div x-show="showAiHistory" x-transition class="bg-slate-950/60 border-b border-slate-800">
+          <div class="p-4 space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="text-xs font-bold text-sky-300 uppercase tracking-wider">Arşivlenmiş Analiz Raporları</div>
+              <div class="flex items-center gap-2">
+                <select x-model="aiHistoryFilter" @change="fetchAiHistory()"
+                        class="px-2 py-1 text-[11px] rounded-lg bg-slate-900 border border-slate-700 text-slate-300 focus:border-sky-500 focus:outline-none">
+                  <option value="">Tüm modlar</option>
+                  <option value="full_audit">Bütünsel Denetim</option>
+                  <option value="recovery">Zarardan Kurtarma</option>
+                  <option value="brutal">Acı Gerçek</option>
+                  <option value="take_profit">Kâr Realizasyonu</option>
+                </select>
+                <span class="text-[11px] text-slate-500 font-mono-nums" x-text="aiHistory.length + ' kayıt'"></span>
+              </div>
+            </div>
+
+            <template x-if="aiHistory.length === 0">
+              <div class="py-6 text-center text-slate-500 text-xs">
+                Henüz arşivlenmiş rapor yok. Bir analiz ürettiğinizde buraya kaydedilir.
+              </div>
+            </template>
+
+            <div class="space-y-1.5 max-h-72 overflow-y-auto">
+              <template x-for="r in aiHistory" :key="r.id">
+                <div class="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 hover:border-sky-700/60 transition">
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-[11px] font-mono-nums text-slate-300" x-text="(r.created_at || '').replace('T', ' ')"></span>
+                      <span class="px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-slate-800 text-slate-400 border border-slate-700" x-text="aiModeLabel(r.mode)"></span>
+                      <span class="px-1.5 py-0.5 rounded text-[9.5px] font-medium"
+                            :class="(r.model_name || '').includes('Gemini') ? 'bg-indigo-500/15 text-indigo-300' : 'bg-emerald-500/15 text-emerald-300'"
+                            x-text="r.model_name || '—'"></span>
+                    </div>
+                    <!-- O günkü kasa fotoğrafı: raporu bugünün gözüyle değil,
+                         yazıldığı günün koşullarıyla okumayı sağlar. -->
+                    <div class="text-[10px] text-slate-500 mt-0.5 font-mono-nums"
+                         x-show="r.portfolio_digest && r.portfolio_digest.total_equity"
+                         x-text="'kasa $' + formatNum(r.portfolio_digest.total_equity || 0, 2)
+                                 + ' · nakit %' + formatNum(r.portfolio_digest.cash_ratio_pct || 0, 1)"></div>
+                    <div class="text-[10px] text-amber-400/80 mt-0.5 truncate" x-show="r.custom_question"
+                         x-text="'soru: ' + r.custom_question"></div>
+                  </div>
+                  <div class="flex items-center gap-1.5 flex-shrink-0">
+                    <button @click="openAiReport(r.id)"
+                            class="px-2 py-1 rounded bg-sky-950 hover:bg-sky-900 text-sky-300 border border-sky-800/60 text-[10.5px] font-bold transition">Aç</button>
+                    <button @click="deleteAiReport(r.id)"
+                            class="px-2 py-1 rounded bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-300 border border-slate-700 text-[10.5px] transition" title="Bu raporu arşivden sil">Sil</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- Arşivden açılmış eski rapor görüntüleniyor uyarısı. Bu şerit
+             olmadan kullanıcı eski bir raporu güncel sanabilir. -->
+        <div x-show="aiViewingArchived" class="px-4 py-2.5 bg-amber-950/40 border-b border-amber-800/50 flex items-center justify-between gap-3">
+          <div class="text-[11.5px] text-amber-200">
+            📄 <b>Arşivden bir rapor görüntülüyorsunuz</b> —
+            <span class="font-mono-nums" x-text="(aiViewingArchived.created_at || '').replace('T', ' ')"></span>
+            tarihli. Güncel portföyü yansıtmaz.
+          </div>
+          <button @click="closeArchivedReport()" class="px-2.5 py-1 rounded bg-amber-900/60 hover:bg-amber-800 text-amber-100 text-[10.5px] font-bold transition flex-shrink-0">Güncel Rapora Dön</button>
+        </div>
+
         <!-- Report Content -->
         <div class="p-6">
           
@@ -3813,13 +3895,18 @@
             </div>
           </template>
 
+          <!-- Arsivden acilan rapor, guncel raporun yerine gosterilir. -->
+          <template x-if="!aiLoading && aiViewingArchived">
+            <div class="prose prose-invert max-w-none text-slate-200 text-xs leading-relaxed space-y-3 font-sans" x-html="formatAiMarkdown(aiViewingArchived.report_markdown)"></div>
+          </template>
+
           <!-- Report Ready State -->
-          <template x-if="!aiLoading && aiReports[aiMode]">
+          <template x-if="!aiLoading && !aiViewingArchived && aiReports[aiMode]">
             <div class="prose prose-invert max-w-none text-slate-200 text-xs leading-relaxed space-y-3 font-sans" x-html="formatAiMarkdown(aiReports[aiMode])"></div>
           </template>
 
           <!-- Empty State with Explicit Start Button -->
-          <template x-if="!aiLoading && !aiReports[aiMode]">
+          <template x-if="!aiLoading && !aiViewingArchived && !aiReports[aiMode]">
             <div class="py-14 text-center space-y-4">
               <div class="w-14 h-14 mx-auto rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
                 <i data-lucide="sparkles" class="w-7 h-7"></i>
@@ -5742,6 +5829,6 @@
   </div>
 
   <!-- App Frontend Script -->
-  <script src="/static/app.js?v=2.3"></script>
+  <script src="/static/app.js?v=2.5"></script>
 </body>
 </html>

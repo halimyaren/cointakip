@@ -1243,6 +1243,35 @@ def analyze_with_ai(payload: dict = Body(...)):
     question = payload.get("custom_question", "")
     return ai_advisor.analyze(mode=mode, custom_question=question)
 
+
+# YZ rapor arşivi.
+#
+# Raporlar eskiden yalnızca tarayıcı belleğindeydi ve sayfa yenilenince
+# kayboluyordu. Kullanıcı geçen hafta ne önerildiğini geri okuyamıyordu;
+# modelin de kendi geçmişinden haberi yoktu ve aynı tavsiyeyi tekrarlayıp
+# duruyordu.
+@app.get("/api/ai/reports")
+def list_ai_reports(limit: int = 50, mode: Optional[str] = None):
+    return {
+        "reports": archive.list_ai_reports(limit=max(1, min(int(limit), 200)), mode=mode),
+        "total": archive.ai_report_count(),
+    }
+
+
+@app.get("/api/ai/reports/{report_id}")
+def get_ai_report(report_id: int):
+    rapor = archive.get_ai_report(report_id)
+    if not rapor:
+        raise HTTPException(status_code=404, detail="Rapor bulunamadı.")
+    return rapor
+
+
+@app.delete("/api/ai/reports/{report_id}")
+def delete_ai_report(report_id: int):
+    if not archive.delete_ai_report(report_id):
+        raise HTTPException(status_code=404, detail="Rapor bulunamadı.")
+    return {"success": True, "deleted_id": report_id}
+
 # -------------------------------------------------------------
 # FAZ 7: GERÇEKLEŞMİŞ KÂR/ZARAR & EXCEL DIŞA AKTARIM ENDPOINT'LERİ
 # -------------------------------------------------------------

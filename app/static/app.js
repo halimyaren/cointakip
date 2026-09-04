@@ -407,6 +407,16 @@ function portfolioApp() {
       brutal: null,
       take_profit: null
     },
+    // Raporlar artık sunucuda arşivleniyor (archive.db). Bunlar o arşivin
+    // arayüzdeki karşılığı: hangi rapor kaydedildi, üretilirken hangi önceki
+    // raporu gördü, geçmişte neler var.
+    aiArchivedAt: { full_audit: null, recovery: null, brutal: null, take_profit: null },
+    aiPreviousAt: { full_audit: null, recovery: null, brutal: null, take_profit: null },
+    aiHistory: [],
+    aiHistoryTotal: 0,
+    aiHistoryFilter: '',
+    showAiHistory: false,
+    aiViewingArchived: null,
     aiLoading: false,
     aiCustomQuestion: '',
     copiedReportSuccess: false,
@@ -4188,6 +4198,12 @@ function portfolioApp() {
           this.aiReports[targetMode] = data.report_markdown;
           this.aiReportSources[targetMode] = data.model_name || (data.source === 'GEMINI_AI' ? 'Google Gemini AI' : 'Yerel Finansal Motor');
           this.aiReportTimes[targetMode] = data.generated_at;
+          this.aiArchivedAt[targetMode] = data.archived ? (data.report_id || true) : null;
+          this.aiPreviousAt[targetMode] = data.previous_report_at || null;
+          // Yeni rapor geldiyse arşivden açılmış eskisini bırak, yoksa
+          // kullanıcı taze raporu göremez.
+          this.aiViewingArchived = null;
+          if (this.showAiHistory) this.fetchAiHistory();
         } else {
           this.aiReports[targetMode] = '# ❌ Hata\nAnaliz oluşturulurken sunucu hatası meydana geldi.';
         }
@@ -4199,8 +4215,91 @@ function portfolioApp() {
       }
     },
 
+    // -------------------------------------------------------------
+    // YZ RAPOR ARŞİVİ
+    //
+    // Raporlar eskiden yalnızca burada, bellekte duruyordu; sayfa yenilenince
+    // kayboluyorlardı. Artık sunucuda saklanıyorlar ve bir sonraki analiz
+    // öncekini görerek üretiliyor.
+    // -------------------------------------------------------------
+    aiModeLabel(mode) {
+      return ({
+        full_audit: 'Bütünsel Denetim',
+        recovery: 'Zarardan Kurtarma',
+        brutal: 'Acı Gerçek',
+        take_profit: 'Kâr Realizasyonu',
+      })[mode] || (mode || '—');
+    },
+
+    async toggleAiHistory() {
+      this.showAiHistory = !this.showAiHistory;
+      if (this.showAiHistory) await this.fetchAiHistory();
+      this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+    },
+
+    async fetchAiHistory() {
+      try {
+        const q = this.aiHistoryFilter ? ('&mode=' + encodeURIComponent(this.aiHistoryFilter)) : '';
+        const resp = await fetch('/api/ai/reports?limit=100' + q);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        this.aiHistory = data.reports || [];
+        this.aiHistoryTotal = data.total || 0;
+      } catch (e) {
+        console.error('YZ rapor geçmişi okunamadı:', e);
+      }
+    },
+
+    async openAiReport(id) {
+      try {
+        const resp = await fetch('/api/ai/reports/' + id);
+        if (!resp.ok) { this.notify('Rapor bulunamadı.', 'error'); return; }
+        this.aiViewingArchived = await resp.json();
+        this.showAiHistory = false;
+        this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+      } catch (e) {
+        this.notify('Rapor açılamadı: ' + e.message, 'error');
+      }
+    },
+
+    closeArchivedReport() {
+      this.aiViewingArchived = null;
+    },
+
+    async deleteAiReport(id) {
+      // Tarayıcı confirm() kullanılmıyor; projede uygulama içi onay var.
+      const onay = await this.askConfirm({
+        title: 'Raporu arşivden sil',
+        message: 'Bu analiz raporu kalıcı olarak silinecek.',
+        detail: 'Defterinize ve portföy verinize DOKUNULMAZ. Silinen rapor, ' +
+                'sonraki analizlerde "önceki analiz" olarak da kullanılamaz.',
+        confirmText: 'Sil',
+        tone: 'danger',
+      });
+      if (!onay) return;
+      try {
+        const resp = await fetch('/api/ai/reports/' + id, { method: 'DELETE' });
+        if (!resp.ok) { this.notify('Rapor silinemedi.', 'error'); return; }
+        if (this.aiViewingArchived && this.aiViewingArchived.id === id) {
+          this.aiViewingArchived = null;
+        }
+        await this.fetchAiHistory();
+        this.notify('Rapor arşivden silindi.', 'success');
+      } catch (e) {
+        this.notify('Rapor silinemedi: ' + e.message, 'error');
+      }
+    },
+
+    // Arsivden bir rapor aciksa kopyalanacak olan odur; ekranda gorunen
+    // metinle panoya giden metin ayrisirsa kullanici yanlis raporu paylasir.
+    get aiGorunenRapor() {
+      return this.aiViewingArchived
+        ? this.aiViewingArchived.report_markdown
+        : this.aiReports[this.aiMode];
+    },
+
     copyAiReport() {
-      const currentRep = this.aiReports[this.aiMode];
+      const currentRep = this.aiGorunenRapor;
       if (!currentRep) return;
       navigator.clipboard.writeText(currentRep);
       this.copiedReportSuccess = true;
@@ -4572,7 +4671,95 @@ function portfolioApp() {
       }
     },
 
+    // ---------------------------------------------------------------
+    // YAZDIRMA / PDF
+    //
+    // Tarayıcı, kaydedilecek PDF'in dosya adını `document.title`'dan alır.
+    // Başlık tek ve sabit olduğu için ("Kripto Portföy Takip & Canlı
+    // Terminal") HER ekran aynı adla kaydediliyordu: dört ayrı YZ analizini
+    // arka arkaya kaydeden kullanıcı hangisinin ne olduğunu dosya adından
+    // ayırt edemiyordu. Sorun YZ sekmesine özgü değildi, her sekmede vardı.
+    //
+    // Adlandırma, projedeki Excel indirmesiyle aynı kalıpta:
+    //   CoinTakip_<Ekran>_<YYYY-AA-GG>
+    // ASCII kullanılıyor; Türkçe karakterli dosya adları bazı sistemlerde
+    // bozuluyor ve mevcut indirme adı da zaten ASCII.
+    // ---------------------------------------------------------------
+    _orijinalBaslik: null,
+
+    _yerelTarih(d) {
+      // toISOString() UTC'ye çevirir ve yerel saate göre günü kaydırabilir.
+      const t = d || new Date();
+      const ay = String(t.getMonth() + 1).padStart(2, '0');
+      const gun = String(t.getDate()).padStart(2, '0');
+      return `${t.getFullYear()}-${ay}-${gun}`;
+    },
+
+    printDocumentName() {
+      const yzAdlari = {
+        full_audit: 'Butunsel_Denetim',
+        recovery: 'Zarardan_Kurtarma',
+        brutal: 'Aci_Gercek',
+        take_profit: 'Kar_Realizasyonu',
+      };
+      const grafikAdlari = {
+        tv: 'Grafik_Terminali',
+        heatmap: 'Isi_Haritasi',
+        health: 'Sepet_Sagligi',
+        pnl: 'Performans_Dagilim',
+        archive: 'Net_Varlik_Arsivi',
+        reconcile: 'Borsa_Mutabakati',
+        connections: 'Canli_Baglantilar',
+      };
+      const sekmeAdlari = {
+        dashboard: 'Kasa_Ozeti',
+        ledger: 'Defter',
+        hedge: 'Hedge_Takibi',
+        simulation: 'Simulasyon',
+      };
+
+      let ad;
+      let tarih = this._yerelTarih();
+
+      if (this.activeTab === 'ai') {
+        // Arşivden eski bir rapor açıksa dosya adı BUGÜNÜN tarihini
+        // taşımamalı; yoksa 30 Ağustos raporu 4 Eylül dosyası gibi
+        // kaydedilir — düzeltmeye çalıştığımız karışıklığın aynısı.
+        if (this.aiViewingArchived) {
+          ad = yzAdlari[this.aiViewingArchived.mode] || 'Analiz';
+          const t = (this.aiViewingArchived.created_at || '').slice(0, 10);
+          if (/^\d{4}-\d{2}-\d{2}$/.test(t)) tarih = t;
+        } else {
+          ad = yzAdlari[this.aiMode] || 'Analiz';
+        }
+      } else if (this.activeTab === 'charts') {
+        ad = grafikAdlari[this.tvSubTab] || 'Grafik_Analizi';
+      } else {
+        ad = sekmeAdlari[this.activeTab] || 'Portfoy_Raporu';
+      }
+
+      return `CoinTakip_${ad}_${tarih}`;
+    },
+
     printPortfolioReport() {
+      // Gerçek başlık BİR KEZ saklanır. Her çağrıda o anki başlığı saklasaydık
+      // ve afterprint tetiklenmeseydi, ikinci yazdırmada değiştirilmiş başlık
+      // "orijinal" sanılır ve sekme kalıcı olarak yanlış adda kalırdı.
+      if (this._orijinalBaslik === null) {
+        this._orijinalBaslik = document.title;
+      }
+      document.title = this.printDocumentName();
+
+      const geriAl = () => {
+        document.title = this._orijinalBaslik;
+        window.removeEventListener('afterprint', geriAl);
+      };
+      window.addEventListener('afterprint', geriAl);
+      // afterprint bazı tarayıcılarda (özellikle iptal edilen yazdırmada)
+      // hiç tetiklenmiyor. Emniyet supabı — başlığın takılı kalmasındansa
+      // gecikmeli de olsa geri dönmesi iyidir.
+      setTimeout(geriAl, 60000);
+
       window.print();
     },
 
@@ -4621,7 +4808,7 @@ function portfolioApp() {
     },
 
     async copyAiReportRich() {
-      const currentRep = this.aiReports[this.aiMode];
+      const currentRep = this.aiGorunenRapor;
       if (!currentRep) return;
 
       const renderedHtml = this.formatAiMarkdownForWord(currentRep);

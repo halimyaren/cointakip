@@ -299,3 +299,159 @@ class TestGrafikKurulumKurallari:
         m = re.search(r'app\.js\?v=([\d.]+)', self._index())
         assert m, "index.html app.js'i sürümsüz yüklüyor"
         assert float(m.group(1)) >= 2.3
+
+
+# ===========================================================================
+# YAZDIRMA / PDF DOSYA ADI
+#
+# Kullanıcı her analizi "Yazdır" ile PDF olarak kaydediyordu ve dört ayrı
+# analiz de aynı adla iniyordu: "Kripto Portföy Takip & Canlı Terminal".
+# Sebep: tarayıcı PDF adını `document.title`'dan alır ve başlık sabitti.
+# Sorun YZ sekmesine özgü değildi — her sekmede vardı.
+# ===========================================================================
+
+PRINT_HARNESS = r"""
+const fs = require('node:fs');
+const durum = JSON.parse(process.argv[3]);
+
+// Gerçek index.html'deki sabit başlığın yerine geçen değer. Test bunu metin
+// olarak GÖMMEZ; harness geri bildirir ve karşılaştırma ona göre yapılır.
+// Başlık ileride meşru bir sebeple değişirse test yanlış yere kırılmasın.
+const ILK_BASLIK = 'CoinTakip Test Basligi';
+let baslik = ILK_BASLIK;
+const olaylar = [];
+let afterprintCb = null;
+
+globalThis.window = {
+  addEventListener: (ad, cb) => { if (ad === 'afterprint') afterprintCb = cb; },
+  removeEventListener: () => { afterprintCb = null; },
+  print: () => { olaylar.push({tip: 'print', baslik: baslik}); },
+};
+globalThis.document = {
+  get title() { return baslik; },
+  set title(v) { baslik = v; olaylar.push({tip: 'baslik', deger: v}); },
+  getElementById: () => null,
+  addEventListener: () => {},
+  querySelectorAll: () => [],
+};
+globalThis.localStorage = {getItem: () => null, setItem: () => {}, removeItem: () => {}};
+globalThis.fetch = async () => ({ok: false});
+globalThis.setTimeout = () => 0;   // emniyet supabini bu testte tetikleme
+
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const app = new Function(src + '\n;return portfolioApp;')()();
+app.$nextTick = (cb) => cb();
+app.notify = () => {};
+Object.assign(app, durum);
+
+const ad = app.printDocumentName();
+app.printPortfolioReport();
+const yazdirmaAninda = olaylar.filter(o => o.tip === 'print').map(o => o.baslik);
+
+// Tarayici yazdirmayi bitirdiginde afterprint tetiklenir.
+const tetiklendi = Boolean(afterprintCb);
+if (afterprintCb) afterprintCb();
+
+console.log(JSON.stringify({
+  hesaplananAd: ad,
+  yazdirmaAninda,
+  ilkBaslik: ILK_BASLIK,
+  sonBaslik: baslik,
+  afterprintBagliMi: tetiklendi,
+}));
+"""
+
+
+def _print_kosum(durum, tmp_path):
+    yol = os.path.join(str(tmp_path), "print_harness.js")
+    with open(yol, "w", encoding="utf-8") as f:
+        f.write(PRINT_HARNESS)
+    p = subprocess.run([NODE, yol, APP_JS, json.dumps(durum)],
+                       capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, f"node hatası:\n{p.stderr}"
+    return json.loads(p.stdout.strip().splitlines()[-1])
+
+
+@node_gerekli
+class TestYazdirmaDosyaAdi:
+
+    def test_yz_modlari_ayri_ad_uretir(self, tmp_path):
+        """Asıl şikâyet: dört analiz de aynı adla kaydediliyordu."""
+        adlar = {}
+        for mod in ("full_audit", "recovery", "brutal", "take_profit"):
+            s = _print_kosum({"activeTab": "ai", "aiMode": mod,
+                              "aiViewingArchived": None}, tmp_path)
+            adlar[mod] = s["hesaplananAd"]
+
+        assert len(set(adlar.values())) == 4, f"Adlar çakışıyor: {adlar}"
+        assert "Kar_Realizasyonu" in adlar["take_profit"]
+        assert "Zarardan_Kurtarma" in adlar["recovery"]
+        assert "Aci_Gercek" in adlar["brutal"]
+        assert "Butunsel_Denetim" in adlar["full_audit"]
+
+    def test_diger_sekmeler_de_kendi_adini_alir(self, tmp_path):
+        """Sorun YZ'ye özgü değildi; her sekme aynı adla kaydediliyordu."""
+        adlar = set()
+        for sekme in ("dashboard", "ledger", "hedge", "simulation"):
+            s = _print_kosum({"activeTab": sekme}, tmp_path)
+            adlar.add(s["hesaplananAd"])
+        assert len(adlar) == 4, f"Sekme adları çakışıyor: {adlar}"
+
+    def test_grafik_alt_sekmeleri_ayrisir(self, tmp_path):
+        a = _print_kosum({"activeTab": "charts", "tvSubTab": "archive"}, tmp_path)
+        b = _print_kosum({"activeTab": "charts", "tvSubTab": "reconcile"}, tmp_path)
+        assert "Net_Varlik_Arsivi" in a["hesaplananAd"]
+        assert "Borsa_Mutabakati" in b["hesaplananAd"]
+
+    def test_ad_ascii_ve_dosya_adi_icin_guvenli(self, tmp_path):
+        """Türkçe karakterli dosya adları bazı sistemlerde bozuluyor."""
+        import re
+        for durum in ({"activeTab": "ai", "aiMode": "take_profit", "aiViewingArchived": None},
+                      {"activeTab": "dashboard"},
+                      {"activeTab": "charts", "tvSubTab": "health"}):
+            ad = _print_kosum(durum, tmp_path)["hesaplananAd"]
+            assert ad.isascii(), f"ASCII değil: {ad}"
+            assert re.fullmatch(r"[A-Za-z0-9_\-]+", ad), f"Riskli karakter: {ad}"
+            assert ad.startswith("CoinTakip_")
+            assert re.search(r"\d{4}-\d{2}-\d{2}$", ad), f"Tarih yok: {ad}"
+
+    def test_arsivden_acilan_rapor_kendi_tarihini_tasir(self, tmp_path):
+        """30 Ağustos raporu 4 Eylül dosyası gibi kaydedilmemeli.
+
+        Aksi hâlde düzeltmeye çalıştığımız karışıklığın aynısı üretilir.
+        """
+        s = _print_kosum({
+            "activeTab": "ai", "aiMode": "full_audit",
+            "aiViewingArchived": {"mode": "recovery",
+                                  "created_at": "2026-08-30T21:14:05"},
+        }, tmp_path)
+        assert s["hesaplananAd"] == "CoinTakip_Zarardan_Kurtarma_2026-08-30"
+
+    def test_bozuk_tarihte_bugune_duser(self, tmp_path):
+        import datetime
+        s = _print_kosum({
+            "activeTab": "ai", "aiMode": "full_audit",
+            "aiViewingArchived": {"mode": "brutal", "created_at": "bozuk"},
+        }, tmp_path)
+        bugun = datetime.date.today().isoformat()
+        assert s["hesaplananAd"] == f"CoinTakip_Aci_Gercek_{bugun}"
+
+    def test_baslik_yazdirma_aninda_degismis_olur(self, tmp_path):
+        """Başlık print() çağrılmadan ÖNCE kurulmalı; sonra kurulursa
+        tarayıcı eski adı kullanır."""
+        s = _print_kosum({"activeTab": "ai", "aiMode": "take_profit",
+                          "aiViewingArchived": None}, tmp_path)
+        assert len(s["yazdirmaAninda"]) == 1
+        assert s["yazdirmaAninda"][0] == s["hesaplananAd"]
+
+    def test_baslik_yazdirmadan_sonra_geri_alinir(self, tmp_path):
+        """Geri alınmazsa tarayıcı sekmesi kalıcı olarak yanlış adda kalır."""
+        s = _print_kosum({"activeTab": "ai", "aiMode": "take_profit",
+                          "aiViewingArchived": None}, tmp_path)
+        assert s["afterprintBagliMi"] is True, "afterprint dinleyicisi bağlanmamış"
+        assert s["sonBaslik"] == s["ilkBaslik"], (
+            "Başlık geri alınmadı — sekme kalıcı olarak yanlış adda kalır")
+
+    def test_bilinmeyen_sekme_de_ad_uretir(self, tmp_path):
+        s = _print_kosum({"activeTab": "boyle_bir_sekme_yok"}, tmp_path)
+        assert s["hesaplananAd"].startswith("CoinTakip_Portfoy_Raporu_")
