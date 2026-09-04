@@ -243,7 +243,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-754 test, yaklaşık 40 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
+764 test, yaklaşık 50 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
 veri yolları geçici bir klasöre yönlendirilir, tüm dış çağrılar taklit edilir ve
 hiçbir test yapay zekâ API'sine istek atmaz.
 

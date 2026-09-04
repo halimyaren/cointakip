@@ -422,8 +422,6 @@ function portfolioApp() {
     copiedRichSuccess: false,
 
     // Chart instances
-    allocationChart: null,
-    pnlChart: null,
     categoryChart: null,
 
     // -------------------------------------------------------------
@@ -453,6 +451,19 @@ function portfolioApp() {
           if (val === 'ledger') {
             this.fetchRealizedMetrics();
           }
+        });
+      });
+
+      // Alt sekme değişince de grafik yeniden çizilmeli. Diğer grafiklerin
+      // `activeTab` üzerinden bu yolu vardı; net varlık eğrisinin hiç yoktu ve
+      // kutusu görünür hâle geldiğinde onu kimse yeniden kurmuyordu.
+      this.$watch('tvSubTab', (val) => {
+        this.$nextTick(() => {
+          if (window.lucide) lucide.createIcons();
+          // Kategori donut'u 'health' alt sekmesinde duruyor ve o da aynı
+          // sebeple gizliyken kuruluyordu.
+          if (val === 'archive') this.renderNetWorthChart();
+          if (val === 'health') this.renderCharts();
         });
       });
 
@@ -1767,12 +1778,45 @@ function portfolioApp() {
       }
     },
 
+    // -------------------------------------------------------------
+    // GRAFİK KURULUMU İÇİN ORTAK YARDIMCILAR
+    //
+    // Net varlık eğrisi aylarca boş göründü. Sebebi iki ayrı kusurdu:
+    //
+    // 1. Chart nesnesi Alpine'ın REAKTİF PROXY'si içinde saklanıyordu
+    //    (`this.netWorthChart = new Chart(...)`). Geri okunduğunda ham nesne
+    //    değil proxy dönüyor; `destroy()` bu proxy üzerinde çalışınca
+    //    Chart.js'in canvas kaydından tam silinmiyor. Sonraki kurulum
+    //    "Canvas is already in use" fırlatıyor, istisna $nextTick içinde
+    //    yutuluyor ve ekranda eski grafik kalıyor.
+    //
+    //    Çözüm: kendi referansımıza değil, Chart.js'in canvas'a göre tuttuğu
+    //    KENDİ kaydına soruyoruz. Proxy tamamen devre dışı kalır.
+    //
+    // 2. Grafik, kutusu `display:none` iken kuruluyordu ve canvas 0×0
+    //    doğuyordu. Diğer üç grafik yalnızca sekme görünürken kurulduğu için
+    //    bu kusuru taşımıyordu; net varlık eğrisi açılışta kuruluyordu.
+    //
+    // İkinci kusur yalnızca bu grafiği vuruyordu ama BİRİNCİSİ dördünde de
+    // vardı — diğerleri ilk çizimleri görünürken olduğu için şansla ayaktaydı.
+    // Bu yüzden yardımcı ortak.
+    _chartHedefi(id) {
+      const el = document.getElementById(id);
+      if (!el || !window.Chart) return null;
+      // Görünür olmayan kutuya çizmek 0×0 bir grafik üretir; bunun yerine
+      // hiç kurmuyoruz, sekme açıldığında yeniden çağrılıyor.
+      if (!el.isConnected || el.offsetParent === null) return null;
+      const eski = Chart.getChart(el);
+      if (eski) eski.destroy();
+      return el;
+    },
+
     renderNetWorthChart() {
-      const el = document.getElementById('netWorthChart');
       // Tek noktayla çizgi grafiği anlamsız; arayüz onun yerine
       // "arşiv bugün başladı" mesajını gösteriyor.
-      if (!el || this.archiveSeries.length < 2 || !window.Chart) return;
-      if (this.netWorthChart) this.netWorthChart.destroy();
+      if (this.archiveSeries.length < 2) return;
+      const el = this._chartHedefi('netWorthChart');
+      if (!el) return;
 
       const seri = this.archiveSeries;
       this.netWorthChart = new Chart(el, {
@@ -3327,9 +3371,8 @@ function portfolioApp() {
       const pnls = topCoins.map(c => c.pnl_usd);
 
       // Donut Chart for Categories
-      const ctxCat = document.getElementById('categoryDonutChart');
+      const ctxCat = this._chartHedefi('categoryDonutChart');
       if (ctxCat) {
-        if (this.categoryChart) this.categoryChart.destroy();
         const catList = this.categoryBreakdown;
         this.categoryChart = new Chart(ctxCat, {
           type: 'doughnut',
@@ -3356,64 +3399,11 @@ function portfolioApp() {
         });
       }
 
-      // Allocation Chart
-      const ctxAlloc = document.getElementById('allocationChart');
-      if (ctxAlloc) {
-        if (this.allocationChart) this.allocationChart.destroy();
-        this.allocationChart = new Chart(ctxAlloc, {
-          type: 'doughnut',
-          data: {
-            labels: labels,
-            datasets: [{
-              data: values,
-              backgroundColor: [
-                '#10b981', '#3b82f6', '#8b5cf6', '#f59e0b',
-                '#ec4899', '#06b6d4', '#6366f1', '#64748b'
-              ],
-              borderColor: '#0f172a',
-              borderWidth: 2
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: { duration: 600 },
-            plugins: {
-              legend: { position: 'right', labels: { color: '#94a3b8', font: { family: 'Inter', size: 11 } } }
-            }
-          }
-        });
-      }
-
-      // Bar Chart
-      const ctxPnl = document.getElementById('pnlChart');
-      if (ctxPnl) {
-        if (this.pnlChart) this.pnlChart.destroy();
-        this.pnlChart = new Chart(ctxPnl, {
-          type: 'bar',
-          data: {
-            labels: labels,
-            datasets: [{
-              label: 'Net Kâr / Zarar ($)',
-              data: pnls,
-              backgroundColor: pnls.map(p => p >= 0 ? '#10b981' : '#f43f5e'),
-              borderRadius: 6
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: { duration: 600 },
-            plugins: {
-              legend: { display: false }
-            },
-            scales: {
-              x: { ticks: { color: '#94a3b8', font: { family: 'Inter', size: 10 } }, grid: { display: false } },
-              y: { ticks: { color: '#94a3b8', font: { family: 'Inter', size: 10 } }, grid: { color: '#1e293b' } }
-            }
-          }
-        });
-      }
+      // NOT: Burada eskiden 'allocationChart' (donut) ve 'pnlChart' (bar)
+      // kurulumları vardı. O id'li canvas index.html'de HİÇ YOKTU; iki blok da
+      // `getElementById` null döndüğü için sessizce hiçbir şey yapmıyordu.
+      // Ölü kod, çalışan kod gibi okunduğu için silindi — `tests/test_ui_charts.py`
+      // artık kurulan her canvas'ın HTML'de gerçekten var olduğunu denetliyor.
     },
 
     updateChartsData() {
@@ -3423,21 +3413,6 @@ function portfolioApp() {
         this.categoryChart.data.datasets[0].data = catList.map(c => c.value);
         this.categoryChart.update('none');
       }
-
-      if (!this.allocationChart || !this.pnlChart) return;
-      const topCoins = this.consolidatedCoins.slice(0, 8);
-      const labels = topCoins.map(c => c.display_name + ' (' + c.exchange + ')');
-      const values = topCoins.map(c => c.current_value);
-      const pnls = topCoins.map(c => c.pnl_usd);
-
-      this.allocationChart.data.labels = labels;
-      this.allocationChart.data.datasets[0].data = values;
-      this.allocationChart.update('none');
-
-      this.pnlChart.data.labels = labels;
-      this.pnlChart.data.datasets[0].data = pnls;
-      this.pnlChart.data.datasets[0].backgroundColor = pnls.map(p => p >= 0 ? '#10b981' : '#f43f5e');
-      this.pnlChart.update('none');
     },
 
     // -------------------------------------------------------------

@@ -250,7 +250,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-754 tests, about 40 seconds. The suite **never touches your real data and never hits
+764 tests, about 50 seconds. The suite **never touches your real data and never hits
 the network**: data paths are redirected to a temporary directory, all external calls
 are mocked, and no test calls the AI API.
 
