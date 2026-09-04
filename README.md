@@ -39,6 +39,12 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
 - **Ambiguity warning** — an on-chain match made by ticker alone is flagged, because
   ticker symbols are not unique across chains.
 - **DCA / cost averaging** — consolidated average or FIFO for partial sales.
+- **Net break-even** — average cost tells you what the lots *you still hold* cost;
+  it says nothing about coins you already sold. A separate figure folds the realised
+  result back in and shows the price at which everything you ever did in that coin
+  nets to zero. On real data the two differed by more than 2x. Both are shown, never
+  substituted for one another; coins with no recorded sales are labelled as such,
+  because "same as average cost" means "we don't know your history", not "you never lost".
 - **Transfers are not sales** — moving a coin from an exchange to your own wallet
   keeps its cost basis, produces no cash movement and no realised P&L. Each lot
   travels with its own cost, so FIFO stays correct afterwards.
@@ -244,7 +250,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-720 tests, about 25 seconds. The suite **never touches your real data and never hits
+754 tests, about 40 seconds. The suite **never touches your real data and never hits
 the network**: data paths are redirected to a temporary directory, all external calls
 are mocked, and no test calls the AI API.
 

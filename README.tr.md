@@ -34,6 +34,13 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
 - **Sembole özel kaynak tanımı** — bir coin hiçbir kademede bulunamazsa kaynağı
   arayüzden sabitlersiniz. Kod değiştirmeye gerek yok.
 - **DCA / maliyet ortalaması** — konsolide ortalama veya FIFO ile kısmi satış.
+- **Net başa baş** — ortalama maliyet yalnızca *elinizde duran* lotların maliyetidir;
+  daha önce alıp sattığınız coinlerden haberi yoktur. Ayrı bir sayı gerçekleşmiş
+  sonucu da katarak o coinde yaptığınız her şeyin toplamının sıfıra geldiği fiyatı
+  gösterir. Gerçek veride ikisi arasındaki fark iki katından fazlaydı. İkisi de
+  gösterilir, biri diğerinin yerine geçmez; kayıtlı satışı olmayan coinler ayrıca
+  etiketlenir — çünkü "ortalama maliyetle aynı" demek "geçmişinizi bilmiyoruz"
+  demektir, "zarar etmediniz" değil.
 - **Transfer satış değildir** — bir coini borsadan kendi cüzdanınıza taşımak maliyet
   tabanınızı korur; nakit hareketi ve gerçekleşmiş kâr/zarar oluşturmaz. Her lot kendi
   maliyetiyle taşındığı için sonrasında FIFO doğru çalışmaya devam eder.
@@ -236,7 +243,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-720 test, yaklaşık 25 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
+754 test, yaklaşık 40 saniye. Testler **gerçek verinize ve ağa dokunmaz**:
 veri yolları geçici bir klasöre yönlendirilir, tüm dış çağrılar taklit edilir ve
 hiçbir test yapay zekâ API'sine istek atmaz.
 

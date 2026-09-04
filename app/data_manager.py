@@ -210,6 +210,218 @@ def resolve_price_info(live_prices, lookup_symbol, raw_coin, base_clean, cost):
 
 
 # -------------------------------------------------------------
+# NET BAŞA BAŞ — "bu coinde tüm zararımı hangi fiyatta çıkarırım?"
+# -------------------------------------------------------------
+#
+# Neden ayrı bir metrik: `avg_cost` yalnızca ELDEKİ açık lotların maliyetidir
+# ve doğrudur, ama kullanıcının sorduğu soruyu yanıtlamaz. Gerçek örnek —
+# ARB'de açık lotların ortalaması $0.231711 görünüyordu; kullanıcı bunu
+# "bu fiyatta başa baş gelirim" diye okudu. Oysa daha önce kapanmış 1,133 ARB
+# alım-satımından $376.77 zarar vardı ve elindeki 1,446 ARB'nin o zararı da
+# karşılaması için $0.492220'ye çıkması gerekiyordu. İki kat fark.
+#
+# Formül — FIFO'da şu özdeşlik geçerlidir:
+#
+#     (toplam alış − toplam satış) / miktar
+#       ≡ (açık lot maliyeti − gerçekleşmiş K/Z) / açık miktar
+#
+# çünkü  alışlar = açık_maliyet + satılanın_maliyeti  ve
+#        gerçekleşmiş = satışlar − satılanın_maliyeti.
+# Bu yüzden ham alım-satım kayıtlarını yeniden okumaya gerek yok; defterde
+# zaten duran iki sayı yeter. Komisyonlar da `realized_pnl_usd`'nin içinde
+# (kaydedildikleri ölçüde) hâlihazırda var.
+#
+# NEDEN SEMBOL BAZLI: tablo satırları sembol@borsa, ama "TIA kaç dolar olursa"
+# bir borsa sorusu değil. Gerçek örnek — TIA zararı MEXC'te gerçekleşti;
+# konum bazlı hesap tüm zararı MEXC satırına yıkıp Binance satırını
+# olduğundan iyi gösteriyordu (2.91 / 4.68 yerine doğrusu 3.07).
+#
+# NE YAPMAZ: bu fonksiyon fill seviyesinde komisyon muhasebesi yapmaz.
+# Defter ham işlem tutmuyor — gerçekleşmiş kayıtların çoğu mutabakat özeti
+# ("tek tek işlemler içe aktarılmadı"). BNB ile ödenmiş komisyonu işlem
+# anındaki kurdan çevirmek için ne fee_asset ne timestamp var. Olmayan veri
+# için motor yazmak, o veri varmış izlenimi üretir; `history_quality` alanı
+# tam da bu boşluğu görünür kılmak için duruyor.
+
+# Geçmiş satış kaydı ne kadar güvenilir?
+BB_KALITE_MUTABIK = "reconciled"    # borsa kayıtlarıyla mutabakattan geldi
+BB_KALITE_DEFTER = "ledger"         # deftere elle girilmiş satış(lar) var
+BB_KALITE_GECMIS_YOK = "no_history" # hiç satış kaydı yok → sonuç ort. maliyete eşit
+
+# Sonucun durumu
+BB_DURUM_OK = "ok"
+BB_DURUM_SERMAYE_CIKTI = "capital_recovered"  # net risk ≤ 0
+BB_DURUM_POZISYON_YOK = "no_position"
+
+
+def _bb_sembol(tx) -> str:
+    """`calculate_portfolio_metrics` ile BİREBİR aynı sembol kuralı.
+
+    Ayrı bir kural yazılırsa satırlar eşleşmez ve metrik sessizce
+    yanlış satıra iliştirilir; bu yüzden ifade kopyalanmadı, tek yerde tutuldu.
+    """
+    ham = str(tx.get("coin") or "").upper().strip()
+    return ham if ham.endswith("USDT") else f"{ham}USDT"
+
+
+def _bb_gerceklesmis_mi(tx) -> bool:
+    """Bu kayıt gerçek bir elden çıkarma mı?
+
+    Ölçüt `calculate_realized_metrics` ve `tax_export` ile aynı tutulmalı;
+    üç yerde üç farklı tanım olursa aynı defter üç farklı toplam üretir.
+
+    Ek olarak burada iki kayıt türü daha dışlanır:
+      • transfer — varlık başka konuma taşındı, satılmadı;
+      • `rebuild` — mutabakatla düzeltilen ESKİ kayıt. Yerine geçen
+        `rebuild_realized` özeti zaten sayılıyor, ikisi birden sayılırsa
+        aynı geçmiş iki kez düşülür.
+    """
+    if tx.get("transfer_out_id") or tx.get("close_reason") == "rebuild":
+        return False
+    return tx.get("exit_price") is not None or tx.get("realized_pnl_usd") is not None
+
+
+def _bb_realized_pnl(tx) -> float:
+    """Kaydın gerçekleşmiş K/Z'si; `calculate_realized_metrics` ile aynı sıra."""
+    kayitli = tx.get("realized_pnl_usd")
+    if kayitli is not None:
+        return float(kayitli)
+    qty = float(tx.get("qty") or tx.get("amount") or 0.0)
+    giris = float(tx.get("cost") or tx.get("buy_price") or 0.0)
+    cikis = float(tx.get("exit_price") or 0.0)
+    cikis_deger = tx.get("exit_value")
+    cikis_deger = float(cikis_deger) if cikis_deger is not None else qty * cikis
+    return (cikis_deger - qty * giris) - float(tx.get("fee_usd") or 0.0)
+
+
+def calculate_net_breakeven(data):
+    """Her sembol için net başa baş fiyatını üretir. Canlı fiyat kullanmaz.
+
+    Dönüş: {sembol: {...}}. Anahtarlar `calculate_portfolio_metrics`'in
+    `lookup_symbol`'ü ile aynıdır.
+    """
+    transactions = data.get("transactions", [])
+
+    acik_qty = defaultdict(float)
+    acik_maliyet = defaultdict(float)
+    konumlar = defaultdict(set)
+    realized_pnl = defaultdict(float)
+    realized_fee = defaultdict(float)
+    realized_adet = defaultdict(int)
+    mutabik = set()
+    semboller = set()
+
+    for tx in transactions:
+        sembol = _bb_sembol(tx)
+        if sembol == "USDT":
+            continue
+        semboller.add(sembol)
+
+        if tx.get("rebuild_in_id") or tx.get("rebuild_out_id") or tx.get("close_reason") == "rebuild_realized":
+            mutabik.add(sembol)
+
+        if tx.get("status") == "Aktif":
+            qty = float(tx.get("qty") or 0.0)
+            acik_qty[sembol] += qty
+            acik_maliyet[sembol] += qty * float(tx.get("cost") or 0.0)
+            konumlar[sembol].add(normalize_location(str(tx.get("exchange") or "BINANCE")))
+
+        if _bb_gerceklesmis_mi(tx):
+            realized_pnl[sembol] += _bb_realized_pnl(tx)
+            realized_fee[sembol] += float(tx.get("fee_usd") or 0.0)
+            realized_adet[sembol] += 1
+
+    sonuc = {}
+    for sembol in semboller:
+        qty = acik_qty[sembol]
+        maliyet = acik_maliyet[sembol]
+        gerceklesmis = realized_pnl[sembol]
+
+        # Elde kalanın hâlâ riskte olan parası: harcanan − geri alınan.
+        net_risk = maliyet - gerceklesmis
+
+        if qty <= 0:
+            durum, fiyat = BB_DURUM_POZISYON_YOK, None
+        elif net_risk <= 0:
+            # Geçmiş satışlar ana parayı tamamen çıkarmış. Bölme matematiksel
+            # olarak çalışır ama NEGATİF FİYAT üretir (gerçek örnek: 0.0035 ENS
+            # kalmış, +$97 gerçekleşmiş → −$27,472). Fiyat olarak gösterilemez.
+            durum, fiyat = BB_DURUM_SERMAYE_CIKTI, None
+        else:
+            durum, fiyat = BB_DURUM_OK, net_risk / qty
+
+        if sembol in mutabik:
+            kalite = BB_KALITE_MUTABIK
+        elif realized_adet[sembol] > 0:
+            kalite = BB_KALITE_DEFTER
+        else:
+            kalite = BB_KALITE_GECMIS_YOK
+
+        sonuc[sembol] = {
+            "symbol": sembol,
+            "net_breakeven_price": fiyat,
+            "net_breakeven_state": durum,
+            "net_capital_at_risk": net_risk,
+            "open_qty": qty,
+            "open_cost_usd": maliyet,
+            "realized_pnl_usd": gerceklesmis,
+            "realized_fees_usd": realized_fee[sembol],
+            "realized_tx_count": realized_adet[sembol],
+            "history_quality": kalite,
+            "locations": sorted(konumlar[sembol]),
+            # Sembol birden fazla konumda duruyorsa arayüz "tüm konumlar
+            # birlikte" demeli; aksi halde kullanıcı satırdaki miktarla
+            # buradaki fiyatı aynı kovadan sanır.
+            "multi_location": len(konumlar[sembol]) > 1,
+        }
+
+    return sonuc
+
+
+def _net_basabas_ilistir(consolidated_coins, data):
+    """Konsolide satırlara sembol bazlı net başa baş alanlarını ekler.
+
+    Satırlar konum bazlı, metrik sembol bazlı olduğu için aynı sembolün iki
+    satırı AYNI fiyatı gösterir — kasıtlı. Toplam K/Z dökümü için sembolün
+    tüm satırlarındaki güncel değer burada toplanır.
+    """
+    tablo = calculate_net_breakeven(data)
+
+    sembol_deger = defaultdict(float)
+    for cm in consolidated_coins:
+        sembol_deger[cm.get("symbol")] += float(cm.get("current_value") or 0.0)
+
+    for cm in consolidated_coins:
+        bb = tablo.get(cm.get("symbol"))
+        if not bb:
+            continue
+        guncel = sembol_deger[cm["symbol"]]
+        acik_pnl = guncel - bb["open_cost_usd"]
+
+        cm["net_breakeven"] = {
+            "price": bb["net_breakeven_price"],
+            "state": bb["net_breakeven_state"],
+            "capital_at_risk": round(bb["net_capital_at_risk"], 4),
+            "history_quality": bb["history_quality"],
+            "realized_pnl_usd": round(bb["realized_pnl_usd"], 2),
+            "realized_fees_usd": round(bb["realized_fees_usd"], 4),
+            "realized_tx_count": bb["realized_tx_count"],
+            "multi_location": bb["multi_location"],
+            "locations": bb["locations"],
+            # Sembolün tamamı için döküm (satır değil, coin geneli).
+            "symbol_qty": bb["open_qty"],
+            "symbol_open_cost_usd": round(bb["open_cost_usd"], 2),
+            "symbol_current_value_usd": round(guncel, 2),
+            "symbol_open_pnl_usd": round(acik_pnl, 2),
+            "symbol_total_pnl_usd": round(acik_pnl + bb["realized_pnl_usd"], 2),
+        }
+        # Düz alanlar: Excel, AI ve dışa aktarım tarafları iç içe sözlük
+        # okumak zorunda kalmasın.
+        cm["net_breakeven_price"] = bb["net_breakeven_price"]
+        cm["net_breakeven_state"] = bb["net_breakeven_state"]
+
+
+# -------------------------------------------------------------
 # Portfolio Calculation Engine (Multi-Exchange KPI Engine)
 # -------------------------------------------------------------
 def calculate_portfolio_metrics(data, live_prices):
@@ -422,6 +634,10 @@ def calculate_portfolio_metrics(data, live_prices):
         consolidated_coins.append(cm)
 
     consolidated_coins.sort(key=lambda x: x["pnl_usd"], reverse=True)
+
+    # Net başa baş — tüm satırlar oluştuktan SONRA, çünkü sembol geneli
+    # döküm için o sembolün bütün konumlarındaki güncel değer gerekiyor.
+    _net_basabas_ilistir(consolidated_coins, data)
 
     for cm in consolidated_coins:
         if total_active_current_value > 0:
@@ -2821,24 +3037,27 @@ def export_portfolio_excel(data, live_prices):
     ws1 = wb.create_sheet(title="Konsolide Portfoy")
     ws1.views.sheetView[0].showGridLines = True
 
-    ws1.merge_cells("A1:K1")
+    ws1.merge_cells("A1:L1")
     ws1["A1"] = "COINTAKIP - CANLI KRIPTO PORTFOY VE POZISYON RAPORU"
     ws1["A1"].font = font_title
     ws1["A1"].fill = fill_title
     ws1["A1"].alignment = align_center
     ws1.row_dimensions[1].height = 30
 
-    ws1.merge_cells("A2:K2")
+    ws1.merge_cells("A2:L2")
     ws1["A2"] = f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y %H:%M')} | Toplam Varlik: ${kpis.get('total_kasa', 0):,.2f} | Serbest Nakit: ${kpis.get('usdt_cash', 0):,.2f} USDT"
     ws1["A2"].font = font_subtitle
     ws1["A2"].fill = fill_title
     ws1["A2"].alignment = align_center
     ws1.row_dimensions[2].height = 18
 
+    # "Net Başa Baş" sütunu, "Ort. Maliyet"in yanına konuldu — ikisi yan yana
+    # okunmadığında aralarındaki fark gözden kaçıyor; kullanıcının uygulamada
+    # yaşadığı yanılgının kaynağı tam olarak buydu.
     headers1 = [
-        "Varlık", "Borsa", "Kategori", "Miktar", "Ort. Maliyet ($)", 
-        "Canlı Fiyat ($)", "Toplam Yatırım ($)", "Güncel Değer ($)", 
-        "Net K/Z ($)", "Getiri (%)", "Portföy Payı (%)"
+        "Varlık", "Borsa", "Kategori", "Miktar", "Ort. Maliyet ($)",
+        "Net Başa Baş ($)", "Canlı Fiyat ($)", "Toplam Yatırım ($)",
+        "Güncel Değer ($)", "Net K/Z ($)", "Getiri (%)", "Portföy Payı (%)"
     ]
     for col_idx, h in enumerate(headers1, 1):
         cell = ws1.cell(row=4, column=col_idx, value=h)
@@ -2862,39 +3081,52 @@ def export_portfolio_excel(data, live_prices):
         c_cost.number_format = "$#,##0.0000" if float(c.get("avg_cost", 0)) < 1 else "$#,##0.00"
         c_cost.alignment = align_right
 
-        c_price = ws1.cell(row=row_curr, column=6, value=float(c.get("live_price", 0)))
+        # Fiyat üretilemeyen haller (sermaye çıkarılmış / pozisyon yok) sayı
+        # yerine kelimeyle yazılır; 0 yazmak "başa baş sıfır dolar" gibi okunur.
+        bb_fiyat = c.get("net_breakeven_price")
+        bb_durum = c.get("net_breakeven_state")
+        if bb_fiyat is not None:
+            c_bb = ws1.cell(row=row_curr, column=6, value=float(bb_fiyat))
+            c_bb.number_format = "$#,##0.0000" if float(bb_fiyat) < 1 else "$#,##0.00"
+        elif bb_durum == BB_DURUM_SERMAYE_CIKTI:
+            c_bb = ws1.cell(row=row_curr, column=6, value="Sermaye cikarildi")
+        else:
+            c_bb = ws1.cell(row=row_curr, column=6, value="—")
+        c_bb.alignment = align_right
+
+        c_price = ws1.cell(row=row_curr, column=7, value=float(c.get("live_price", 0)))
         c_price.number_format = "$#,##0.0000" if float(c.get("live_price", 0)) < 1 else "$#,##0.00"
         c_price.alignment = align_right
 
-        c_inv = ws1.cell(row=row_curr, column=7, value=float(c.get("total_invested", 0)))
+        c_inv = ws1.cell(row=row_curr, column=8, value=float(c.get("total_invested", 0)))
         c_inv.number_format = "$#,##0.00"
         c_inv.alignment = align_right
 
-        c_val = ws1.cell(row=row_curr, column=8, value=float(c.get("current_value", 0)))
+        c_val = ws1.cell(row=row_curr, column=9, value=float(c.get("current_value", 0)))
         c_val.number_format = "$#,##0.00"
         c_val.alignment = align_right
 
         pnl_val = float(c.get("pnl_usd", 0))
-        c_pnl = ws1.cell(row=row_curr, column=9, value=pnl_val)
+        c_pnl = ws1.cell(row=row_curr, column=10, value=pnl_val)
         c_pnl.number_format = "+$#,##0.00;-$#,##0.00;$0.00"
         c_pnl.font = font_green if pnl_val >= 0 else font_red
         c_pnl.alignment = align_right
 
         pnl_pct_val = float(c.get("pnl_pct", 0)) / 100.0
-        c_pct = ws1.cell(row=row_curr, column=10, value=pnl_pct_val)
+        c_pct = ws1.cell(row=row_curr, column=11, value=pnl_pct_val)
         c_pct.number_format = "+0.0%;-0.0%;0.0%"
         c_pct.font = font_green if pnl_pct_val >= 0 else font_red
         c_pct.alignment = align_right
 
         share_val = float(c.get("portfolio_share_pct", 0)) / 100.0
-        c_share = ws1.cell(row=row_curr, column=11, value=share_val)
+        c_share = ws1.cell(row=row_curr, column=12, value=share_val)
         c_share.number_format = "0.0%"
         c_share.alignment = align_right
 
-        for col_idx in range(1, 12):
+        for col_idx in range(1, 13):
             cell = ws1.cell(row=row_curr, column=col_idx)
             cell.border = border_cell
-            if col_idx not in [9, 10]:
+            if col_idx not in [10, 11]:
                 cell.font = font_code if col_idx in [1, 2] else font_regular
             if row_curr % 2 == 0:
                 cell.fill = fill_zebra
@@ -2905,16 +3137,16 @@ def export_portfolio_excel(data, live_prices):
     tot_row = row_curr
     ws1.cell(row=tot_row, column=1, value="GENEL TOPLAM").font = font_bold
     ws1.cell(row=tot_row, column=1).alignment = align_left
-    ws1.cell(row=tot_row, column=7, value=f"=SUM(G5:G{tot_row-1})").number_format = "$#,##0.00"
-    ws1.cell(row=tot_row, column=7).font = font_bold
     ws1.cell(row=tot_row, column=8, value=f"=SUM(H5:H{tot_row-1})").number_format = "$#,##0.00"
     ws1.cell(row=tot_row, column=8).font = font_bold
-    ws1.cell(row=tot_row, column=9, value=f"=SUM(I5:I{tot_row-1})").number_format = "+$#,##0.00;-$#,##0.00;$0.00"
+    ws1.cell(row=tot_row, column=9, value=f"=SUM(I5:I{tot_row-1})").number_format = "$#,##0.00"
     ws1.cell(row=tot_row, column=9).font = font_bold
-    ws1.cell(row=tot_row, column=11, value="100.0%").font = font_bold
-    ws1.cell(row=tot_row, column=11).alignment = align_right
+    ws1.cell(row=tot_row, column=10, value=f"=SUM(J5:J{tot_row-1})").number_format = "+$#,##0.00;-$#,##0.00;$0.00"
+    ws1.cell(row=tot_row, column=10).font = font_bold
+    ws1.cell(row=tot_row, column=12, value="100.0%").font = font_bold
+    ws1.cell(row=tot_row, column=12).alignment = align_right
 
-    for col_idx in range(1, 12):
+    for col_idx in range(1, 13):
         cell = ws1.cell(row=tot_row, column=col_idx)
         cell.border = border_total
         cell.fill = fill_total

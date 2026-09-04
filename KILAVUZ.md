@@ -8,7 +8,7 @@ yapıldığını öğrenmek için [README.tr.md](README.tr.md) dosyasına bakın
 ## İçindekiler
 
 1. [Kurulum ve ilk açılış](#1-kurulum-ve-ilk-açılış)
-2. [Temel kavramlar](#2-temel-kavramlar) — lot, pozisyon, konum, maliyet tabanı
+2. [Temel kavramlar](#2-temel-kavramlar) — lot, pozisyon, konum, maliyet tabanı, net başa baş
 3. [Alım ve satış girmek](#3-alım-ve-satış-girmek)
 4. [Fiyat bulunamayınca](#4-fiyat-bulunamayınca)
 5. [Kasa ve konumlar](#5-kasa-ve-konumlar)
@@ -94,6 +94,66 @@ yüzden uygulama onu korumaya öncelik verir:
 - Transfer maliyet tabanını **korur** (satış değildir).
 - Zarar yazımı maliyeti **zarara çevirir** (nakit üretmez).
 - Mutabakat düzeltmesi maliyeti **borsa kaydıyla değiştirir** (yalnızca siz onaylarsanız).
+
+### Net başa baş
+
+**Ortalama maliyet, "hangi fiyatta zararımdan kurtulurum?" sorusunun cevabı
+değildir.** Bu ikisi çok kolay karıştırılır ve fark bazen iki katı olur.
+
+Ortalama maliyet yalnızca **şu an elinizde duran** lotları anlatır. Geçmişte
+alıp sattığınız ve artık elinizde olmayan coinlerden ne kazandığınızı ya da
+ne kaybettiğinizi bilmez.
+
+Gerçek bir örnek:
+
+| | |
+|---|---|
+| Elinizdeki ARB | 1.446,2774 adet |
+| **Ortalama maliyet** | **$0,231711** |
+| Daha önce alınıp satılan ARB | 1.133,2 adet |
+| O işlemlerin sonucu | **−$376,77** |
+| **Net başa baş** | **$0,492220** |
+
+ARB $0,231711'e çıktığında *elinizdeki* coinler maliyetine gelir — ama toplamda
+hâlâ $376,77 zarardasınızdır. Bu coinde yaptığınız her şeyin toplamının sıfıra
+gelmesi için fiyatın **$0,492220** olması gerekir.
+
+Uygulama ikisini de gösterir ve asla birbirinin yerine koymaz:
+
+- **Ort. Maliyet** — açık lotlarınızın maliyeti. Kâr/zarar, DCA ve satış
+  hesapları bunu kullanmaya devam eder.
+- **Net B.B.** — geçmiş satışlar dahil, gerçek kurtulma fiyatı.
+
+Bir coinin grafiğini açtığınızda üstte **"Tüm Geçmişiyle Bu Coin"** kutusunu
+görürsünüz: açık pozisyon maliyeti, açık kâr/zarar, gerçekleşmiş kâr/zarar,
+toplam kâr/zarar ve net başa baş yan yana.
+
+**Bilmeniz gereken üç şey:**
+
+**1. Hesap coinin tamamını kapsar, tek bir borsayı değil.** TIA'yı hem
+Binance'te hem MEXC'te tutuyorsanız ve zararı MEXC'te ettiyseniz, iki satır da
+aynı net başa başı gösterir. "TIA kaç dolar olursa" bir borsa sorusu değildir.
+Coin birden fazla yerdeyse kutuda `BINANCE + MEXC birlikte` yazar.
+
+**2. "Sermaye çıkarıldı" bir başa baş fiyatı değildir.** Geçmiş satışlarınız
+o coine koyduğunuz paranın tamamını çıkarmışsa elinizde kalanda riskte para
+kalmamıştır; matematiksel olarak negatif bir fiyat çıkardı, o yüzden sayı
+yerine bu etiket yazılır.
+
+**3. "Geçmiş satış yok" eşitliği bir bilgi değil, bir boşluktur.** Defterde o
+coin için hiç kapanmış satış yoksa net başa baş ortalama maliyetle birebir aynı
+çıkar. Bu **"geçmişte zarar etmediniz"** demek değil, **"geçmişinizi
+bilmiyoruz"** demektir — özellikle uygulamayı kullanmaya başlamadan önce yaptığınız
+işlemler için. Borsa mutabakatı (bölüm 10) yaptığınız coinlerde bu boşluk kapanır
+ve kutuda `borsa mutabık` rozeti görünür.
+
+> **Komisyonlar hakkında:** hesap, defterde kayıtlı komisyonları içerir. Borsa
+> mutabakatı komisyon tutarlarını içe aktarmadığı için mutabakattan gelen
+> geçmişte komisyon sıfır görünür; gerçek başa baş, ödediğiniz komisyonlar
+> kadar bir tık daha yüksektir. Uygulama bu durumda ilgili yerde not düşer.
+> BNB gibi başka bir coinle ödenmiş komisyonlar hiç hesaba katılmaz — defter
+> hangi komisyonun hangi coinle ödendiğini tutmuyor ve geçmiş bir kuru
+> bugünkü fiyatla çevirmek sayıyı düzeltmez, bozar.
 
 ---
 

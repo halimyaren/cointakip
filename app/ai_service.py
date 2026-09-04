@@ -20,7 +20,29 @@ class AIFinancialAdvisor:
         
         coins_summary = []
         for c in metrics.get("consolidated_coins", []):
+            # NET BAŞA BAŞ — modele MUTLAKA verilmeli. Aksi halde elindeki tek
+            # başabaş göstergesi `breakeven_req_rise_pct` olur ve o yalnızca
+            # AÇIK lotların maliyetine dönüşü ölçer. Geçmişte kapanmış zararlı
+            # satışları olan bir coinde model "az kaldı, %73 yeter" der; oysa
+            # gerçek kurtulma eşiği çok daha yukarıdadır. Yanlış sayıya dayanan
+            # bir tavsiye, tavsiye vermemekten kötüdür.
+            bb = c.get("net_breakeven") or {}
+            bb_ozet = None
+            if bb.get("history_quality") and bb.get("history_quality") != "no_history":
+                bb_ozet = {
+                    "net_breakeven_price": (round(bb["price"], 8)
+                                            if bb.get("price") is not None else None),
+                    "state": bb.get("state"),
+                    "realized_pnl_usd": bb.get("realized_pnl_usd"),
+                    "total_pnl_usd": bb.get("symbol_total_pnl_usd"),
+                    "note": ("Bu coinde gecmis satislar var. 'avg_cost' ve "
+                             "'breakeven_req_rise_pct' YALNIZCA acik lotlari anlatir; "
+                             "gercek kurtulma esigi 'net_breakeven_price'dir. "
+                             "Sembolun tum konumlarini birlikte kapsar."),
+                }
+
             coins_summary.append({
+                "net_breakeven": bb_ozet,
                 "symbol": c.get("symbol"),
                 "name": c.get("display_name"),
                 "exchange": c.get("exchange", "BINANCE"),
