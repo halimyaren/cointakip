@@ -381,6 +381,7 @@ function portfolioApp() {
     pingResults: {},
     pingLoading: false,
     showGeminiKey: false,
+    showCoinGeckoKey: false,
     showTelegramToken: false,
     telegramTestLoading: false,
     telegramTestResult: null,
@@ -421,6 +422,14 @@ function portfolioApp() {
     aiCustomQuestion: '',
     copiedReportSuccess: false,
 
+    // FAZ M1 — Piyasa verisi.
+    //
+    // Bu durum yalnızca GÖSTERİM içindir; analiz bu veriyi sunucudan alır ve
+    // arayüz hazır olmasa bile çalışır. Buradaki amaç denetlenebilirlik:
+    // modele giden sayıyı kullanıcı da görmeli.
+    market: { snapshot: null, sources: [], change_vs_last_week: null, archived_days: 0 },
+    marketLoading: false,
+
     // Faz 7: Gerçekleşmiş Kâr/Zarar (Realized PnL) & Dışa Aktarma
     realizedMetrics: null,
     exportLoading: false,
@@ -451,6 +460,10 @@ function portfolioApp() {
       this.initInactivityListener();
       this.startBackgroundLoop();
 
+      // Kullanıcının varsayılan sekmesi YZ ise `$watch` hiç tetiklenmez;
+      // şerit boş kalırdı.
+      if (this.activeTab === 'ai') this.fetchMarket();
+
       // Re-init icons when tab changes
       this.$watch('activeTab', (val) => {
         this.$nextTick(() => {
@@ -460,6 +473,11 @@ function portfolioApp() {
           }
           if (val === 'ledger') {
             this.fetchRealizedMetrics();
+          }
+          // FAZ M1 — YZ sekmesi açıldığında piyasa şeridi tazelenir.
+          // Sunucu veriyi zaten arka planda topluyor; bu yalnızca okuma.
+          if (val === 'ai') {
+            this.fetchMarket();
           }
         });
       });
@@ -4229,6 +4247,98 @@ function portfolioApp() {
         brutal: 'Acı Gerçek',
         take_profit: 'Kâr Realizasyonu',
       })[mode] || (mode || '—');
+    },
+
+    // -------------------------------------------------------------
+    // PİYASA VERİSİ (FAZ M1)
+    //
+    // Uç nokta ASLA ağa çıkmaz; sunucu veriyi arka planda topluyor. Bu
+    // yüzden burada yavaşlık riski yok ve analiz akışı buna bağlı değil.
+    // -------------------------------------------------------------
+    async fetchMarket() {
+      if (this.marketLoading) return;
+      this.marketLoading = true;
+      try {
+        const resp = await fetch('/api/market');
+        if (resp.ok) this.market = await resp.json();
+      } catch (e) {
+        // Sessiz geç: piyasa şeridi bir konfordur, arayüzü düşürmemeli.
+        console.debug('Piyasa verisi alınamadı:', e);
+      } finally {
+        this.marketLoading = false;
+        this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+      }
+    },
+
+    get marketAvailable() {
+      return !!(this.market && this.market.snapshot && this.market.snapshot.available);
+    },
+
+    // Anahtarsız çalışmak bir hata değil ama GÖRÜNÜR olmalı. Kullanıcının
+    // kararı buydu: anahtar isteğe bağlı bir ekstra değil, tercih edilen yol.
+    get marketKeylessWarning() {
+      const s = (this.market && this.market.sources) || [];
+      const glb = s.find(r => r.id === 'global');
+      return !!(glb && glb.enabled && glb.auth_mode === 'keyless');
+    },
+
+    _marketBlok(id) {
+      const b = this.market && this.market.snapshot && this.market.snapshot.blocks;
+      return (b && b[id]) || null;
+    },
+
+    // Şeritteki kartlar. Bilerek YORUM YOK — ham ölçüm ve yaş.
+    // Ölçüm gününde SMA50 < SMA200 idi ("ölüm kesişimi") ama fiyat ikisinin
+    // de %14 üstünde ve 30 günde +%24'tü; etiket gerçeğin tersini söylüyordu.
+    marketCards() {
+      const kartlar = [];
+      const yuzde = (v) => (v === null || v === undefined) ? '—' : ((v > 0 ? '+' : '') + v + '%');
+
+      const btc = this._marketBlok('btc_trend');
+      if (btc) kartlar.push({
+        id: 'btc', label: 'BTC',
+        value: '$' + Number(btc.price || 0).toLocaleString('tr-TR', { maximumFractionDigits: 0 }),
+        sub: '7g ' + yuzde(btc.change_7d_pct) + ' · 30g ' + yuzde(btc.change_30d_pct),
+        stale: btc.freshness === 'stale', age: btc.age_human,
+      });
+
+      const gen = this._marketBlok('breadth');
+      if (gen) kartlar.push({
+        id: 'breadth', label: 'Genişlik',
+        value: '%' + gen.advancing_pct + ' artıda',
+        sub: gen.liquid_pairs + ' likit çift · medyan ' + yuzde(gen.median_change_24h_pct),
+        stale: gen.freshness === 'stale', age: gen.age_human,
+      });
+
+      const fng = this._marketBlok('fear_greed');
+      if (fng) kartlar.push({
+        id: 'fng', label: 'Korku & Açgözlülük',
+        value: String(fng.value),
+        sub: (fng.classification || '') + (typeof fng.change_7d === 'number'
+          ? ' · 7g ' + (fng.change_7d > 0 ? '+' : '') + fng.change_7d : ''),
+        stale: fng.freshness === 'stale', age: fng.age_human,
+      });
+
+      const glb = this._marketBlok('global');
+      if (glb) kartlar.push({
+        id: 'dom', label: 'BTC Dominansı',
+        value: '%' + glb.btc_dominance_pct,
+        // Kaynak adı bilerek yazılıyor: dominans kaynağa göre 2.81 puan
+        // değişiyor ve kullanıcı başka bir yerde farklı sayı görebilir.
+        sub: (glb.source || '') + ' · BTC dışı $'
+             + (Number(glb.market_cap_excl_btc_usd || 0) / 1e9).toFixed(0) + 'B',
+        stale: glb.freshness === 'stale', age: glb.age_human,
+      });
+
+      const eth = this._marketBlok('ethbtc');
+      if (eth) kartlar.push({
+        id: 'ethbtc', label: 'ETH/BTC',
+        value: String(eth.value),
+        sub: '30g ' + yuzde(eth.change_30d_pct),
+        stale: eth.freshness === 'stale', age: eth.age_human,
+      });
+
+      return kartlar;
     },
 
     async toggleAiHistory() {

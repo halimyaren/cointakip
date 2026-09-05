@@ -131,6 +131,20 @@ class SmartPriceDiscoveryEngine:
         #              "last_ok_ts":float,"last_try_ts":float} }
         self._source_health = {}
 
+        # FAZ M1 — Piyasa genişliği için ham girdi.
+        #
+        # Binance adaptörü zaten borsanın TÜM 24 saatlik ticker'ını indiriyor
+        # (ölçüldü: 1.89 MB, 3695 çift, ağırlık 80) ama biz o yanıttan yalnızca
+        # fiyatı alıp yüzde değişimleri çöpe atıyorduk. Oysa "likit çiftlerin
+        # yüzde kaçı artıda" ve "kaçı BTC'yi geçiyor" sorularının cevabı tam
+        # olarak orada duruyor.
+        #
+        # Bu yüzden genişlik SIFIR ek ağ çağrısına mal olur. Ayrı bir kaynağa
+        # bağlanmadığı için ayrı bir kesinti riski de yoktur.
+        # [ {"symbol": "BTCUSDT", "change_pct": -0.03, "quote_volume": 1.2e9} ]
+        self._breadth_input = []
+        self._breadth_ts = 0.0
+
     # -----------------------------------------------------------------
     # Yaşam döngüsü
     # -----------------------------------------------------------------
@@ -271,6 +285,7 @@ class SmartPriceDiscoveryEngine:
     # -----------------------------------------------------------------
     def _adapter_binance(self, api_urls):
         prices, index = {}, []
+        breadth = []
         urls = [
             api_urls.get("binance_ticker") or "https://api.binance.com/api/v3/ticker/24hr",
             "https://data-api.binance.vision/api/v3/ticker/24hr",
@@ -290,6 +305,19 @@ class SmartPriceDiscoveryEngine:
                     chg_pct = float(item.get("priceChangePercent", 0.0))
                 except (ValueError, TypeError):
                     continue
+
+                # FAZ M1 — genişlik girdisi. Fiyat akışından BAĞIMSIZ toplanır:
+                # buradaki hacim süzgeci (aşağıdaki `vol > 0.01`) genişlik için
+                # uygun değil, çünkü genişlik USDT cinsinden ciro ister.
+                if sym.endswith("USDT"):
+                    try:
+                        breadth.append({
+                            "symbol": sym,
+                            "change_pct": chg_pct,
+                            "quote_volume": float(item.get("quoteVolume", 0.0) or 0.0),
+                        })
+                    except (ValueError, TypeError):
+                        pass
                 # Hacim süzgeci yalnızca Binance kademesinde uygulanır:
                 # borsa, işlem görmeyen çiftleri de listede tuttuğu için
                 # ölü fiyatların portföye sızmasını engeller.
@@ -307,6 +335,13 @@ class SmartPriceDiscoveryEngine:
                         index.append({"symbol": sym, "base": base, "display": f"{base}/USDT",
                                       "exchange": "BINANCE", "price": last_p})
             break
+
+        # Genişlik girdisi yalnızca gerçekten veri geldiyse tazelenir; boş
+        # bir tur, elimizdeki son iyi tabloyu silmemeli.
+        if breadth:
+            with self.lock:
+                self._breadth_input = breadth
+                self._breadth_ts = time.time()
         return prices, index
 
     def _adapter_mexc(self, api_urls):
@@ -830,6 +865,21 @@ class SmartPriceDiscoveryEngine:
     def get_prices(self):
         with self.lock:
             return dict(self.prices)
+
+    def get_breadth_input(self):
+        """FAZ M1 — piyasa genişliği için ham Binance satırları.
+
+        Ağa ÇIKMAZ: son fiyat turunda zaten indirilmiş veriyi döndürür.
+        Binance kademesi kapalıysa veya hiç yanıt vermediyse boş liste döner
+        ve `market_service` bunu "genişlik yok" olarak bildirir — tahmin
+        üretmez.
+        """
+        with self.lock:
+            return list(self._breadth_input)
+
+    def get_breadth_ts(self):
+        with self.lock:
+            return self._breadth_ts
 
     def get_price_for_symbol(self, symbol):
         sym = _norm_symbol(symbol)

@@ -298,7 +298,8 @@ class TestGrafikKurulumKurallari:
         import re
         m = re.search(r'app\.js\?v=([\d.]+)', self._index())
         assert m, "index.html app.js'i sürümsüz yüklüyor"
-        assert float(m.group(1)) >= 2.3
+        # FAZ M1 piyasa şeridi 2.6 ile geldi.
+        assert float(m.group(1)) >= 2.6
 
 
 # ===========================================================================

@@ -3653,6 +3653,79 @@
         </div>
       </div>
 
+      <!--
+        PİYASA ŞERİDİ (FAZ M1)
+
+        Modele NE GİTTİĞİNİ gösterir. Sayıyı göremezsen doğruluğunu
+        denetleyemezsin; net başa baş işinde de değeri yaratan şey buydu.
+        Bilerek yorum yok: burada "boğa/ayı" yazmaz, ham ölçüm ve YAŞ yazar.
+      -->
+      <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 font-sans">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center space-x-1.5">
+            <i data-lucide="globe-2" class="w-3.5 h-3.5 text-emerald-400"></i>
+            <span class="text-[11px] font-bold text-slate-300 tracking-wide">PİYASA ÇERÇEVESİ</span>
+            <span class="text-[10px] text-slate-500">— analize bu sayılar gidiyor</span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <template x-if="market.archived_days">
+              <span class="text-[10px] text-slate-500 font-mono-nums" x-text="market.archived_days + ' gün arşiv'"></span>
+            </template>
+            <button @click="fetchMarket()" class="text-[10px] text-slate-400 hover:text-white px-2 py-0.5 rounded bg-slate-800 border border-slate-700">Yenile</button>
+          </div>
+        </div>
+
+        <template x-if="!marketAvailable">
+          <div class="text-[11px] text-slate-500 py-1.5">
+            Piyasa verisi henüz toplanmadı veya kaynaklar yanıt vermedi.
+            Analiz yalnızca portföy verisiyle çalışır — bekletilmez.
+          </div>
+        </template>
+
+        <template x-if="marketAvailable">
+          <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            <template x-for="k in marketCards()" :key="k.id">
+              <div class="rounded-lg bg-slate-950/60 border border-slate-800 px-2.5 py-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-[9.5px] text-slate-500 uppercase tracking-wide" x-text="k.label"></span>
+                  <!-- Bayat veri sessizce verilmez; rozet taşır. -->
+                  <template x-if="k.stale">
+                    <span class="text-[9px] px-1 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                          :title="'Bu değer ' + k.age + ' önce alındı'" x-text="k.age"></span>
+                  </template>
+                </div>
+                <div class="text-sm font-bold text-white font-mono-nums mt-0.5" x-text="k.value"></div>
+                <div class="text-[10px] text-slate-400 mt-0.5" x-text="k.sub"></div>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <template x-if="marketAvailable && market.change_vs_last_week">
+          <div class="mt-2 pt-2 border-t border-slate-800 text-[10px] text-slate-400 flex flex-wrap gap-x-3 gap-y-1">
+            <span x-text="market.change_vs_last_week.from_date + ' → ' + market.change_vs_last_week.to_date + ':'"></span>
+            <template x-if="market.change_vs_last_week.btc_dominance_change_pts !== null && market.change_vs_last_week.btc_dominance_change_pts !== undefined">
+              <span class="font-mono-nums" x-text="'dominans ' + (market.change_vs_last_week.btc_dominance_change_pts > 0 ? '+' : '') + market.change_vs_last_week.btc_dominance_change_pts + ' puan'"></span>
+            </template>
+            <template x-if="market.change_vs_last_week.fear_greed_change !== null && market.change_vs_last_week.fear_greed_change !== undefined">
+              <span class="font-mono-nums" x-text="'K&A ' + (market.change_vs_last_week.fear_greed_change > 0 ? '+' : '') + market.change_vs_last_week.fear_greed_change"></span>
+            </template>
+            <template x-if="market.change_vs_last_week.dominance_note">
+              <span class="text-amber-300/90" x-text="market.change_vs_last_week.dominance_note"></span>
+            </template>
+          </div>
+        </template>
+
+        <!-- Anahtarsız modda kullanıcı bunu BİLMELİ; sessiz düşük kalite yok. -->
+        <template x-if="marketKeylessWarning">
+          <div class="mt-2 text-[10px] text-amber-300/90 flex items-start space-x-1.5">
+            <i data-lucide="alert-triangle" class="w-3 h-3 mt-0.5 shrink-0"></i>
+            <span>Dominans/piyasa değeri <strong>anahtarsız yedek modda</strong> çekiliyor (dakikada 5-15 çağrı).
+              <button @click="openSettingsModal('keys')" class="underline hover:text-white">Ücretsiz anahtar ekle</button></span>
+          </div>
+        </template>
+      </div>
+
       <!-- 4 Strategic Analysis Selector Cards -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 font-sans">
         
@@ -5602,6 +5675,52 @@
           <p class="text-[11px] text-slate-400">Faz 6'daki "Acı Gerçek / Brutal Stop-Loss Raporu" ve "Zarardan Kurtarma Stratejisi" analizlerini çalıştırmak için kullanılır.</p>
         </div>
 
+        <!-- CoinGecko Demo API Key — PİYASA VERİSİ (FAZ M1) -->
+        <!--
+          Bu alan bilinçli olarak "isteğe bağlı ekstra" gibi sunulmuyor.
+          Anahtarsız erişim çalışır ama IP başına dakikada 5-15 çağrıyla
+          sınırlıdır (ölçüldü: 5. çağrıda HTTP 429). Ücretsiz demo anahtarı
+          dakikada 100 çağrı verir. Kullanıcı hangi kalitede veri aldığını
+          bilmelidir; bu yüzden alan boşken YEDEK MOD uyarısı görünür.
+        -->
+        <div class="p-4 rounded-xl bg-slate-800/80 border space-y-2.5"
+             :class="settings.api_keys && settings.api_keys.coingecko_api_key ? 'border-slate-700/80' : 'border-amber-500/40'">
+          <div class="flex items-center justify-between">
+            <label class="text-white font-bold flex items-center space-x-1.5">
+              <i data-lucide="globe" class="w-4 h-4 text-emerald-400"></i>
+              <span>CoinGecko Piyasa Verisi Anahtarı</span>
+            </label>
+            <span class="text-[10px] font-semibold px-2 py-0.5 rounded border"
+                  :class="settings.api_keys && settings.api_keys.coingecko_api_key
+                          ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'
+                          : 'text-amber-300 bg-amber-500/10 border-amber-500/30'"
+                  x-text="settings.api_keys && settings.api_keys.coingecko_api_key ? 'Önerilen mod' : 'Yedek modda'"></span>
+          </div>
+          <div class="relative">
+            <input :type="showCoinGeckoKey ? 'text' : 'password'" x-model="settings.api_keys.coingecko_api_key"
+                   placeholder="CG-..." class="w-full px-3 py-2 pr-16 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:border-emerald-500">
+            <button type="button" @click="showCoinGeckoKey = !showCoinGeckoKey" class="absolute right-2 top-2 text-[10px] text-slate-400 hover:text-white px-2 py-0.5 bg-slate-800 rounded">
+              <span x-text="showCoinGeckoKey ? 'Gizle' : 'Göster'"></span>
+            </button>
+          </div>
+          <p class="text-[11px] text-slate-400">
+            BTC dominansı ve toplam piyasa değeri buradan gelir.
+            <strong class="text-slate-200">Anahtar kullanmak tercih edilen yoldur:</strong>
+            ücretsiz "Demo" anahtarı dakikada 100 çağrı verir, anahtarsız erişim ise
+            IP başına dakikada yalnızca 5-15 çağrıdır ve paylaşımlıdır.
+          </p>
+          <template x-if="!(settings.api_keys && settings.api_keys.coingecko_api_key)">
+            <p class="text-[11px] text-amber-300/90 flex items-start space-x-1.5">
+              <i data-lucide="alert-triangle" class="w-3.5 h-3.5 mt-0.5 shrink-0"></i>
+              <span>Şu an <strong>anahtarsız yedek moddasın</strong>. Piyasa verisi çalışmaya devam
+                eder ama yoğun saatlerde boş kalabilir.
+                <a href="https://www.coingecko.com/en/api/pricing" target="_blank" rel="noopener"
+                   class="underline text-amber-200 hover:text-white">Ücretsiz Demo anahtarı al</a>
+                — kayıt dışında bir şey gerekmez, kartsız.</span>
+            </p>
+          </template>
+        </div>
+
         <!-- Telegram Bot Token & Chat ID -->
         <div class="p-4 rounded-xl bg-slate-800/80 border border-slate-700/80 space-y-2.5">
           <div class="flex items-center justify-between">
@@ -5829,6 +5948,6 @@
   </div>
 
   <!-- App Frontend Script -->
-  <script src="/static/app.js?v=2.5"></script>
+  <script src="/static/app.js?v=2.7"></script>
 </body>
 </html>

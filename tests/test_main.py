@@ -341,3 +341,76 @@ def test_canli_fiyat_ucu(client):
     y = client.get("/api/live-price/BTCUSDT")
     assert y.status_code == 200
     assert y.json()["price"] == pytest.approx(100000.0)
+
+
+# ===========================================================================
+# FAZ M1: PİYASA VERİSİ UÇLARI
+#
+# Bu uçlar ASLA ağa çıkmaz — `market_service` veriyi arka planda topluyor ve
+# uç yalnızca hafızadaki fotoğrafı sunuyor. Ölçüldü: CoinGecko ucu 7-22 sn
+# sürüyor; arayüzü ona bağlamak kabul edilemezdi.
+# ===========================================================================
+
+def test_piyasa_ucu_veri_yokken_de_calisir(client):
+    """Piyasa verisi bir konfordur. Toplanmamışsa uç yine 200 döner."""
+    y = client.get("/api/market")
+    assert y.status_code == 200
+    veri = y.json()
+    assert "snapshot" in veri and "sources" in veri
+    assert veri["snapshot"]["available"] is False
+    assert veri["snapshot"]["blocks"] == {}
+
+
+def test_piyasa_ucu_kaynak_listesini_dondurur(client):
+    y = client.get("/api/market")
+    kaynaklar = {k["id"]: k for k in y.json()["sources"]}
+    for beklenen in ("btc_trend", "ethbtc", "breadth", "fear_greed", "global"):
+        assert beklenen in kaynaklar, f"kaynak listesinde {beklenen} yok"
+    # Genişlik dışındaki her kaynak ağ ister; genişlik mevcut veriden türer.
+    assert kaynaklar["breadth"]["needs_network"] is False
+    assert kaynaklar["global"]["needs_network"] is True
+
+
+def test_piyasa_ucu_anahtarsiz_modu_bildirir(client):
+    """Kullanıcı hangi kalitede veri aldığını bilmelidir; sessiz düşük
+    kalite yok."""
+    y = client.get("/api/market")
+    glb = next(k for k in y.json()["sources"] if k["id"] == "global")
+    assert glb["auth_mode"] == "keyless"
+    assert glb["auth_is_preferred"] is False
+
+
+def test_piyasa_ucu_onbellekteki_fotografi_sunar(client):
+    import market_service as ms
+    import time as _t
+    ms.market_service._cache["fear_greed"] = {
+        "data": {"value": 73, "classification": "Greed"},
+        "fetched_at": _t.time(),
+    }
+    try:
+        veri = client.get("/api/market").json()
+        assert veri["snapshot"]["available"] is True
+        blok = veri["snapshot"]["blocks"]["fear_greed"]
+        assert blok["value"] == 73
+        assert blok["freshness"] == "fresh"
+        assert "age_human" in blok
+    finally:
+        ms.market_service._cache = {}
+
+
+def test_piyasa_gecmis_ucu_bos_arsivde_bos_liste_doner(client):
+    y = client.get("/api/market/history?days=30")
+    assert y.status_code == 200
+    assert y.json()["series"] == []
+
+
+def test_piyasa_servisi_testlerde_calismiyor():
+    """Regresyon bekçisi.
+
+    `main.py` import edildiğinde piyasa döngüsü başlar ve 8 saniye sonra
+    Binance/alternative.me/CoinGecko'ya GERÇEKTEN çıkar. conftest bunu
+    susturuyor; birisi o susturmayı kaldırırsa testler sessizce ağa çıkmaya
+    başlar. Bu test o sessizliği bozar.
+    """
+    import market_service as ms
+    assert ms.market_service.is_running is False

@@ -66,6 +66,11 @@ TIPIK_KISMI_SATIS_ORANI = 0.25
 # şişirir; kullanıcı ücretsiz Gemini katmanında.
 GECMIS_ISLEM_SINIRI = 12
 
+# `market_service.BAYAT` ile aynı değer. Burada elle tekrarlanıyor ki
+# ai_service, piyasa servisi hiç kurulmamış bir ortamda da import edilebilsin;
+# piyasa verisi bir konfordur ve YZ motorunu ona bağımlı kılmak yanlış olur.
+BAYAT_ETIKET = "stale"
+
 
 class AIFinancialAdvisor:
     def __init__(self):
@@ -160,7 +165,60 @@ class AIFinancialAdvisor:
         # --- Geçmiş: model ne dediğini ve kullanıcının ne yaptığını bilmeli ---
         context["realized_history"] = self._gerceklesmis_ozet(data)
         context["previous_analysis"] = self._onceki_analiz_ozeti(mode=None)
+
+        # --- Piyasa: model portföyü biliyordu ama piyasayı hiç bilmiyordu ---
+        context["market"] = self._piyasa_ozeti()
         return context
+
+    # -------------------------------------------------------------------
+    def _piyasa_ozeti(self):
+        """Piyasa verisi bloğu (FAZ M1).
+
+        ASLA AĞA ÇIKMAZ ve ASLA analizi bekletmez. `market_service` veriyi
+        arka planda topluyor; burada yalnızca hafızadaki fotoğraf okunuyor.
+        Bu bilinçli: CoinGecko ucu bu kullanıcının ağından en kötü ölçümde
+        22 saniye sürdü ve analiz akışının ona bağlanması kabul edilemez.
+
+        Veri yoksa blok "available: false" döner ve analiz eksik veriyle ama
+        ZAMANINDA çalışır — piyasa verisi bir konfordur, portföy verisi değil.
+        """
+        try:
+            from market_service import market_service
+            snapshot = market_service.get_snapshot()
+        except Exception as e:
+            logger.debug("Piyasa verisi okunamadı: %s", e)
+            return {"available": False, "reason": "piyasa servisi okunamadi"}
+
+        if not snapshot.get("available"):
+            return {"available": False,
+                    "reason": "piyasa verisi henuz toplanmadi veya kaynaklar yanit vermedi"}
+
+        out = {
+            "available": True,
+            "blocks": snapshot.get("blocks", {}),
+            "generated_at": snapshot.get("generated_at"),
+            # Modelin en sık düştüğü tuzak: bir sayıyı okuyup onu "sinyal"
+            # sanmak. Ölçüm gününde SMA50 < SMA200 idi (kitaba göre "ölüm
+            # kesişimi") ama fiyat her iki ortalamanın %14 üstünde ve 30
+            # günde +%24'tü. Etiket gerçeğin tersini söylüyordu.
+            "how_to_read": (
+                "Bu blok HAM OLCUMDUR, sinyal veya hüküm degildir. Uygulama "
+                "bilerek 'boga/ayi' gibi bir etiket uretmez; yorum senin isin. "
+                "Her alt blogun 'freshness' ve 'age_human' alani vardir; "
+                "'stale' isaretli bir degeri kullanacaksan yasini rapora yaz. "
+                "Piyasa verisi portfoy tavsiyesinin YERINE gecmez, cercevesidir."
+            ),
+        }
+
+        # Geçmiş: dominansın yönünü hiçbir ücretsiz uçtan geriye dönük
+        # alamıyoruz; yalnızca kendi arşivimizden gelebilir.
+        try:
+            degisim = archive.market_change_since(days_ago=7)
+            if degisim:
+                out["change_vs_last_week"] = degisim
+        except Exception as e:
+            logger.debug("Piyasa değişimi okunamadı: %s", e)
+        return out
 
     # -------------------------------------------------------------------
     def _gerceklesmis_ozet(self, data):
@@ -357,6 +415,31 @@ HER MODDA GEÇERLİ KURALLAR:
 5. NET BAŞA BAŞ. Bir coinde `net_breakeven` doluysa gerçek kurtulma eşiği
    odur; `avg_cost` yalnızca elde kalan lotları anlatır ve geçmiş zararları
    KAPSAMAZ. "Az kaldı" derken doğru eşiğe bak.
+
+6. PİYASA VERİSİ. `market` alanı BTC trendi, ETH/BTC, piyasa genişliği,
+   Korku & Açgözlülük ve BTC dominansını içerir. Kuralları:
+     • Bunlar HAM ÖLÇÜMDÜR, sinyal değildir. Uygulama bilerek "boğa/ayı"
+       etiketi üretmez. Tek etiket `fear_greed.classification`'dır ve o
+       bizim değil, alternative.me'nin kendi standart etiketidir.
+     • TEK BİR SAYIDAN HÜKÜM ÇIKARMA. `sma50_above_sma200: false` tek
+       başına "düşüş" demek DEĞİLDİR; fiyatın ortalamalara uzaklığına
+       (`pct_vs_sma50`, `pct_vs_sma200`) ve 30 günlük değişime birlikte bak.
+       Gerçek örnek: bu iki ortalama kesişmiş görünürken fiyat ikisinin de
+       %14 üstünde ve 30 günde +%24 idi.
+     • TAZELİĞE BAK. Her blokta `freshness` ve `age_human` var. "stale"
+       işaretli bir değeri kullanacaksan yaşını rapora yaz. Blok yoksa
+       "veri yok" de, tahmin etme.
+     • DOMİNANS BİR KONVANSİYONDUR. `global.btc_dominance_pct` yalnızca o
+       kaynağın tanımına göredir (aynı anda ölçüldü: CoinGecko 58.84,
+       Coinpaprika 56.52, Coinlore 59.33). Mutlak eşiklerle
+       ("dominans 60'ı geçerse...") kesin hüküm kurma; YÖN daha anlamlıdır
+       ve yönü `change_vs_last_week` verir.
+     • F&G İLE DOMİNANS BAĞIMSIZ DEĞİLDİR. Korku & Açgözlülük endeksinin
+       kendi metodolojisinde BTC dominansı %10 ağırlıkla zaten vardır;
+       ikisini ayrı iki teyit gibi sayma.
+     • PİYASA, PORTFÖYÜN YERİNE GEÇMEZ. Piyasa verisi 1-5. kuralları
+       geçersiz kılmaz: genel görünüm ne olursa olsun, uğraşmaya değmeyecek
+       büyüklükte bir işlem yine önerilmez ve nakit oranı yine dikkate alınır.
 """
 
         prompt = f"""{system_instruction}
@@ -466,6 +549,85 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
 
         return satirlar
 
+    def _piyasa_notu(self, context):
+        """Yerel motorun rapor başına eklediği piyasa çerçevesi (FAZ M1).
+
+        Yerel motor yorum yapmaz — sayıları ve YAŞLARINI gösterir. Kullanıcı
+        modele ne gittiğini burada da görebilmeli; göremediği bir sayının
+        doğruluğunu denetleyemez.
+        """
+        piyasa = context.get("market") or {}
+        if not piyasa.get("available"):
+            return ["\n---", "### 🌍 Piyasa Çerçevesi",
+                    "* _Piyasa verisi şu an yok_ — kaynaklar henüz yanıt vermedi "
+                    "veya bu kaynaklar ayarlardan kapatılmış. Analiz yalnızca "
+                    "portföy verisine dayanıyor."]
+
+        bloklar = piyasa.get("blocks") or {}
+        satirlar = ["\n---", "### 🌍 Piyasa Çerçevesi",
+                    "_Aşağıdaki sayılar ham ölçümdür; uygulama bunlardan "
+                    "boğa/ayı hükmü üretmez._"]
+
+        def yas(blok):
+            if blok.get("freshness") == BAYAT_ETIKET:
+                return f" _(bayat — {blok.get('age_human', '?')} önce)_"
+            return ""
+
+        btc = bloklar.get("btc_trend")
+        if btc:
+            satirlar.append(
+                f"* **BTC:** `${btc.get('price', 0):,.0f}` · "
+                f"7g `%{btc.get('change_7d_pct')}` · 30g `%{btc.get('change_30d_pct')}` · "
+                f"SMA50'ye `%{btc.get('pct_vs_sma50')}` · "
+                f"SMA200'e `%{btc.get('pct_vs_sma200')}`{yas(btc)}")
+
+        gen = bloklar.get("breadth")
+        if gen:
+            satirlar.append(
+                f"* **Genişlik:** likit {gen.get('liquid_pairs')} çiftin "
+                f"`%{gen.get('advancing_pct')}`'i artıda · medyan "
+                f"`%{gen.get('median_change_24h_pct')}` · BTC'yi geçen "
+                f"`%{gen.get('outperforming_btc_pct')}`{yas(gen)}")
+
+        fng = bloklar.get("fear_greed")
+        if fng:
+            fark = fng.get("change_7d")
+            ek = f" (7 günde {fark:+d})" if isinstance(fark, int) else ""
+            satirlar.append(
+                f"* **Korku & Açgözlülük:** `{fng.get('value')}` "
+                f"— {fng.get('classification')}{ek}{yas(fng)}")
+
+        glb = bloklar.get("global")
+        if glb:
+            satirlar.append(
+                f"* **BTC dominansı:** `%{glb.get('btc_dominance_pct')}` "
+                f"({glb.get('source')} konvansiyonu) · BTC dışı piyasa "
+                f"`${(glb.get('market_cap_excl_btc_usd') or 0)/1e9:,.0f}B`{yas(glb)}")
+
+        eth = bloklar.get("ethbtc")
+        if eth:
+            satirlar.append(
+                f"* **ETH/BTC:** `{eth.get('value')}` · "
+                f"30g `%{eth.get('change_30d_pct')}`{yas(eth)}")
+
+        degisim = piyasa.get("change_vs_last_week")
+        if degisim:
+            parca = []
+            if degisim.get("btc_dominance_change_pts") is not None:
+                parca.append(f"dominans `{degisim['btc_dominance_change_pts']:+.2f}` puan")
+            if degisim.get("fear_greed_change") is not None:
+                parca.append(f"K&A `{degisim['fear_greed_change']:+d}`")
+            if degisim.get("btc_change_pct") is not None:
+                parca.append(f"BTC `%{degisim['btc_change_pct']:+.1f}`")
+            if parca:
+                satirlar.append(
+                    f"* **{degisim.get('from_date')} → {degisim.get('to_date')}:** "
+                    + " · ".join(parca))
+            if degisim.get("dominance_note"):
+                satirlar.append(f"* ⚠️ _{degisim['dominance_note']}_")
+
+        return satirlar
+
     def _generate_local_report(self, mode: str, context: dict, custom_question: str) -> str:
         coins = context.get("coins", [])
         total_cash = context.get("total_usdt_cash", 0.0)
@@ -516,6 +678,7 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
                     f"* **Öncelikli Kurtarma Hedefi:** `{losers[0].get('name')}` (Zarar: `-${abs(losers[0].get('pnl_usd', 0)):,.2f}`) varlığına serbest kasanızdan kademeli ekleme yaparak ortalama maliyetinizi düşürebilirsiniz.",
                     "* **Kritik Kural:** Tek seferde tüm nakitle DCA yapmayın; kasadaki USDT'yi 3 parçaya bölerek (%30 - %30 - %40) kademeli giriş yapın."
                 ])
+            lines.extend(self._piyasa_notu(context))
             lines.extend(self._sureklilik_notu(context))
             return "\n".join(lines)
 
@@ -542,6 +705,7 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
                     "* Likiditesi bitmiş veya %80+ düşmüş altcoinlerde 'nasılsa maliyete gelir' diye beklemek en büyük portföy tuzağıdır.",
                     "* Kalan son bakiyeyi sağlam majör varlıklara aktarmak, sermaye bileşik getirisini yeniden çalıştırmanın en sağlıklı yoludur."
                 ])
+            lines.extend(self._piyasa_notu(context))
             lines.extend(self._sureklilik_notu(context))
             return "\n".join(lines)
 
@@ -585,6 +749,7 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
                     "\n### 🛡️ 2. Kasa Zırhlama Tavsiyesi",
                     "* Kârdaki varlıklardan düzenli kâr realize etmek, serbest nakit kasanızı büyüterek olası piyasa düzeltmelerinde yeni fırsatlar yakalamanızı sağlar."
                 ])
+            lines.extend(self._piyasa_notu(context))
             lines.extend(self._sureklilik_notu(context))
             return "\n".join(lines)
 
@@ -605,6 +770,7 @@ Lütfen hemen kapsamlı, anlaşılır, madde madde, tablolu ve doğrudan uygulan
 
         # Append standard YTD disclaimer to all reports
         disclaimer = "\n\n---\n> [!NOTE]\n> ⚠️ **Yasal Bilgilendirme:** Bu analizler yapay zeka modelleri ve algoritmalar tarafından simülasyon ve karar destek amaçlı üretilmiştir. Kesinlikle yatırım tavsiyesi (YTD) niteliği taşımaz. Yatırım kararlarınızı kendi risk tercihlerinize göre alınız."
+        lines.extend(self._piyasa_notu(context))
         lines.extend(self._sureklilik_notu(context))
         return "\n".join(lines) + disclaimer
 

@@ -34,6 +34,7 @@ if APP_DIR not in sys.path:
 
 import data_manager                      # noqa: E402
 import price_service as price_module     # noqa: E402
+import market_service as market_module   # noqa: E402
 
 
 # Sabit test fiyatları — ağ erişimi olmadan deterministik sonuç verir
@@ -105,6 +106,21 @@ def izole_veri(tmp_path, monkeypatch):
     motor._watchlist_ts = 0.0
     motor._dex_last_fetch = {}
 
+    # --- FAZ M1: piyasa verisi servisi de susturulur ---
+    #
+    # `main.py` gövdesi import anında `market_service.start_background_updater()`
+    # çağırıyor. Bu döngü 8 saniye bekleyip Binance, alternative.me ve
+    # CoinGecko'ya GERÇEKTEN çıkıyor. Fiyat motoru için kurulan bekçi bunu
+    # yakalamıyordu çünkü ayrı bir nesne — yani aynı hata ikinci bir kapıdan
+    # geri geliyordu.
+    piyasa = market_module.market_service
+    monkeypatch.setattr(piyasa, "start_background_updater", lambda: None)
+    monkeypatch.setattr(piyasa, "refresh_due", lambda force=False: [])
+    monkeypatch.setattr(piyasa, "_arsivle", lambda: None)
+    # Önbellek testler arasında sızmasın.
+    piyasa._cache = {}
+    piyasa._health = {}
+
     yield veri_dizini
 
     # Log handler'larını geri tak (aynı oturumda uygulama çalıştırılırsa diye)
@@ -133,19 +149,31 @@ def izole_veri(tmp_path, monkeypatch):
 def pytest_sessionfinish(session, exitstatus):
     import threading
 
-    motor = price_module.price_service
-    if not getattr(motor, "is_running", False):
+    # FAZ M1 — Bekçi artık İKİ motoru birden denetliyor.
+    #
+    # Piyasa verisi servisi eklendiğinde bu tam olarak yaşandı: fiyat motoru
+    # için kurulmuş bekçi, `main` import edildiğinde başlayan PİYASA thread'ini
+    # görmüyordu çünkü o ayrı bir nesne. Aynı hata ikinci bir kapıdan sessizce
+    # geri döndü. Bir daha dönmesin diye denetim listeye çevrildi: yeni bir
+    # arka plan servisi eklenirse buraya da eklenmelidir.
+    motorlar = [
+        ("Fiyat motoru", price_module.price_service),
+        ("Piyasa verisi servisi", market_module.market_service),
+    ]
+    calisanlar = [(ad, m) for ad, m in motorlar if getattr(m, "is_running", False)]
+    if not calisanlar:
         return
 
-    motor.is_running = False          # döngüyü durdur, sonraki koşumu kurtar
+    for _, m in calisanlar:
+        m.is_running = False          # döngüyü durdur, sonraki koşumu kurtar
     canli = [t.name for t in threading.enumerate()
              if t is not threading.main_thread() and t.is_alive()]
     session.exitstatus = 1
     print(
-        "\n\nHATA: Fiyat motorunun arka plan thread'i test oturumu boyunca "
-        "ÇALIŞTI.\n"
-        "Bu, testlerin ağa çıktığı ve fiyatların arka planda değiştiği anlamına "
-        "gelir;\nkararsız (flaky) test üretir.\n"
+        "\n\nHATA: Şu arka plan thread'leri test oturumu boyunca ÇALIŞTI: "
+        + ", ".join(ad for ad, _ in calisanlar) + "\n"
+        "Bu, testlerin ağa çıktığı anlamına gelir; ayrıca fiyatlar/piyasa "
+        "verisi arka planda\ndeğiştiği için kararsız (flaky) test üretir.\n"
         f"Canlı thread'ler: {canli or 'yok'}\n"
         "Muhtemel sebep: bir test modülü `main`'i MODÜL SEVİYESİNDE import "
         "ediyor.\n"

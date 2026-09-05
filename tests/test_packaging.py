@@ -51,6 +51,17 @@ def main():
 # TradingView bilinçli olarak uzakta bırakıldı — bkz. index.html'deki not.
 IZINLI_UZAK_KAYNAKLAR = ("s3.tradingview.com",)
 
+# Kullanıcının TIKLAYARAK gittiği dış bağlantılar. Bunlar YÜKLENEN kaynak
+# değildir: sayfa açıldığında hiçbir istek üretmezler, uygulama çevrimdışı
+# çalışmaya devam eder ve hiçbir veri sızmaz. Ancak yine de sayılı ve
+# gerekçeli tutuluyor — bir gün yanlışlıkla eklenen bir izleyici bağlantısı
+# fark edilmeden geçmesin diye liste açık uçlu DEĞİL.
+#
+# coingecko.com/en/api/pricing : ücretsiz piyasa verisi anahtarının alındığı
+#   sayfa (FAZ M1). Anahtarlı kullanım tercih edilen yol olduğu için
+#   kullanıcının oraya nasıl gideceği arayüzde yazılı olmalı.
+IZINLI_TIKLAMA_BAGLANTILARI = ("https://www.coingecko.com/en/api/pricing",)
+
 BEKLENEN_KUTUPHANELER = [
     "tailwind.min.js",
     "alpine.min.js",
@@ -76,12 +87,53 @@ def test_kutuphane_vendor_klasorunde_var(dosya):
     assert os.path.getsize(yol) > 1000, f"{dosya} şüpheli derecede küçük"
 
 
+def _tiklama_baglantilari(html):
+    """`<a href="http...">` — kullanıcının tıklayarak gittiği bağlantılar."""
+    return re.findall(r'<a\b[^>]*\bhref="(https?://[^"]+)"', html)
+
+
 def test_index_html_izinsiz_cdn_referansi_icermez():
-    """Regresyon: arayüz kütüphaneleri CDN'den çekilmemeli."""
+    """Regresyon: arayüz kütüphaneleri CDN'den çekilmemeli.
+
+    Sayfa AÇILDIĞINDA yüklenen her şeyi kapsar: script/img/iframe `src`'leri
+    ve `<link href>` stil dosyaları. Kullanıcının tıklayarak gittiği
+    `<a href>` bağlantıları ayrı bir testte ve ayrı bir izin listesinde
+    denetlenir — onlar sayfa yüklenirken hiçbir istek üretmez.
+    """
     html = _index_ham()
+    tiklama = set(_tiklama_baglantilari(html))
     uzak = re.findall(r'(?:src|href)="(https?://[^"]+)"', html)
-    izinsiz = [u for u in uzak if not any(izin in u for izin in IZINLI_UZAK_KAYNAKLAR)]
-    assert izinsiz == [], f"index.html hâlâ uzak kaynak kullanıyor: {izinsiz}"
+    yuklenen = [u for u in uzak if u not in tiklama]
+    izinsiz = [u for u in yuklenen
+               if not any(izin in u for izin in IZINLI_UZAK_KAYNAKLAR)]
+    assert izinsiz == [], f"index.html hâlâ uzak kaynak yüklüyor: {izinsiz}"
+
+
+def test_dis_baglantilar_sayili_ve_gerekceli():
+    """Dış bağlantılar açık uçlu olamaz.
+
+    Tıklama bağlantısı yüklenen kaynak değildir ama yine de denetimsiz
+    bırakılmaz: bir gün eklenen bir izleyici/analitik bağlantısı fark
+    edilmeden geçmesin diye her biri listede gerekçesiyle durmalı.
+    """
+    html = _index_ham()
+    izinsiz = [u for u in _tiklama_baglantilari(html)
+               if u not in IZINLI_TIKLAMA_BAGLANTILARI]
+    assert izinsiz == [], (
+        "index.html'de listelenmemiş dış bağlantı var: "
+        f"{izinsiz} — gerekçesiyle IZINLI_TIKLAMA_BAGLANTILARI'na ekle")
+
+
+def test_dis_baglantilar_tabnabbing_e_kapali():
+    """Her dış bağlantı `rel="noopener"` taşımalı.
+
+    `target="_blank"` ile açılan bir sayfa, `rel="noopener"` olmadan
+    `window.opener` üzerinden bu sayfayı başka bir adrese yönlendirebilir.
+    Portföy uygulamasında bu, kimlik avı sayfasına yönlendirme demektir.
+    """
+    html = _index_ham()
+    for etiket in re.findall(r'<a\b[^>]*\bhref="https?://[^"]+"[^>]*>', html):
+        assert "noopener" in etiket, f"rel=noopener eksik: {etiket[:120]}"
 
 
 def test_index_html_yerel_kutuphaneleri_kullanir():

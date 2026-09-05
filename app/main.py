@@ -30,6 +30,7 @@ from data_manager import (
     relocate_asset
 )
 from price_service import price_service
+from market_service import market_service
 import archive
 import reconcile
 import connections
@@ -62,6 +63,11 @@ initialize_portfolio_if_missing()
 # Bir kez uygulanacak veri düzeltmeleri. Sessizce değil, loglayarak.
 run_pending_migrations()
 price_service.start_background_updater()
+# FAZ M1 — Piyasa verisi. Fiyat motorundan SONRA ve kendi temposuyla başlar;
+# ilk çekimi gecikmelidir, çünkü piyasa verisi hiçbir zaman acil değildir ve
+# açılışı yavaşlatmamalıdır.
+market_service.price_engine = price_service
+market_service.start_background_updater()
 logger.info("Sunucu hazır: http://127.0.0.1:8000")
 
 class TransactionCreate(BaseModel):
@@ -1271,6 +1277,31 @@ def delete_ai_report(report_id: int):
     if not archive.delete_ai_report(report_id):
         raise HTTPException(status_code=404, detail="Rapor bulunamadı.")
     return {"success": True, "deleted_id": report_id}
+
+
+# -------------------------------------------------------------
+# FAZ M1: PİYASA VERİSİ
+# -------------------------------------------------------------
+# Bu uç ASLA ağa çıkmaz — `market_service` veriyi arka planda topluyor ve
+# burada yalnızca hafızadaki fotoğraf sunuluyor. Ölçüldü: CoinGecko ucu bu
+# kullanıcının ağından 7-22 saniye sürüyor; arayüzü ona bağlamak kabul
+# edilemez.
+@app.get("/api/market")
+def get_market():
+    snapshot = market_service.get_snapshot()
+    return {
+        "snapshot": snapshot,
+        "sources": market_service.describe_sources(),
+        # Modelin gördüğünün AYNISI arayüzde de görünsün: göremediğin bir
+        # sayının doğruluğunu denetleyemezsin.
+        "change_vs_last_week": archive.market_change_since(days_ago=7),
+        "archived_days": archive.market_snapshot_count(),
+    }
+
+
+@app.get("/api/market/history")
+def get_market_history(days: int = 90):
+    return {"series": archive.market_series(days=max(1, min(int(days), 3650)))}
 
 # -------------------------------------------------------------
 # FAZ 7: GERÇEKLEŞMİŞ KÂR/ZARAR & EXCEL DIŞA AKTARIM ENDPOINT'LERİ

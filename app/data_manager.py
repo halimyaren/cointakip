@@ -2352,7 +2352,25 @@ DEFAULT_SETTINGS = {
         "mexc_ping": "https://api.mexc.com/api/v3/ping",
         "whitebit_ticker": "https://whitebit.com/api/v4/public/ticker",
         "gateio_ticker": "https://api.gateio.ws/api/v4/spot/tickers",
-        "dex_screener": "https://api.dexscreener.com/latest/dex/search"
+        "dex_screener": "https://api.dexscreener.com/latest/dex/search",
+        # FAZ M1 — piyasa verisi uçları.
+        "btc_klines": "https://api.binance.com/api/v3/klines",
+        "fear_greed": "https://api.alternative.me/fng/",
+        "coingecko_global": "https://api.coingecko.com/api/v3/global"
+    },
+    # FAZ M1 — Piyasa verisi kaynakları. `price_sources` ile aynı desen:
+    # kaynak açıp kapatmak kod değil ayardır. Hepsi varsayılan olarak açık,
+    # çünkü hiçbiri anahtar gerektirmiyor ve hiçbiri kullanıcıya özel değil.
+    #
+    # `breadth` diğerlerinden farklı: ağa hiç çıkmaz, mevcut Binance ticker
+    # verisinden türetilir. Binance fiyat kademesi kapalıysa kendiliğinden
+    # veri veremez.
+    "market_sources": {
+        "btc_trend": {"enabled": True},
+        "ethbtc": {"enabled": True},
+        "breadth": {"enabled": True},
+        "fear_greed": {"enabled": True},
+        "global": {"enabled": True}
     },
     # Fiyat kaynağı kayıt defteri (FAZ B++).
     # Hangi kademe açık ve hangi sırada denenecek. Kullanıcı arayüzden değiştirir.
@@ -2398,7 +2416,19 @@ DEFAULT_SETTINGS = {
     "api_keys": {
         "gemini_api_key": "",
         "telegram_bot_token": "",
-        "telegram_chat_id": ""
+        "telegram_chat_id": "",
+        # FAZ M1 — CoinGecko ücretsiz "demo" anahtarı.
+        #
+        # Anahtarsız erişim çalışır ama IP başına dakikada 5-15 çağrıyla
+        # sınırlıdır (ölçüldü: 5. çağrıda HTTP 429, retry-after 60). Demo
+        # anahtarı bunu dakikada 100'e çıkarır ve TABAN ADRESİ DEĞİŞTİRMEZ;
+        # yalnızca `x-cg-demo-api-key` başlığı eklenir.
+        #
+        # Bu alan "isteğe bağlı ekstra" değil TERCİH EDİLEN yoldur: arayüz
+        # boşken kullanıcıyı yedek modda olduğu konusunda açıkça uyarır.
+        # Borsa anahtarlarının aksine bu bir sır sayılmaz (ücretsiz, salt
+        # okunur, herkese açık veri), o yüzden kasada değil burada durur.
+        "coingecko_api_key": ""
     },
     "preferences": {
         "refresh_interval_sec": 3.5,
@@ -2437,7 +2467,7 @@ def _deobfuscate_key(encoded: str) -> str:
     except Exception:
         return encoded  # Eski açık metin format — olduğu gibi döndür
 
-_OBFUSCATED_KEYS = ["gemini_api_key", "telegram_bot_token"]
+_OBFUSCATED_KEYS = ["gemini_api_key", "telegram_bot_token", "coingecko_api_key"]
 
 def load_settings():
     ensure_data_dir()

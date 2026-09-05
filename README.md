@@ -65,6 +65,16 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   of the trade it is about to propose — without those it kept recommending the same
   $55 sale of a $220 position, day after day, to someone already half in cash.
   Repeating advice is correct when nothing changed; hiding the repetition is not.
+- **Market context for the AI** — BTC trend (price, 7/30/90-day change, distance from
+  the 50- and 200-day averages, drawdown, volatility), ETH/BTC, market breadth,
+  the Fear & Greed index, and BTC dominance. No API key required; a free CoinGecko
+  Demo key is preferred and lifts the shared 5-15 requests/minute limit to 100.
+  Breadth costs zero extra requests — it is derived from the Binance ticker the app
+  already downloads. The app deliberately produces **no verdicts**: no "bull market",
+  no "death cross", just the measurements, each carrying its own age. Stale values are
+  labelled with their age; very old ones are dropped rather than passed off as current.
+  Analysis never waits on market data — one source measured 7-22 seconds on a real
+  connection, so everything is fetched in the background and read from cache.
 - **PIN protection** — SHA-256 with a per-install salt, recovery key for reset.
 - **Net-worth archive** — exchanges do not keep history forever and their windows
   slide (Binance ~2 years, MEXC 1 month). Every time the app runs it records the
@@ -277,6 +287,7 @@ app/
 ├── tax_export.py     Tax-ready export (read-only; calculates no tax, USD only)
 ├── keyvault.py       PIN-derived encryption for API keys (session-only)
 ├── ai_service.py     Gemini integration + local fallback engine
+├── market_service.py Market context for the AI (background, cached, age-aware)
 └── static/           Alpine.js single-page UI + bundled libraries
 ```
 

@@ -63,7 +63,8 @@ SNAPSHOT_REFRESH_TTL = 3600.0
 # 2 — `ai_reports` tablosu eklendi. Şema `CREATE TABLE IF NOT EXISTS` ile
 # kurulduğu için mevcut arşivler açıldıklarında kendiliğinden tamamlanır;
 # göç adımı gerekmiyor, eski satırlar da olduğu gibi kalıyor.
-SCHEMA_VERSION = 2
+# 3 — `market_snapshots` tablosu eklendi (FAZ M1). Aynı yöntem.
+SCHEMA_VERSION = 3
 
 
 def archive_path():
@@ -178,6 +179,43 @@ def init_archive():
                     custom_question   TEXT,
                     report_markdown   TEXT NOT NULL,
                     portfolio_digest  TEXT                    -- JSON
+                );
+
+                -- FAZ M1 — Günlük piyasa fotoğrafı.
+                --
+                -- NEDEN ARŞİVLENİYOR: BTC fiyat geçmişini ve Fear & Greed
+                -- geçmişini kaynaklardan her zaman geri alabiliriz. Ama BTC
+                -- DOMİNANS geçmişini ücretsiz hiçbir uç geriye dönük vermiyor.
+                -- Bugün yazmazsak aradaki aylar KALICI olarak kaybolur.
+                -- Aynı gerekçe `snapshot_positions.price` için de kurulmuştu:
+                -- delist olmuş bir coinin geçmiş fiyatını hiçbir API geri
+                -- vermez, o yüzden gördüğümüz anda saklarız.
+                --
+                -- `dominance_source` alanı ZORUNLU bir disiplin: dominans
+                -- kaynağa göre 2.81 puan değişiyor (CoinGecko 58.84,
+                -- Coinpaprika 56.52, Coinlore 59.33 — aynı anda ölçüldü).
+                -- Kaynağı unutmuş bir geçmiş, kaynak değiştiğinde "dominans
+                -- bir gecede 3 puan atladı" diye SAHTE bir sinyal üretir ve
+                -- yapay zekâ bunun üzerine tavsiye kurar.
+                CREATE TABLE IF NOT EXISTS market_snapshots (
+                    taken_date            TEXT PRIMARY KEY,       -- YYYY-MM-DD
+                    taken_at              TEXT NOT NULL,          -- ISO8601
+                    taken_ts              REAL NOT NULL,
+                    btc_price_usd         REAL,
+                    btc_change_7d_pct     REAL,
+                    btc_change_30d_pct    REAL,
+                    btc_sma50             REAL,
+                    btc_sma200            REAL,
+                    ethbtc                REAL,
+                    fear_greed            INTEGER,
+                    fear_greed_label      TEXT,
+                    btc_dominance_pct     REAL,
+                    total_market_cap_usd  REAL,
+                    mcap_excl_btc_usd     REAL,
+                    dominance_source      TEXT,
+                    breadth_advancing_pct REAL,
+                    breadth_median_pct    REAL,
+                    raw_json              TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_snapshots_date ON snapshots(taken_date);
@@ -642,5 +680,198 @@ def ai_report_count():
         init_archive()
         with _connect() as conn:
             return int(conn.execute("SELECT COUNT(*) AS a FROM ai_reports").fetchone()["a"] or 0)
+    except Exception:
+        return 0
+
+
+# =====================================================================
+# FAZ M1 — PİYASA FOTOĞRAFI
+# =====================================================================
+# Modülün 1 numaralı tasarım kuralı burada da geçerli: arşiv HİÇBİR ZAMAN
+# uygulamayı düşürmez. Piyasa verisi yazılamazsa portföy çalışmaya devam
+# eder; kaybedilen şey bir günlük geçmiştir, uygulamanın kendisi değil.
+
+def _piyasa_alanlari(snapshot):
+    """`market_service.get_snapshot()` çıktısını tablo sütunlarına indirger.
+
+    Bayat bloklar da yazılır — ama SADECE servis onları verdiyse. Servis çok
+    eskiyen bloğu zaten hiç döndürmüyor, yani buraya ulaşan her değer
+    kullanılabilir yaştadır.
+    """
+    bloklar = (snapshot or {}).get("blocks") or {}
+    btc = bloklar.get("btc_trend") or {}
+    eth = bloklar.get("ethbtc") or {}
+    fng = bloklar.get("fear_greed") or {}
+    glb = bloklar.get("global") or {}
+    gen = bloklar.get("breadth") or {}
+
+    return {
+        "btc_price_usd": btc.get("price"),
+        "btc_change_7d_pct": btc.get("change_7d_pct"),
+        "btc_change_30d_pct": btc.get("change_30d_pct"),
+        "btc_sma50": btc.get("sma50"),
+        "btc_sma200": btc.get("sma200"),
+        "ethbtc": eth.get("value"),
+        "fear_greed": fng.get("value"),
+        "fear_greed_label": fng.get("classification"),
+        "btc_dominance_pct": glb.get("btc_dominance_pct"),
+        "total_market_cap_usd": glb.get("total_market_cap_usd"),
+        "mcap_excl_btc_usd": glb.get("market_cap_excl_btc_usd"),
+        # Kaynak adı olmadan dominans sayısının geçmişte anlamı yok.
+        "dominance_source": glb.get("source"),
+        "breadth_advancing_pct": gen.get("advancing_pct"),
+        "breadth_median_pct": gen.get("median_change_24h_pct"),
+    }
+
+
+def write_market_snapshot(snapshot):
+    """Günlük piyasa fotoğrafını yazar. Aynı gün varsa üzerine yazar.
+
+    Üzerine yazmak bilinçli: gün içinde birden çok tur dönebilir ve o günün
+    satırı günün SON gözlemine yakınsamalıdır — portföy fotoğrafında da aynı
+    davranış var.
+    """
+    try:
+        if not snapshot or not snapshot.get("available"):
+            return False
+        alanlar = _piyasa_alanlari(snapshot)
+        # Tamamen boş bir satır yazmanın anlamı yok; arşivde "o gün veri
+        # vardı" yanılsaması yaratır.
+        if all(v is None for v in alanlar.values()):
+            return False
+
+        init_archive()
+        simdi = time.time()
+        with _connect() as conn:
+            conn.execute("""
+                INSERT INTO market_snapshots (
+                    taken_date, taken_at, taken_ts,
+                    btc_price_usd, btc_change_7d_pct, btc_change_30d_pct,
+                    btc_sma50, btc_sma200, ethbtc,
+                    fear_greed, fear_greed_label,
+                    btc_dominance_pct, total_market_cap_usd, mcap_excl_btc_usd,
+                    dominance_source, breadth_advancing_pct, breadth_median_pct,
+                    raw_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(taken_date) DO UPDATE SET
+                    taken_at = excluded.taken_at,
+                    taken_ts = excluded.taken_ts,
+                    btc_price_usd = excluded.btc_price_usd,
+                    btc_change_7d_pct = excluded.btc_change_7d_pct,
+                    btc_change_30d_pct = excluded.btc_change_30d_pct,
+                    btc_sma50 = excluded.btc_sma50,
+                    btc_sma200 = excluded.btc_sma200,
+                    ethbtc = excluded.ethbtc,
+                    fear_greed = excluded.fear_greed,
+                    fear_greed_label = excluded.fear_greed_label,
+                    btc_dominance_pct = excluded.btc_dominance_pct,
+                    total_market_cap_usd = excluded.total_market_cap_usd,
+                    mcap_excl_btc_usd = excluded.mcap_excl_btc_usd,
+                    dominance_source = excluded.dominance_source,
+                    breadth_advancing_pct = excluded.breadth_advancing_pct,
+                    breadth_median_pct = excluded.breadth_median_pct,
+                    raw_json = excluded.raw_json
+            """, (
+                _bugun(), datetime.now().isoformat(timespec="seconds"), simdi,
+                alanlar["btc_price_usd"], alanlar["btc_change_7d_pct"],
+                alanlar["btc_change_30d_pct"], alanlar["btc_sma50"],
+                alanlar["btc_sma200"], alanlar["ethbtc"],
+                alanlar["fear_greed"], alanlar["fear_greed_label"],
+                alanlar["btc_dominance_pct"], alanlar["total_market_cap_usd"],
+                alanlar["mcap_excl_btc_usd"], alanlar["dominance_source"],
+                alanlar["breadth_advancing_pct"], alanlar["breadth_median_pct"],
+                json.dumps(snapshot.get("blocks") or {}, ensure_ascii=False),
+            ))
+        return True
+    except Exception as e:
+        logger.warning("Piyasa fotoğrafı yazılamadı: %s", e)
+        return False
+
+
+def market_series(days=30):
+    """Son N günün piyasa satırları, eskiden yeniye."""
+    try:
+        init_archive()
+        sorgu = ("SELECT taken_date, btc_price_usd, btc_dominance_pct, fear_greed, "
+                 "fear_greed_label, ethbtc, total_market_cap_usd, mcap_excl_btc_usd, "
+                 "dominance_source, breadth_advancing_pct "
+                 "FROM market_snapshots ORDER BY taken_date DESC")
+        params = []
+        if days:
+            sorgu += " LIMIT ?"
+            params.append(int(days))
+        with _connect() as conn:
+            rows = conn.execute(sorgu, params).fetchall()
+        return [dict(r) for r in reversed(rows)]
+    except Exception as e:
+        logger.debug("Piyasa serisi okunamadı: %s", e)
+        return []
+
+
+def market_change_since(days_ago=7):
+    """N gün önceki piyasa satırıyla bugünkü arasındaki farkı verir.
+
+    Modelin "dominans yükseliyor mu düşüyor mu" sorusunu cevaplayabilmesi
+    için gereken TEK şey bu — ve bu bilgiyi hiçbir ücretsiz uçtan geriye
+    dönük alamıyoruz, yalnızca kendi arşivimizden.
+
+    Kaynak değişmişse fark HESAPLANMAZ: farklı konvansiyonlardaki iki
+    dominans değerini çıkarmak, gerçek olmayan bir hareket üretir.
+    """
+    try:
+        seri = market_series(days=None)
+        if len(seri) < 2:
+            return None
+        bugun = seri[-1]
+        hedef_ts = time.time() - (int(days_ago) * 86400)
+        hedef_tarih = datetime.fromtimestamp(hedef_ts).strftime("%Y-%m-%d")
+
+        # Hedef tarihe eşit veya ondan eski EN YAKIN satır.
+        eski = None
+        for r in seri[:-1]:
+            if r["taken_date"] <= hedef_tarih:
+                eski = r
+        if eski is None:
+            eski = seri[0]
+        if eski["taken_date"] == bugun["taken_date"]:
+            return None
+
+        cikti = {
+            "from_date": eski["taken_date"],
+            "to_date": bugun["taken_date"],
+            "days_apart": (datetime.strptime(bugun["taken_date"], "%Y-%m-%d")
+                           - datetime.strptime(eski["taken_date"], "%Y-%m-%d")).days,
+        }
+
+        ayni_kaynak = (eski.get("dominance_source") == bugun.get("dominance_source"))
+        if (ayni_kaynak and eski.get("btc_dominance_pct") is not None
+                and bugun.get("btc_dominance_pct") is not None):
+            cikti["btc_dominance_change_pts"] = round(
+                float(bugun["btc_dominance_pct"]) - float(eski["btc_dominance_pct"]), 2)
+        elif not ayni_kaynak:
+            cikti["btc_dominance_change_pts"] = None
+            cikti["dominance_note"] = (
+                "Dominans kaynagi bu aralikta degisti "
+                f"({eski.get('dominance_source')} -> {bugun.get('dominance_source')}); "
+                "iki farkli konvansiyonun farki alinmadi.")
+
+        if eski.get("fear_greed") is not None and bugun.get("fear_greed") is not None:
+            cikti["fear_greed_change"] = int(bugun["fear_greed"]) - int(eski["fear_greed"])
+        if eski.get("btc_price_usd") and bugun.get("btc_price_usd"):
+            cikti["btc_change_pct"] = round(
+                100.0 * (float(bugun["btc_price_usd"]) - float(eski["btc_price_usd"]))
+                / float(eski["btc_price_usd"]), 2)
+        return cikti
+    except Exception as e:
+        logger.debug("Piyasa değişimi hesaplanamadı: %s", e)
+        return None
+
+
+def market_snapshot_count():
+    try:
+        init_archive()
+        with _connect() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) AS a FROM market_snapshots").fetchone()["a"] or 0)
     except Exception:
         return 0

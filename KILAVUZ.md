@@ -1046,10 +1046,39 @@ taşır, bugünün değil. Adlar ASCII'dir (`Kar`, `Kâr` değil); Türkçe kara
 dosya adları bazı sistemlerde bozuluyor.
 
 **Yapay zekâ piyasayı biliyor mu?**
-Hayır. Yalnızca **sizin** portföyünüzü, maliyetlerinizi, geçmiş işlemlerinizi
-ve coinlerin anlık fiyat/24s/7g değişimini görüyor. BTC dominansı, korku-açgözlülük
-endeksi veya haber akışı gibi piyasa göstergeleri **verilmiyor**. Raporları bu
-sınırın içinde okuyun.
+Artık kısmen evet. Portföyünüzün yanında şu beş ölçüm de gidiyor: **BTC trendi**
+(fiyat, 7/30/90 gün değişim, 50 ve 200 günlük ortalamalara uzaklık, zirveden geri
+çekilme, oynaklık), **ETH/BTC**, **piyasa genişliği** (likit çiftlerin yüzde kaçı
+artıda, kaçı BTC'yi geçiyor), **Korku & Açgözlülük endeksi** ve **BTC dominansı +
+toplam piyasa değeri**. Bunları Yapay Zekâ sekmesinin üstündeki **Piyasa Çerçevesi**
+şeridinde birebir görebilirsiniz — modele giden sayı ile ekranda gördüğünüz aynıdır.
+
+Üç sınır önemli:
+
+- **Uygulama bu sayılardan hüküm üretmez.** "Boğa piyasası", "ölüm kesişimi" gibi
+  etiketler yazılmaz; ham ölçüm verilir, yorumu model yapar. Sebebi somut: bu özellik
+  yazılırken BTC'nin 50 günlük ortalaması 200 günlüğün altındaydı — kitaba göre
+  "ölüm kesişimi", yani düşüş sinyali. Oysa fiyat her iki ortalamanın da %14 üstünde
+  ve 30 günde %24 yukarıdaydı. Etiket gerçeğin tersini söylüyordu.
+- **Haber ve makro veri yok.** Faiz kararı, borsa listeleme, regülasyon haberi gibi
+  şeyler hâlâ görünmüyor.
+- **Dominans bir konvansiyondur.** Aynı anda ölçüldüğünde CoinGecko %58.84,
+  Coinpaprika %56.52, Coinlore %59.33 diyordu — 2.81 puan fark. Hiçbiri yanlış
+  değil; "toplam piyasa"nın tanımı farklı. Uygulama tek kaynak kullanır ve kaynağın
+  adını her kayda yazar. Başka bir sitede farklı bir sayı görürseniz sebebi budur.
+
+**Piyasa verisi eskiyse ne olur?**
+Her ölçüm yaşını taşır. Tazeyse olduğu gibi gider; bayatsa modele "bu değer 7 saat
+eski" diye gider ve rapora da öyle yazılır; çok eskiyse hiç gönderilmez ve "veri
+yok" denir. Sessizce bayat sayı verilmez. Piyasa verisi hiç toplanamamışsa analiz
+yine çalışır — sadece portföy verisiyle. Analiz asla piyasa verisini beklemez.
+
+**CoinGecko anahtarı şart mı?**
+Hayır ama **önerilir**. Anahtarsız erişim IP başına dakikada 5-15 çağrıyla sınırlı
+ve paylaşımlıdır; yoğun saatlerde dominans verisi boş kalabilir. Ücretsiz "Demo"
+anahtarı bunu dakikada 100'e çıkarır, kart istemez. Ayarlar → API Anahtarları
+bölümünde alan ve bağlantı var; anahtarsız çalışırken uygulama size bunu açıkça
+söyler.
 
 **Aynı coini iki borsada tutuyorum, neden iki satır görüyorum?**
 Bilerek. Ayrı maliyet tabanları ayrı takip edilir. Konsolide görünüm için Kasa

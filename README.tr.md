@@ -64,6 +64,17 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   kasasının yarısı zaten nakit olan birine 220 dolarlık pozisyonun 55 dolarlık
   %25'ini satmayı günlerce tekrar önerebiliyordu. Koşullar değişmediyse aynı
   tavsiyeyi tekrarlamak doğrudur; tekrarı gizlemek değil.
+- **Yapay zekâya piyasa çerçevesi** — BTC trendi (fiyat, 7/30/90 gün değişim, 50 ve
+  200 günlük ortalamalara uzaklık, zirveden geri çekilme, oynaklık), ETH/BTC, piyasa
+  genişliği, Korku & Açgözlülük endeksi ve BTC dominansı. Anahtar zorunlu değil;
+  ücretsiz CoinGecko Demo anahtarı tercih edilen yoldur ve paylaşımlı dakikada 5-15
+  çağrı sınırını 100'e çıkarır. Genişlik sıfır ek çağrıya mal olur — uygulamanın
+  zaten indirdiği Binance ticker verisinden türetilir. Uygulama bilerek **hüküm
+  üretmez**: "boğa piyasası" ya da "ölüm kesişimi" yazmaz, yalnızca ölçümleri ve her
+  birinin yaşını verir. Bayat değerler yaşıyla etiketlenir, çok eskiler güncelmiş
+  gibi sunulmak yerine hiç gönderilmez. Analiz piyasa verisini asla beklemez —
+  kaynaklardan biri gerçek bir bağlantıda 7-22 saniye sürdü, o yüzden her şey arka
+  planda toplanır ve önbellekten okunur.
 - **PIN koruması** — SHA-256 + kuruluma özel salt, kurtarma anahtarı ile sıfırlama.
 - **Net varlık arşivi** — borsalar geçmişi süresiz saklamaz ve pencereleri kayar
   (Binance ~2 yıl, MEXC 1 ay). Uygulama her çalıştığında portföyünüzün o günkü
@@ -271,6 +282,7 @@ app/
 ├── tax_export.py     Vergi-hazır dışa aktarım (salt okunur; vergi hesaplamaz)
 ├── keyvault.py       API anahtarları için PIN'den türetilmiş şifreleme
 ├── ai_service.py     Gemini entegrasyonu + yerel yedek motor
+├── market_service.py Yapay zekâ için piyasa çerçevesi (arka planda, yaş bilgisiyle)
 └── static/           Alpine.js tek sayfa arayüz + paketlenmiş kütüphaneler
 ```
 
