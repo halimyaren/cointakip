@@ -37,8 +37,8 @@ import pytest
 # Bu yüzden `main` yalnızca fixture içinden import edilir.
 # `conftest.py::fiyat_ipligi_calismadi` kuralı ayrıca bekçilikle korur.
 
-STATIC_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "static")
+PROJE_KOKU = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STATIC_DIR = os.path.join(PROJE_KOKU, "app", "static")
 VENDOR_DIR = os.path.join(STATIC_DIR, "vendor")
 
 
@@ -251,3 +251,47 @@ def test_setup_bat_mevcut_ve_temel_adimlari_icerir():
     # Kurulum betiği kullanıcı verisini ASLA silmemeli
     for tehlikeli in ("del data", "rmdir", "rd /s"):
         assert tehlikeli not in icerik.lower(), f"setup.bat tehlikeli komut içeriyor: {tehlikeli}"
+
+
+# ===========================================================================
+# GERÇEK VERİYE YAZMA DUVARI
+#
+# 5 Eylül 2026'da gerçek `data/settings.json` bir test oturumu sırasında
+# varsayılan ayarlarla üzerine yazıldı ve kullanıcının Gemini anahtarı,
+# cüzdan bağlantıları, şifreli borsa anahtarları ve PIN'i kayboldu.
+# `izole_veri` yönlendirmesi vardı ama yetmedi. Artık ek olarak işletim
+# sistemi seviyesinde bir duvar var; aşağıdaki testler o duvarın gerçekten
+# ayakta olduğunu doğrular.
+# ===========================================================================
+
+def test_gercek_veriye_yazma_duvari_ayakta(tmp_path):
+    """Duvar çalışıyor mu? Gerçekten deneyip görüyoruz."""
+    gercek = os.path.join(PROJE_KOKU, "data", "settings.json")
+    with pytest.raises(AssertionError, match="GERÇEK KULLANICI VERİSİNE"):
+        open(gercek, "w").close()
+
+
+def test_duvar_gercek_veriyi_okumaya_engel_degil():
+    """Okumak serbest — engellenen yalnızca YAZMA."""
+    hedef = os.path.join(PROJE_KOKU, "data", "settings.json")
+    if not os.path.exists(hedef):
+        pytest.skip("gerçek settings.json yok")
+    with open(hedef, "r", encoding="utf-8") as f:
+        assert f.read() is not None
+
+
+def test_duvar_gecici_dizine_yazmaya_engel_degil(tmp_path):
+    """Testlerin kendi geçici dosyalarını yazması engellenmemeli."""
+    hedef = tmp_path / "deneme.json"
+    with open(hedef, "w", encoding="utf-8") as f:
+        f.write("{}")
+    assert hedef.exists()
+
+
+def test_duvar_log_dosyasini_engellemez():
+    """Günlük kaydı veri değildir; log yazımı serbest kalmalı."""
+    from conftest import _gercek_veri_yolu_mu
+    log = os.path.join(PROJE_KOKU, "data", "logs", "cointakip.log")
+    assert _gercek_veri_yolu_mu(log) is False
+    assert _gercek_veri_yolu_mu(os.path.join(PROJE_KOKU, "data", "portfolio.json")) is True
+    assert _gercek_veri_yolu_mu(os.path.join(PROJE_KOKU, "data", "archive.db")) is True

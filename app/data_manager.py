@@ -2527,8 +2527,183 @@ def merge_settings(partial: dict) -> dict:
     return current
 
 
+# =====================================================================
+# AYAR YEDEĞİ — 5 EYLÜL 2026 OLAYINDAN SONRA EKLENDİ
+# =====================================================================
+# O gün `data/settings.json` varsayılan ayarlarla üzerine yazıldı ve
+# kullanıcının Gemini anahtarı, cüzdan bağlantıları, şifreli borsa
+# anahtarları ve PIN'i kayboldu. Geri alınamadı, çünkü uygulama SADECE
+# `portfolio.json` dosyasını yedekliyordu — sekiz yedeğin hiçbirinde
+# `api_keys`, `connections`, `vault` veya `security` yoktu.
+#
+# Bu bir gözden kaçma değil, bir varsayım hatasıydı: "asıl veri defterdir"
+# diye düşünülmüştü. Oysa defter kaybolursa borsadan yeniden kurulabilir;
+# borsa API gizli anahtarı ise BİR KEZ gösterilir ve kaybolursa yeniden
+# üretilemez, ancak silinip yenisi oluşturulabilir. Yani ayar dosyası bazı
+# açılardan defterden daha kırılgandır.
+#
+# Çözüm, defterdekinin AYNISI değil daha güçlüsü: portföy yedeği günde bir
+# kez ve YAZDIKTAN SONRA alınıyor. Ayar yedeği ise HER YAZMADAN ÖNCE, yani
+# dosyanın ESKİ hâli saklanarak alınır. Fark kritik: bugünkü gibi bir
+# "üzerine yaz" olayında yazdıktan sonra alınan yedek zaten bozulmuş hâli
+# saklardı; önce alınan yedek ise sağlam hâli kurtarır.
+SETTINGS_BACKUP_ONEKI = "settings_backup_"
+
+# Saklanacak yedek sayısı.
+#
+# 30 ile başlanmıştı; gerçek kullanım onu düşük gösterdi. Kullanıcı kaybettiği
+# ayarları geri girerken TEK oturumda 22 yedek oluştu (her anahtar, her cüzdan,
+# her borsa profili ayrı bir kayıt tetikliyor). İkinci böyle bir oturum, asıl
+# korumak istediğimiz eski yedekleri silerdi.
+#
+# Dosyalar ~2 KB. 100 yedek ~200 KB eder; kullanıcının kurtaramadığı bir API
+# anahtarının bedeliyle kıyaslanamaz. Sınır, disk için değil klasörün
+# okunabilirliği için var.
+SETTINGS_BACKUP_SAYISI = 100
+
+
+def _ayar_yedegi_al():
+    """`settings.json` üzerine yazılmadan ÖNCE mevcut hâlini saklar.
+
+    Sessizce başarısız olmaz ama yazmayı da engellemez: yedek alınamaması
+    yüzünden kullanıcının ayar kaydedememesi daha kötü olurdu.
+    """
+    try:
+        if not os.path.exists(SETTINGS_FILE):
+            return None
+        mevcut = os.path.getsize(SETTINGS_FILE)
+        if mevcut <= 2:      # boş/bozuk dosyayı yedeklemenin anlamı yok
+            return None
+        ensure_data_dir()
+
+        # İçerik son yedekle aynıysa yeni dosya üretme — arka planda sık
+        # kaydeden bir akış yedek klasörünü aynı içerikle doldurmasın.
+        # (Ayniyet kontrolü ATLAMANIN TEK meşru sebebidir; "aynı saniye"
+        # değildir. Damga saniye çözünürlüklüyken geri yükleme öncesi yedek
+        # sessizce atlanıyordu ve korunmak istenen hâl tam da o anda
+        # kayboluyordu — testte yakalandı.)
+        mevcut_ozet = hashlib.sha256(
+            open(SETTINGS_FILE, "rb").read()).hexdigest()
+        son = _son_ayar_yedegi()
+        if son:
+            try:
+                if hashlib.sha256(open(son, "rb").read()).hexdigest() == mevcut_ozet:
+                    # Yeni dosya üretmiyoruz ama VAR OLAN yedeği döndürüyoruz.
+                    # `None` dönmek çağırana "bu hâl yedeklenmedi" dedirtiyordu;
+                    # oysa hâl korunuyor, sadece kopyası zaten mevcut. İkisini
+                    # ayırt edememek geri yüklemede yanlış güvensizlik üretir.
+                    return son
+            except Exception:
+                pass
+
+        # Milisaniyeli damga: aynı saniye içinde iki yazma olabilir ve
+        # ikisinin de yedeklenmesi gerekir.
+        damga = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        hedef = os.path.join(BACKUP_DIR, f"{SETTINGS_BACKUP_ONEKI}{damga}.json")
+        shutil.copyfile(SETTINGS_FILE, hedef)
+        _ayar_yedeklerini_buda()
+        return hedef
+    except Exception as e:
+        logger.warning("Ayar yedeği alınamadı: %s", e)
+        return None
+
+
+def _son_ayar_yedegi():
+    """En yeni ayar yedeğinin tam yolu, yoksa None."""
+    try:
+        adlar = sorted(f for f in os.listdir(BACKUP_DIR)
+                       if f.startswith(SETTINGS_BACKUP_ONEKI) and f.endswith(".json"))
+        return os.path.join(BACKUP_DIR, adlar[-1]) if adlar else None
+    except Exception:
+        return None
+
+
+def _ayar_yedeklerini_buda():
+    """En yeni N yedeği tutar. Sınırsız birikirse klasör anlamsızlaşır."""
+    try:
+        yedekler = sorted(
+            f for f in os.listdir(BACKUP_DIR)
+            if f.startswith(SETTINGS_BACKUP_ONEKI) and f.endswith(".json"))
+        for eski in yedekler[:-SETTINGS_BACKUP_SAYISI]:
+            os.remove(os.path.join(BACKUP_DIR, eski))
+    except Exception as e:
+        logger.debug("Ayar yedekleri budanamadı: %s", e)
+
+
+def list_settings_backups():
+    """Ayar yedeklerini yeniden eskiye doğru listeler.
+
+    Sırların İÇERİĞİ dönmez — yalnızca hangi bölümlerin DOLU olduğu. Böylece
+    kullanıcı "hangi yedekte Gemini anahtarım vardı" sorusunu, anahtarı
+    ekrana düşürmeden cevaplayabilir.
+    """
+    ensure_data_dir()
+    out = []
+    try:
+        adlar = sorted(
+            (f for f in os.listdir(BACKUP_DIR)
+             if f.startswith(SETTINGS_BACKUP_ONEKI) and f.endswith(".json")),
+            reverse=True)
+    except Exception:
+        return out
+
+    for ad in adlar:
+        yol = os.path.join(BACKUP_DIR, ad)
+        satir = {"name": ad, "size": 0, "taken_at": None, "contents": {}}
+        try:
+            satir["size"] = os.path.getsize(yol)
+            satir["taken_at"] = datetime.fromtimestamp(
+                os.path.getmtime(yol)).isoformat(timespec="seconds")
+            with open(yol, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            ak = d.get("api_keys") or {}
+            satir["contents"] = {
+                "gemini_api_key": bool(ak.get("gemini_api_key")),
+                "coingecko_api_key": bool(ak.get("coingecko_api_key")),
+                "telegram_bot_token": bool(ak.get("telegram_bot_token")),
+                "connections": len(d.get("connections") or {}),
+                "vault_entries": len(d.get("vault") or {}),
+                "exchange_profiles": len(d.get("exchange_profiles") or {}),
+                "symbol_sources": len(d.get("symbol_sources") or {}),
+                "pin_enabled": bool((d.get("security") or {}).get("pin_enabled")),
+            }
+        except Exception as e:
+            satir["error"] = str(e)[:120]
+        out.append(satir)
+    return out
+
+
+def restore_settings_backup(name):
+    """Bir ayar yedeğini geri yükler.
+
+    Geri yüklemeden ÖNCE mevcut hâlin de yedeği alınır — geri yükleme de
+    bir üzerine yazmadır ve yanlış yedeği seçmek geri alınabilir olmalıdır.
+    """
+    ad = os.path.basename(str(name or ""))
+    if not ad.startswith(SETTINGS_BACKUP_ONEKI) or not ad.endswith(".json"):
+        raise ValueError("Geçersiz yedek adı.")
+    kaynak = os.path.join(BACKUP_DIR, ad)
+    if not os.path.exists(kaynak):
+        raise FileNotFoundError("Yedek bulunamadı.")
+
+    with open(kaynak, "r", encoding="utf-8") as f:
+        json.load(f)          # bozuk yedeği geri yüklemeyelim
+
+    onceki = _ayar_yedegi_al()
+    ensure_data_dir()
+    gecici = SETTINGS_FILE + ".tmp"
+    shutil.copyfile(kaynak, gecici)
+    os.replace(gecici, SETTINGS_FILE)
+    logger.info("Ayarlar yedekten geri yüklendi: %s", ad)
+    return {"restored": ad,
+            "previous_backup": os.path.basename(onceki) if onceki else None}
+
+
 def save_settings(new_settings):
     ensure_data_dir()
+    # ÜZERİNE YAZMADAN ÖNCE eski hâli sakla. Bugünkü kaybı geri alınabilir
+    # kılacak olan tek satır buydu.
+    _ayar_yedegi_al()
     # Deep copy to avoid mutating the input
     to_save = json.loads(json.dumps(new_settings))
     # Obfuscate API keys before writing to disk
@@ -2537,8 +2712,21 @@ def save_settings(new_settings):
         if key_name in api_keys and api_keys[key_name]:
             api_keys[key_name] = _obfuscate_key(api_keys[key_name])
     to_save["api_keys"] = api_keys
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+    # Atomik yazım: yarım yazılmış bir ayar dosyası, olmayan ayar dosyasından
+    # kötüdür — `load_settings` onu okuyamaz ve varsayılanlara döner.
+    gecici = SETTINGS_FILE + ".tmp"
+    with open(gecici, "w", encoding="utf-8") as f:
         json.dump(to_save, f, indent=2, ensure_ascii=False)
+    os.replace(gecici, SETTINGS_FILE)
+    # YAZDIKTAN SONRA da yedekle.
+    #
+    # Yalnızca "önce" yedeklemek bir boşluk bırakıyordu: en YENİ hâl, bir
+    # sonraki kayda kadar hiçbir yedekte olmuyordu. Kullanıcı Gemini
+    # anahtarını girdikten hemen sonra bir üzerine-yazma olsaydı, anahtar
+    # yine kurtarılamazdı — yani tam olarak kaçınmaya çalıştığımız senaryo.
+    # `_ayar_yedegi_al` içerik aynıysa dosya üretmediği için bu ikinci çağrı
+    # yedek klasörünü şişirmez; yalnızca gerçekten yeni olan hâli saklar.
+    _ayar_yedegi_al()
     return True
 
 

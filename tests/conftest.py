@@ -57,6 +57,85 @@ SAHTE_SPARKLINE = {
 }
 
 
+# ===========================================================================
+# SERT BEKÇİ: TEST OTURUMU GERÇEK data/ KLASÖRÜNE YAZAMAZ
+#
+# `izole_veri` yolları geçici dizine çeviriyor ve bugüne kadar yeterli
+# sayıldı. Yetmedi: 5 Eylül 2026'da gerçek `data/settings.json` bir test
+# oturumu sırasında VARSAYILAN AYARLARLA ÜZERİNE YAZILDI. Kullanıcının
+# Gemini anahtarı, cüzdan bağlantıları, şifreli borsa anahtarları ve PIN'i
+# kayboldu; hiçbiri yedeklenmiyordu çünkü uygulama yalnızca `portfolio.json`
+# yedekliyor.
+#
+# Ders şu: yol yönlendirmesi bir SÖZLEŞMEDİR ve sözleşmeler tutulmayabilir.
+# Bir arka plan thread'i, geç import edilen bir modül, ya da monkeypatch
+# geri alındıktan sonra çalışan herhangi bir kod o sözleşmenin dışına
+# çıkabilir. Bu yüzden artık yönlendirmeye ek olarak İŞLETİM SİSTEMİ
+# SEVİYESİNDE bir duvar var: test oturumu boyunca gerçek `data/` altına
+# açılan her yazma girişimi ENGELLENİR ve testi kırar.
+#
+# Yönlendirme "yanlışlıkla yazma" ihtimalini azaltır; bu duvar onu imkânsız
+# kılar. Kullanıcının gerçek parayla ilgili verisi söz konusu olduğunda
+# aradaki fark önemlidir.
+# ===========================================================================
+GERCEK_DATA_DIZINI = os.path.join(PROJECT_ROOT, "data")
+
+# Log dosyası hariç: `log_config` gerçek log dosyasını uygulama açılışında
+# ele geçiriyor ve bir günlük kaydı veri değildir.
+_YAZMAYA_IZINLI = (os.path.join(GERCEK_DATA_DIZINI, "logs"),)
+
+
+def _gercek_veri_yolu_mu(yol):
+    try:
+        tam = os.path.abspath(os.fspath(yol))
+    except Exception:
+        return False
+    if not tam.startswith(os.path.abspath(GERCEK_DATA_DIZINI)):
+        return False
+    return not any(tam.startswith(os.path.abspath(i)) for i in _YAZMAYA_IZINLI)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def gercek_veriye_yazma_duvari():
+    """Oturum boyunca gerçek `data/` altına yazmayı fiziksel olarak engeller."""
+    import builtins
+
+    ilk_open, ilk_replace, ilk_remove = builtins.open, os.replace, os.remove
+
+    def _patla(islem, yol):
+        raise AssertionError(
+            f"\n\nTEST GERÇEK KULLANICI VERİSİNE YAZMAYA ÇALIŞTI!\n"
+            f"  işlem : {islem}\n"
+            f"  hedef : {yol}\n\n"
+            "Bu kesinlikle yasaktır. Muhtemel sebep: bir arka plan thread'i "
+            "ya da\n`izole_veri` yönlendirmesinin dışında kalan bir kod yolu.\n"
+            "Bir kez gerçekten oldu ve kullanıcının API anahtarlarıyla PIN'i "
+            "silindi.\n")
+
+    def korumali_open(dosya, kip="r", *a, **k):
+        if any(c in kip for c in "wxa+") and _gercek_veri_yolu_mu(dosya):
+            _patla(f"open(mode={kip!r})", dosya)
+        return ilk_open(dosya, kip, *a, **k)
+
+    def korumali_replace(src, dst, *a, **k):
+        if _gercek_veri_yolu_mu(dst):
+            _patla("os.replace", dst)
+        return ilk_replace(src, dst, *a, **k)
+
+    def korumali_remove(yol, *a, **k):
+        if _gercek_veri_yolu_mu(yol):
+            _patla("os.remove", yol)
+        return ilk_remove(yol, *a, **k)
+
+    builtins.open = korumali_open
+    os.replace = korumali_replace
+    os.remove = korumali_remove
+    try:
+        yield
+    finally:
+        builtins.open, os.replace, os.remove = ilk_open, ilk_replace, ilk_remove
+
+
 @pytest.fixture(autouse=True)
 def izole_veri(tmp_path, monkeypatch):
     """

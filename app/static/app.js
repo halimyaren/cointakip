@@ -430,6 +430,14 @@ function portfolioApp() {
     market: { snapshot: null, sources: [], change_vs_last_week: null, archived_days: 0 },
     marketLoading: false,
 
+    // Ayar yedekleri. 5 Eylül 2026'da settings.json varsayılanlarla ezildi
+    // ve API anahtarları, cüzdan bağlantıları, PIN kayboldu. Artık her
+    // farklı hâl yedekleniyor — ve buradan geri yüklenebiliyor. Görünmeyen
+    // yedek, olmayan yedektir.
+    settingsBackups: [],
+    settingsBackupsLoading: false,
+    settingsRestoreResult: null,
+
     // Faz 7: Gerçekleşmiş Kâr/Zarar (Realized PnL) & Dışa Aktarma
     realizedMetrics: null,
     exportLoading: false,
@@ -4186,6 +4194,10 @@ function portfolioApp() {
       if (tab === 'health') {
         this.runHealthPing();
       }
+      if (tab === 'keys') {
+        this.settingsRestoreResult = null;
+        this.fetchSettingsBackups();
+      }
       this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
     },
 
@@ -4247,6 +4259,63 @@ function portfolioApp() {
         brutal: 'Acı Gerçek',
         take_profit: 'Kâr Realizasyonu',
       })[mode] || (mode || '—');
+    },
+
+    // -------------------------------------------------------------
+    // AYAR YEDEKLERİ
+    // -------------------------------------------------------------
+    async fetchSettingsBackups() {
+      this.settingsBackupsLoading = true;
+      try {
+        const resp = await fetch('/api/settings/backups');
+        if (resp.ok) this.settingsBackups = (await resp.json()).backups || [];
+      } catch (e) {
+        console.debug('Ayar yedekleri alınamadı:', e);
+      } finally {
+        this.settingsBackupsLoading = false;
+        this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+      }
+    },
+
+    // Yedeğin içinde ne olduğunu, sırrın kendisini göstermeden anlatır.
+    settingsBackupSummary(b) {
+      const c = b.contents || {};
+      const p = [];
+      if (c.gemini_api_key) p.push('Gemini anahtarı');
+      if (c.coingecko_api_key) p.push('CoinGecko anahtarı');
+      if (c.telegram_bot_token) p.push('Telegram');
+      if (c.connections) p.push(`${c.connections} bağlantı`);
+      if (c.vault_entries) p.push(`${c.vault_entries} kasa kaydı`);
+      if (c.exchange_profiles) p.push(`${c.exchange_profiles} borsa profili`);
+      if (c.symbol_sources) p.push(`${c.symbol_sources} sembol kaynağı`);
+      if (c.pin_enabled) p.push('PIN açık');
+      return p.length ? p.join(' · ') : 'boş / varsayılan';
+    },
+
+    async restoreSettingsBackup(b) {
+      const onay = await this.askConfirm({
+        title: 'Ayarları yedekten geri yükle',
+        message: `${b.taken_at ? b.taken_at.replace('T', ' ') : b.name} tarihli yedek yüklenecek.`,
+        detail: 'Şu anki ayarların tamamı bu yedekle değişecek: API anahtarları, ' +
+                'cüzdan bağlantıları, kasa ve PIN dahil. Geri yüklemeden önce ' +
+                'mevcut hâlin yedeği otomatik alınır, yani bu işlem de geri alınabilir. ' +
+                `Yedeğin içeriği: ${this.settingsBackupSummary(b)}.`,
+        confirmText: 'Geri Yükle',
+        tone: 'danger'
+      });
+      if (!onay) return;
+      try {
+        const resp = await fetch(`/api/settings/backups/${encodeURIComponent(b.name)}/restore`,
+                                 { method: 'POST' });
+        const veri = await resp.json();
+        if (!resp.ok) throw new Error(veri.detail || 'geri yükleme başarısız');
+        this.settings = veri.settings;
+        this.settingsRestoreResult = { ok: true, name: b.name };
+        await this.fetchSettingsBackups();
+      } catch (e) {
+        this.settingsRestoreResult = { ok: false, error: String(e.message || e) };
+      }
+      this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
     },
 
     // -------------------------------------------------------------

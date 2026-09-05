@@ -27,7 +27,7 @@ from data_manager import (
     list_transfers, list_write_offs, WRITE_OFF_REASONS,
     get_rebuild_plan, apply_rebuild, undo_rebuild, list_rebuilds,
     known_locations, symbol_for_location, run_pending_migrations,
-    relocate_asset
+    relocate_asset, list_settings_backups, restore_settings_backup
 )
 from price_service import price_service
 from market_service import market_service
@@ -1135,6 +1135,36 @@ def update_settings(payload: dict = Body(...)):
     # kaynak tercihleri bir sonraki turda geçerli olsun.
     price_service.invalidate_config()
     return {"success": True, "settings": merged}
+
+
+# -------------------------------------------------------------
+# AYAR YEDEKLERİ
+#
+# 5 Eylül 2026'da `settings.json` varsayılanlarla üzerine yazıldı ve
+# kullanıcının API anahtarları, cüzdan bağlantıları ve PIN'i kayboldu.
+# Geri alınamadı çünkü uygulama yalnızca `portfolio.json` yedekliyordu.
+# Artık her yazmadan ÖNCE eski hâl saklanıyor; bu uçlar da onu görünür ve
+# geri yüklenebilir kılıyor. Görünmeyen yedek, olmayan yedektir.
+# -------------------------------------------------------------
+@app.get("/api/settings/backups")
+def list_settings_backups_endpoint():
+    """Yedek listesi. Sırların İÇERİĞİ dönmez, yalnızca hangi bölümün dolu
+    olduğu — kullanıcı doğru yedeği anahtarı ekrana düşürmeden seçebilsin."""
+    return {"backups": list_settings_backups()}
+
+
+@app.post("/api/settings/backups/{name}/restore")
+def restore_settings_backup_endpoint(name: str):
+    try:
+        sonuc = restore_settings_backup(name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Yedek bulunamadı.")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Geri yükleme başarısız: {e}")
+    price_service.invalidate_config()
+    return {"success": True, **sonuc, "settings": load_settings()}
 
 
 # -------------------------------------------------------------

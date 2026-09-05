@@ -75,6 +75,12 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   gibi sunulmak yerine hiç gönderilmez. Analiz piyasa verisini asla beklemez —
   kaynaklardan biri gerçek bir bağlantıda 7-22 saniye sürdü, o yüzden her şey arka
   planda toplanır ve önbellekten okunur.
+- **Ayar yedekleri** — her farklı ayar hâli, kaydetmeden hem önce hem sonra
+  saklanır ve arayüzden geri yüklenebilir. Bunun sebebi somut: 5 Eylül 2026'da ayar
+  dosyası varsayılanlarla üzerine yazıldı ve bir kullanıcının API anahtarları, cüzdan
+  bağlantıları ve PIN'i kalıcı olarak kayboldu; o tarihe kadar yalnızca defter
+  yedekleniyordu. Defter borsa kayıtlarından yeniden kurulabilir, ama borsa API gizli
+  anahtarı bir kez gösterilir ve bir daha gösterilmez.
 - **PIN koruması** — SHA-256 + kuruluma özel salt, kurtarma anahtarı ile sıfırlama.
 - **Net varlık arşivi** — borsalar geçmişi süresiz saklamaz ve pencereleri kayar
   (Binance ~2 yıl, MEXC 1 ay). Uygulama her çalıştığında portföyünüzün o günkü

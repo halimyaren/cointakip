@@ -952,9 +952,39 @@ olduğu durumlarda kullanışlıdır.
 
 ## 15. Yedekleme ve geri yükleme
 
-Uygulama her gün otomatik yedek alır: `data/backups/portfolio_backup_YYYYMMDD.json`.
+İki ayrı şey yedeklenir ve **farklı kurallarla**:
 
-Ayarlar'dan **elle yedek indirebilir** ve bir yedeği **geri yükleyebilirsiniz**.
+| | Portföy defteri | Ayarlar |
+|:---|:---|:---|
+| Dosya | `portfolio_backup_YYYYMMDD.json` | `settings_backup_YYYYAAGG_SSDDSS_ms.json` |
+| Ne zaman | Kaydettikten sonra | Kaydetmeden **önce ve sonra** |
+| Sıklık | Günde bir | **Her farklı hâl** |
+| Saklanan | Son yedekler | Son 100 |
+
+Ayarların daha sıkı korunmasının bir sebebi var. 5 Eylül 2026'da `settings.json`
+varsayılan ayarlarla üzerine yazıldı; Gemini anahtarı, cüzdan bağlantıları,
+şifreli borsa anahtarları ve PIN kayboldu. **Geri alınamadı**, çünkü o tarihe
+kadar uygulama yalnızca portföy defterini yedekliyordu.
+
+Bu bir gözden kaçma değil, bir varsayım hatasıydı: "asıl veri defterdir" diye
+düşünülmüştü. Oysa defter kaybolursa borsa kayıtlarından yeniden kurulabilir;
+borsa API **gizli anahtarı** ise oluşturulurken bir kez gösterilir ve
+kaybolursa geri alınamaz — ancak silinip yenisi üretilebilir. Yani ayar dosyası
+bazı açılardan defterden daha kırılgandır.
+
+"Önce ve sonra" ayrıntısı da tesadüf değil. Sadece *sonra* yedeklenirse,
+kaydetme işleminin kendisi bir bölümü kaybederse eski hâl kurtarılamaz. Sadece
+*önce* yedeklenirse, en yeni hâl bir sonraki kayda kadar korumasız kalır —
+anahtarınızı girdikten hemen sonraki bir kayıp yine kurtarılamazdı.
+
+**Ayarlar → API Anahtarları** bölümündeki **Ayar Yedekleri** panelinde her
+yedeğin içinde ne olduğu yazar (*"Gemini anahtarı · 5 bağlantı · PIN açık"*) ama
+anahtarların kendisi **asla gösterilmez**; doğru yedeği sırrı ekrana düşürmeden
+seçebilirsiniz. Geri yüklemeden önce mevcut hâlin yedeği de otomatik alınır,
+yani yanlış yedeği seçmek de geri alınabilir.
+
+Portföy tarafında ayrıca Ayarlar'dan **elle yedek indirebilir** ve bir yedeği
+**geri yükleyebilirsiniz**.
 
 Tüm veriniz `data/` klasöründedir. Başka bir bilgisayara taşımak için o klasörü
 kopyalamanız yeterlidir.

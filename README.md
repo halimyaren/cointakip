@@ -75,6 +75,12 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   labelled with their age; very old ones are dropped rather than passed off as current.
   Analysis never waits on market data — one source measured 7-22 seconds on a real
   connection, so everything is fetched in the background and read from cache.
+- **Settings backups** — every distinct settings state is saved, both before and after
+  each write, and restorable from the UI. This exists because on 5 September 2026 the
+  settings file was overwritten with defaults and a user's API keys, wallet
+  connections and PIN were lost unrecoverably: until then only the ledger was backed
+  up. A ledger can be rebuilt from exchange records; an exchange API secret is shown
+  once and never again.
 - **PIN protection** — SHA-256 with a per-install salt, recovery key for reset.
 - **Net-worth archive** — exchanges do not keep history forever and their windows
   slide (Binance ~2 years, MEXC 1 month). Every time the app runs it records the
