@@ -483,11 +483,20 @@ class TestArsiv:
             },
         }
 
-    def test_sema_surumu_3(self):
-        assert archive.SCHEMA_VERSION == 3
+    def test_piyasa_tablosu_semada_var(self):
+        """Sürüm numarasını sabitlemek yerine TABLONUN varlığını denetliyoruz.
+
+        Eskiden burada `SCHEMA_VERSION == 3` yazıyordu ve arşive yeni bir
+        tablo eklenen ilk fazda (F7, `exchange_events`) kırıldı — oysa M1'in
+        garanti etmesi gereken şey sürüm numarası değil, piyasa geçmişinin
+        yazılabildiğiydi. Numara sabitlemek, ilgisiz bir değişiklikte alarm
+        veren ve o yüzden güveni azalan bir testtir.
+        """
         archive.init_archive()
         durum = archive.archive_status()
-        assert durum.get("schema_version") == 3
+        assert durum.get("schema_version") == archive.SCHEMA_VERSION
+        assert archive.SCHEMA_VERSION >= 3
+        assert archive.write_market_snapshot(self._fotograf()) is True
 
     def test_yazma_ve_okuma_tur_atlar(self):
         assert archive.write_market_snapshot(self._fotograf()) is True

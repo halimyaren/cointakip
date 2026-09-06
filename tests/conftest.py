@@ -35,6 +35,7 @@ if APP_DIR not in sys.path:
 import data_manager                      # noqa: E402
 import price_service as price_module     # noqa: E402
 import market_service as market_module   # noqa: E402
+import trade_sync as trade_sync_module   # noqa: E402
 
 
 # Sabit test fiyatları — ağ erişimi olmadan deterministik sonuç verir
@@ -200,6 +201,19 @@ def izole_veri(tmp_path, monkeypatch):
     piyasa._cache = {}
     piyasa._health = {}
 
+    # --- FAZ F7: borsa işlem yakalama da susturulur ---
+    #
+    # Bu servis diğer ikisinden daha tehlikeli: İMZALI çağrı yapıyor, yani
+    # susturulmazsa test oturumu kullanıcının gerçek API anahtarıyla gerçek
+    # Binance hesabına bağlanırdı. Yol yönlendirmesi burada yetmez çünkü
+    # anahtar diskteki dosyadan değil kasadan geliyor.
+    esitleyici = trade_sync_module.trade_sync
+    monkeypatch.setattr(esitleyici, "start_background_updater", lambda: None)
+    monkeypatch.setattr(
+        esitleyici, "scan",
+        lambda location=None, full=False: {"ok": False, "skipped": "test"})
+    esitleyici._son_rapor = {}
+
     yield veri_dizini
 
     # Log handler'larını geri tak (aynı oturumda uygulama çalıştırılırsa diye)
@@ -238,6 +252,7 @@ def pytest_sessionfinish(session, exitstatus):
     motorlar = [
         ("Fiyat motoru", price_module.price_service),
         ("Piyasa verisi servisi", market_module.market_service),
+        ("Borsa işlem yakalama", trade_sync_module.trade_sync),
     ]
     calisanlar = [(ad, m) for ad, m in motorlar if getattr(m, "is_running", False)]
     if not calisanlar:

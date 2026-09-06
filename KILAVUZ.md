@@ -16,7 +16,7 @@ yapıldığını öğrenmek için [README.tr.md](README.tr.md) dosyasına bakın
 7. [Zarar yazımı — ölmüş pozisyonu kapatmak](#7-zarar-yazımı--ölmüş-pozisyonu-kapatmak)
 8. [Kâr alma hedefleri](#8-kâr-alma-hedefleri)
 9. [Hedge takibi](#9-hedge-takibi)
-10. [Borsa mutabakatı ve düzeltme](#10-borsa-mutabakatı-ve-düzeltme)
+10. [Borsa mutabakatı ve düzeltme](#10-borsa-mutabakatı-ve-düzeltme) — geçmiş için dosya, bundan sonrası için [otomatik yakalama](#borsada-yaptığınız-işlemler-artık-kendiliğinden-yakalanıyor)
 11. [Cüzdan bağlantıları](#11-cüzdan-bağlantıları) — MetaMask, Phantom ve diğerleri
 12. [Arşiv ve net varlık eğrisi](#12-arşiv-ve-net-varlık-eğrisi)
 13. [Vergi-hazır dışa aktarım](#13-vergi-hazır-dışa-aktarım) — mali müşavirinize vereceğiniz dosya
@@ -418,6 +418,79 @@ gerekmez.
 > ⚠️ **Excel'inizi veya eski kayıtlarınızı atmayın.** Borsa dosyası yalnızca
 > kapsadığı aralıkta kesindir. 2023-02 öncesi Binance, 2024-10 öncesi MEXC ve tüm
 > cüzdan/DEX varlıklarınız için tek kaynak hâlâ sizin kendi kaydınız.
+
+### Borsada yaptığınız işlemler artık kendiliğinden yakalanıyor
+
+Yukarıdaki dosya işi **geçmiş** içindir. Bundan sonrası için dosya indirmenize
+gerek yok: borsa bağlantınız tanımlıysa uygulama işlem geçmişinizi kendisi okur.
+
+**İşlem Defteri** sekmesinin en üstünde **Borsa İşlemleri** kutusu var. Borsada
+bir alım veya satış yaptığınızda satır oraya düşer.
+
+> **Deftere kendiliğinden hiçbir şey yazılmaz.** Satır orada *bekler*; deftere
+> ancak siz **Deftere işle** dediğinizde girer. Bunun sebebi keyfî değil: kısmi
+> bir satışta maliyet yönteminin **Konsolide Ortalama** mı **FIFO** mu olacağı
+> sonucu değiştiren bir karardır ve o karar sizindir.
+
+Satırda ne göreceksiniz:
+
+| Etiket | Anlamı |
+|---|---|
+| **ALIM** / **SATIŞ** | Borsada gerçekleşmiş normal spot işlem. |
+| **TOZ DÖNÜŞÜMÜ** | "Küçük Bakiyeleri Dönüştür" ile yapılan dönüşüm. |
+| **AÇIKLANAMAYAN** | Bakiyeniz değişti ama sebebini bulamadık. |
+
+Bir satır defterinizdeki kapanmış bir kayda benziyorsa (aynı gün, benzer miktar)
+**"zaten elle işlenmiş olabilir"** uyarısı çıkar. Bu bir iddia değil bir
+ihtimaldir — elle girdiğiniz eski kayıtlar borsa işlem numarası taşımıyor, o
+yüzden kesin eşleştirme yapılamaz. Emin değilseniz **Yok say** deyin; defterde
+hiçbir şey değişmez.
+
+#### Küçük bakiye (toz) dönüşümü — küçük görünen büyük olay
+
+Binance'in "Küçük Bakiyeleri Dönüştür" özelliği **spot işlem değildir** ve
+borsanın normal işlem geçmişinde hiç görünmez. Ayrı bir kayıttan okunur.
+
+Bunu ayrıca ele almamızın sebebi şu ölçüm: kullanıcının gerçek portföyünde
+ekrandaki 7 coin, açık pozisyonlarıyla birebir örtüşüyordu. Dönüşüm yapılsaydı:
+
+| | |
+|---|---:|
+| Ele geçecek tutar | **17.03 USDT** |
+| Defterden silinecek maliyet tabanı | **434.54 USD** |
+| Gerçekleşmiş zarar | **≈ −418 USD** |
+
+Yani işlem "17 dolarlık bir temizlik" gibi görünürken, arkasında 418 dolarlık
+gerçekleşmiş bir zarar vardı. Bu yakalanmasaydı 7 pozisyon defterde açık kalmaya
+ve canlı fiyatla değerlenmeye devam edecek, net varlığınız olduğundan yüksek
+görünecek, zarar da vergi dosyanıza hiç girmeyecekti.
+
+> **MEXC'te toz dönüşümü görülemez.** MEXC bunun için bir API ucu sunmuyor.
+> Orada dönüşüm yaparsanız satır "AÇIKLANAMAYAN" olarak çıkar. Bu bir hata
+> değil, bilinen bir sınırdır ve arayüzde de yazar.
+
+#### "Açıklanamayan" ne demek?
+
+Uygulama her taramada bakiyenizin fotoğrafını alır. Bir varlığın miktarı değişmiş
+ama bunu açıklayan bir işlem bulunamamışsa **susmaz**, size söyler.
+
+En yaygın sebepler: para yatırma/çekme, Earn abonelik veya bozdurma, vadeli
+hesaba transfer. **Bu sürüm bunları okumuyor** — ama okumadığımız şeyi görünmez
+yapmıyoruz. Bu satırlar deftere işlenemez, yalnızca bilgilendirir; okuduktan
+sonra **Yok say** ile kaldırabilirsiniz.
+
+#### Sınır: "bundan sonrası" yakalanır
+
+Bir sembol **ilk kez** tarandığında hiçbir işlem listeye düşmez; yalnızca
+başlangıç noktası kurulur. Aksi hâlde aylar öncesine ait, çoğu zaten elle
+işlenmiş yüzlerce işlem gelen kutusuna dolardı.
+
+Yani: **geçmişinizi bu özellik getirmez**, onun için hâlâ yukarıdaki dosya yolu
+var. Bu özellik bugünden sonrasını yakalar.
+
+Tarama arka planda 5 dakikada bir çalışır; **Şimdi tara** düğmesiyle elle de
+başlatabilirsiniz. Anahtar kasanız kilitliyse tarama sessizce atlanır — borsa
+anahtarlarınız şifreli kasada duruyor ve kasa her açılışta elle açılıyor.
 
 ---
 

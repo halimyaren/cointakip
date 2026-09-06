@@ -87,6 +87,27 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   hâlini yerel bir SQLite arşivine yazar; böylece borsanın sildiği geçmiş sizde
   kalır ve zamanla gerçek bir net varlık eğrisi oluşur. Kayıt bulunmayan günler
   gizlenmez, açıkça bildirilir.
+- **Borsada yaptığınız işlemler yakalanır** — uygulama borsanın işlem geçmişini
+  kendisi okur ve yeni işlemleri İşlem Defteri'ndeki bir gelen kutusuna koyar.
+  **Deftere kendiliğinden hiçbir şey yazılmaz**: kısmi satışta maliyet yöntemi
+  (Konsolide Ortalama / FIFO) sonucu değiştirir ve o karar kullanıcınındır. Her
+  satır borsanın kendi işlem numarasını taşır, yani aynı işlem iki kez
+  işlenemez. Defterde benzeyen kapanmış bir kayıt varsa (aynı gün, benzer
+  miktar) "elle işlenmiş **olabilir**" uyarısı çıkar — elle girilen kayıtlar
+  işlem numarası taşımadığı için kesin eşleştirme mümkün değildir ve uyarı bunu
+  saklamaz.
+- **Toz dönüşümü bir alım-satım değildir** — Binance'in "Küçük Bakiyeleri
+  Dönüştür" özelliği işlem geçmişinde hiç görünmez, ayrı bir uçta durur. Gerçek
+  veride ölçüldü: **17.03 USDT**'lik bir dönüşüm **434.54 USD** maliyet tabanını
+  silecekti — deftere hiç girmeyen ~418 USD'lik gerçekleşmiş zarar ve canlı
+  fiyatla değerlenmeye devam eden 7 açık pozisyon. "Küçük bakiye" piyasa değeri
+  için küçüktür, maliyet tabanı için değil. MEXC böyle bir uç sunmuyor ve
+  uygulama bunu kapatıyormuş gibi yapmak yerine açıkça söylüyor.
+- **Açıklanamayan bakiye değişimi gizlenmez** — para yatırma/çekme, Earn ve
+  vadeli transferleri şimdilik kapsam dışı. Bakiye değişip de bunu açıklayan bir
+  işlem bulunamadığında hangi varlığın ne kadar değiştiği söylenir, susulmaz. Bir
+  sembolün ilk taraması yalnızca başlangıç noktası kurar: bu özellik bundan
+  sonrasını yakalar, geçmişi geriye dönük getirmez.
 - **Borsa mutabakatı** — borsanızın web arayüzünden indirdiğiniz dosyaları
   (Binance CSV, MEXC XLSX) defterinizle karşılaştırır ve farkları gösterir.
   Karşılaştırma **deftere hiçbir şey yazmaz**. Rapor, gerçek bir tutarsızlığı
@@ -283,8 +304,11 @@ app/
 ├── reconcile.py      Borsa dışa aktarımı ↔ defter mutabakatı ve düzeltme
 │                     önerileri (salt okunur; yazma data_manager'dan geçer)
 ├── connections.py    Bağlantı kayıt defteri + zincir okuyucuları (EVM, Solana)
-├── exchanges.py      Borsa API profilleri + salt-okunur bakiye okuyucu,
-│                     imza ailesi başına yazılır (yalnızca GET, emir vermez)
+├── exchanges.py      Borsa API profilleri + salt-okunur bakiye, işlem ve toz
+│                     dönüşümü okuyucuları; imza ailesi başına yazılır
+│                     (yalnızca GET, emir vermez)
+├── trade_sync.py     Borsa işlemlerini ve toz dönüşümlerini onay kutusuna
+│                     düşürür; deftere kendiliğinden asla yazmaz
 ├── tax_export.py     Vergi-hazır dışa aktarım (salt okunur; vergi hesaplamaz)
 ├── keyvault.py       API anahtarları için PIN'den türetilmiş şifreleme
 ├── ai_service.py     Gemini entegrasyonu + yerel yedek motor

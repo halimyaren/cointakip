@@ -150,6 +150,10 @@ BUILTIN_PROFILES = {
         "account_path": "/api/v3/account",
         "time_path": "/api/v3/time",
         "restrictions_path": "/sapi/v1/account/apiRestrictions",
+        # FAZ F7 — işlem yakalama. İkisi de GET'tir; bu modülün "yalnızca
+        # okuma" sözü bozulmuyor.
+        "my_trades_path": "/api/v3/myTrades",
+        "dust_log_path": "/sapi/v1/asset/dribblet",
         "key_header": "X-MBX-APIKEY",
         "balances_field": "balances",
         "asset_field": "asset",
@@ -165,6 +169,11 @@ BUILTIN_PROFILES = {
         "time_path": "/api/v3/time",
         # MEXC'te anahtar yetkilerini bildiren belgelenmiş bir uç yok.
         "restrictions_path": "",
+        # MEXC `myTrades`'i klonluyor ama toz dönüşümü geçmişi için
+        # belgelenmiş bir ucu YOK. Boş bırakmak "bu yetenek burada yok"
+        # demektir; uydurma bir yol yazmak sessiz başarısızlık üretirdi.
+        "my_trades_path": "/api/v3/myTrades",
+        "dust_log_path": "",
         # MEXC imzalamayı Binance'ten birebir klonlar AMA anahtarı kendi
         # başlığında bekler. `X-MBX-APIKEY` gönderilirse başlık okunmaz ve
         # borsa, hiç başlık yollanmamış gibi `400 api key required` döner.
@@ -207,6 +216,31 @@ def key_header(profil: dict) -> str:
 
     aile = SIGNING_FAMILIES.get((profil or {}).get("family")) or {}
     return aile.get("key_header") or "X-MBX-APIKEY"
+
+
+def endpoint_path(profil: dict, alan: str) -> str:
+    """
+    Bir uç noktanın yolu. Boş dize = **o borsada bu yetenek yok**.
+
+    `key_header()` ile aynı üç adım: profilin kendi değeri → o konumun hazır
+    profili → boş. Ortadaki adım geriye dönük uyum içindir: bu alanlar
+    eklenmeden ÖNCE kaydedilmiş bir profil (kullanıcının mevcut BINANCE ve
+    MEXC kayıtları böyle) alanı taşımaz ama borsa yeteneği değişmemiştir.
+
+    Yokluğu uydurmuyoruz: MEXC'in toz dönüşümü geçmişi için belgelenmiş bir
+    ucu yok ve orası boş kalıyor. Var olmayan bir yola istek atmak sessiz
+    başarısızlık üretir; bu projede en pahalı hata türü odur.
+    """
+    kendi = str((profil or {}).get(alan) or "").strip()
+    if kendi:
+        return kendi if kendi.startswith("/") else "/" + kendi
+    konum = str((profil or {}).get("location") or "").upper().strip()
+    hazir = str(BUILTIN_PROFILES.get(konum, {}).get(alan) or "").strip()
+    return hazir
+
+
+def supports(profil: dict, alan: str) -> bool:
+    return bool(endpoint_path(profil, alan))
 
 
 def builtin_profiles() -> list:
@@ -272,7 +306,8 @@ def validate_profile(spec: dict) -> tuple:
         return None, "Profil bilgisi okunamadı."
     temiz = {}
     for alan in ("location", "name", "family", "base_url", "account_path",
-                 "time_path", "restrictions_path", "balances_field",
+                 "time_path", "restrictions_path", "my_trades_path",
+                 "dust_log_path", "balances_field",
                  "asset_field", "free_field", "locked_field", "label",
                  "key_header", "key_expires_at"):
         deger = spec.get(alan)
@@ -295,7 +330,8 @@ def validate_profile(spec: dict) -> tuple:
                       "biri onu okuyabilir.")
     temiz["base_url"] = temiz["base_url"].rstrip("/")
 
-    for alan in ("account_path", "time_path", "restrictions_path"):
+    for alan in ("account_path", "time_path", "restrictions_path",
+                 "my_trades_path", "dust_log_path"):
         if temiz[alan] and not temiz[alan].startswith("/"):
             temiz[alan] = "/" + temiz[alan]
 
@@ -378,7 +414,8 @@ def update_profile_fields(location: str, alanlar: dict) -> dict:
     # Yok saymak, kullanıcının kaydettiğini sandığı bir değişikliğin hiç
     # olmaması demekti; bunu söylemek zorundayız.
     for alan in ("location", "family", "base_url", "account_path",
-                 "time_path", "restrictions_path", "key_header"):
+                 "time_path", "restrictions_path", "my_trades_path",
+                 "dust_log_path", "key_header"):
         if alan not in istek:
             continue
         yeni = str(istek[alan] or "").strip()
@@ -774,6 +811,164 @@ def save_credentials(profil, api_key, api_secret, acknowledge_unverified=False):
 
 
 # =====================================================================
+# İŞLEM GEÇMİŞİ — FAZ F7
+# =====================================================================
+# Buradaki her çağrı GET'tir. Modülün başındaki söz ("emir verme, para çekme
+# veya herhangi bir yazma çağrısı YOKTUR") bozulmuyor.
+#
+# NEDEN `fromId`, NEDEN `startTime`/`endTime` DEĞİL
+# -------------------------------------------------
+# Binance `startTime`+`endTime` aralığını **24 saatle** sınırlıyor. Zaman
+# penceresiyle çalışmak, iki hafta önceki bir işlemi bulmak için sembol
+# başına 14 çağrı demek olurdu. `fromId` ise geçmişte tek yönlü yürüyen bir
+# imleçtir: en son gördüğümüz işlem numarasından sonrasını isteriz ve tek
+# çağrıda 1000 satıra kadar geliriz.
+#
+# İlk eşitlemede imleç YOKTUR ve bilerek `fromId` göndermeyiz: o zaman borsa
+# en son işlemleri döndürür. Yani v1'in sınırı açıkça şudur — "bundan
+# sonrasını yakala". Geçmişin tamamını getirmek (`fromId=0`den sayfalama)
+# ayrı bir iştir ve kullanıcıya böyle söylenir.
+
+# Binance ağırlığı: `myTrades` = 20, `dribblet` = 1. Binance'in IP bütçesi
+# dakikada 6000; 21 sembollük tam tarama 420, yani bütçenin %7'si.
+MY_TRADES_LIMIT = 1000
+MY_TRADES_WEIGHT = 20
+DUST_LOG_WEIGHT = 1
+
+
+def _anahtarlar(konum, api_key, api_secret):
+    """Verilmişse onları, verilmemişse kasadakileri kullanır."""
+    if api_key and api_secret:
+        return api_key, api_secret
+    return _kasadan(konum)
+
+
+def fetch_my_trades(profil, symbol, from_id=None, limit=MY_TRADES_LIMIT,
+                    api_key=None, api_secret=None):
+    """
+    Bir sembolün doldurulmuş işlemleri. **Salt okuma (GET).**
+
+    `from_id` verilirse o numaradan İTİBAREN (o numara dâhil) döner; bu yüzden
+    çağıran taraf imleci "son görülen + 1" olarak tutmalıdır.
+
+    Borsanın ham satırlarını olduğu gibi döndürür. Normalleştirme burada
+    yapılmaz: bu modül borsayla konuşur, anlamlandırma `trade_sync`in işidir.
+    """
+    yol = endpoint_path(profil, "my_trades_path")
+    if not yol:
+        raise ExchangeError(
+            f"{profil.get('name') or profil.get('location')} profilinde işlem "
+            "geçmişi ucu tanımlı değil.")
+
+    sembol = str(symbol or "").upper().strip()
+    if not sembol:
+        raise ExchangeError("Sembol boş olamaz.")
+
+    konum = str(profil.get("location") or "").upper().strip()
+    anahtar, gizli = _anahtarlar(konum, api_key, api_secret)
+
+    params = {"symbol": sembol, "limit": int(max(1, min(int(limit), MY_TRADES_LIMIT)))}
+    if from_id is not None:
+        params["fromId"] = int(from_id)
+
+    ham = signed_get(profil, yol, anahtar, gizli, params)
+    if not isinstance(ham, list):
+        # Bazı klonlar listeyi `data` içine sarıyor.
+        if isinstance(ham, dict) and isinstance(ham.get("data"), list):
+            ham = ham["data"]
+        else:
+            raise ExchangeError(
+                f"İşlem listesi beklenen biçimde gelmedi ({type(ham).__name__}).")
+    return ham
+
+
+def fetch_dust_log(profil, start_time_ms=None, end_time_ms=None,
+                   api_key=None, api_secret=None):
+    """
+    Küçük bakiye (toz) dönüşümü geçmişi. **Salt okuma (GET), ağırlık 1.**
+
+    NEDEN AYRI BİR UÇ: toz dönüşümü bir spot işlem DEĞİLDİR ve `myTrades`'e
+    hiç düşmez. Yalnızca `myTrades` dinleyen bir sistem, kullanıcı "Küçük
+    Bakiyeleri Dönüştür"e bastığında varlıkların bakiyeden silindiğini görür
+    ama sebebini asla açıklayamaz.
+
+    Etkisi tutarın küçüklüğüyle ölçülmez. Gerçek bir örnekte 17.76 USDT'lik
+    bir dönüşüm, defterde 434 USD'lik maliyet tabanını siliyordu — yani
+    ~418 USD'lik gerçekleşmiş bir zarar, hiçbir yere yazılmadan.
+
+    Sınırlar (Binance): yalnızca son 100 kayıt ve 2020-12-01 sonrası.
+    Düz bir liste döndürür; iç içe yapıyı burada açıyoruz çünkü bu, borsanın
+    biçimine ait bir ayrıntıdır.
+    """
+    yol = endpoint_path(profil, "dust_log_path")
+    if not yol:
+        raise ExchangeError(
+            f"{profil.get('name') or profil.get('location')} toz dönüşümü "
+            "geçmişi için bir uç sunmuyor.")
+
+    konum = str(profil.get("location") or "").upper().strip()
+    anahtar, gizli = _anahtarlar(konum, api_key, api_secret)
+
+    params = {}
+    if start_time_ms:
+        params["startTime"] = int(start_time_ms)
+    if end_time_ms:
+        params["endTime"] = int(end_time_ms)
+
+    ham = signed_get(profil, yol, anahtar, gizli, params)
+    return dust_rows(ham)
+
+
+def dust_rows(ham):
+    """Binance'in iç içe toz cevabını düz satırlara açar. **Ağa çıkmaz.**
+
+    Ayrı ve saf bir işlev olması bilinçli: gerçek bir cevabı kaydedip
+    testte aynen oynatabilmek, bu tür biçim işlerinde tek güvenilir yoldur.
+    """
+    if not isinstance(ham, dict):
+        raise ExchangeError("Toz dönüşümü yanıtı beklenen biçimde değil.")
+    gruplar = ham.get("userAssetDribblets")
+    if gruplar is None and isinstance(ham.get("data"), dict):
+        gruplar = ham["data"].get("userAssetDribblets")
+    if not isinstance(gruplar, list):
+        return []
+
+    satirlar = []
+    for grup in gruplar:
+        if not isinstance(grup, dict):
+            continue
+        grup_zaman = grup.get("operateTime")
+        grup_id = grup.get("transId")
+        # Hedef varlık grubun üstünde de, detayda da gelebiliyor. Klasik
+        # BNB dönüşümünde alan hiç bulunmayabilir; o zaman BNB varsayılır
+        # ÇÜNKÜ o dönüşümün tanımı budur — uydurma değil, belgelenmiş
+        # varsayılan.
+        grup_hedef = str(grup.get("targetAsset") or "").upper().strip()
+        for d in (grup.get("userAssetDribbletDetails") or []):
+            if not isinstance(d, dict):
+                continue
+            try:
+                miktar = float(d.get("amount") or 0.0)
+                gelen = float(d.get("transferedAmount") or 0.0)
+                komisyon = float(d.get("serviceChargeAmount") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            hedef = (str(d.get("targetAsset") or "").upper().strip()
+                     or grup_hedef or "BNB")
+            satirlar.append({
+                "trans_id": d.get("transId") or grup_id,
+                "batch_id": grup_id,
+                "operate_time": int(d.get("operateTime") or grup_zaman or 0),
+                "from_asset": str(d.get("fromAsset") or "").upper().strip(),
+                "target_asset": hedef,
+                "amount": miktar,
+                "transfered_amount": gelen,
+                "service_charge_amount": komisyon,
+            })
+    return satirlar
+
+
+# =====================================================================
 # Toplu okuma
 # =====================================================================
 def read_all(only_enabled=True) -> dict:
@@ -854,4 +1049,10 @@ def status() -> dict:
         "key_expiry": {k: key_expiry_state(p) for k, p in profiller.items()
                        if credentials_stored(k)},
         "expiry_warn_days": KEY_EXPIRY_WARN_DAYS,
+        # Hangi borsada neyi görebildiğimiz. Arayüz bunu göstermeli:
+        # kullanıcının "toz dönüşümüm neden çıkmadı" diye kod aramaması
+        # gereken tek yer burasıdır.
+        "capabilities": {k: {"trades": supports(p, "my_trades_path"),
+                             "dust": supports(p, "dust_log_path")}
+                         for k, p in profiller.items()},
     }

@@ -87,6 +87,27 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   day's portfolio state into a local SQLite archive, so the history the exchange
   deletes stays with you and a real net-worth curve builds up over time. Days with
   no record are reported, not hidden.
+- **Trades you make on the exchange are captured** — the app reads your exchange
+  trade history and puts new fills in an inbox on the ledger tab. **Nothing is
+  written to your ledger automatically**: in a partial sale the cost method
+  (consolidated average vs FIFO) changes the result, and that choice is yours.
+  Each row carries the exchange's own trade id, so the same fill can never be
+  booked twice, and a row that resembles an existing closed entry (same day,
+  similar quantity) is flagged as a *possible* manual duplicate — entries you
+  typed yourself carry no trade id, so a certain match is impossible and the
+  warning says so.
+- **Dust conversion is not a trade** — Binance's "Convert Small Balances" never
+  appears in the trade history; it lives on a separate endpoint. Measured on real
+  data: a **17.03 USDT** conversion would have erased **434.54 USD** of cost basis
+  — a ~418 USD realised loss, invisible to the ledger, with seven positions left
+  open and still being priced. "Small balance" is small in market value, not in
+  cost basis. MEXC exposes no such endpoint, and the app says so rather than
+  pretending to cover it.
+- **Unexplained balance changes are reported, not hidden** — deposits, withdrawals,
+  Earn subscriptions and futures transfers are out of scope for now. When a balance
+  moves and no trade explains it, you are told which asset moved and by how much,
+  instead of silence. The first scan of a symbol only sets a starting point: this
+  captures what happens from now on and does not backfill history.
 - **Exchange reconciliation** — compares the export files you download from your
   exchange (Binance CSV, MEXC XLSX) against your ledger and shows the differences.
   The comparison **writes nothing to the ledger**. The report distinguishes a
@@ -288,8 +309,11 @@ app/
 ├── reconcile.py      Exchange export ↔ ledger reconciliation and repair
 │                     proposals (read-only; writes go through data_manager)
 ├── connections.py    Connection registry + on-chain readers (EVM, Solana)
-├── exchanges.py      Exchange API profiles + read-only balance reader,
-│                     written per signing family (GET only, never trades)
+├── exchanges.py      Exchange API profiles + read-only balance, trade and
+│                     dust-log readers, written per signing family
+│                     (GET only, never trades)
+├── trade_sync.py     Captures fills and dust conversions into an approval
+│                     inbox; never writes to the ledger on its own
 ├── tax_export.py     Tax-ready export (read-only; calculates no tax, USD only)
 ├── keyvault.py       PIN-derived encryption for API keys (session-only)
 ├── ai_service.py     Gemini integration + local fallback engine

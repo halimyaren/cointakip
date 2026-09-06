@@ -1178,7 +1178,18 @@ def delete_target(pos_key):
     return False
 
 
-def execute_target_sale(pos_key: str, sell_price: float = None, sell_qty: float = None, fee_amount: float = 0.0, fee_asset: str = "USDT", fee_usd: float = 0.0, cost_method: str = "Konsolide Ortalama"):
+def execute_target_sale(pos_key: str, sell_price: float = None, sell_qty: float = None, fee_amount: float = 0.0, fee_asset: str = "USDT", fee_usd: float = 0.0, cost_method: str = "Konsolide Ortalama", sale_date: str = None, source_ref: str = ""):
+    """
+    Bir pozisyondan satış yapar; lotları kapatır/azaltır, nakdi kasaya yazar.
+
+    `sale_date` ve `source_ref` FAZ F7'de eklendi ve ikisi de İSTEĞE BAĞLIDIR
+    — verilmediğinde davranış bu eklemeden önceki hâliyle birebir aynıdır.
+
+    Neden gerekliler: borsadan yakalanan bir satış BUGÜN olmuş olmayabilir
+    (imleç bir hafta geriden gelebilir) ve o satırın hangi borsa işleminden
+    doğduğu deftere damgalanmazsa aynı satış ikinci kez işlenebilir.
+    `source_ref` bu yüzden satış kaydında saklanır.
+    """
     data = load_portfolio()
     tgt = data.get("targets", {}).get(pos_key, {})
 
@@ -1218,7 +1229,8 @@ def execute_target_sale(pos_key: str, sell_price: float = None, sell_qty: float 
     fee_val_usd = float(fee_usd or 0.0)
     fee_amt = float(fee_amount or 0.0)
     fee_ast = (fee_asset or "USDT").upper().strip()
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    date_str = str(sale_date or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    kaynak = str(source_ref or "").strip()
 
     method_clean = "FIFO" if (cost_method or "").upper() == "FIFO" else "Konsolide Ortalama"
 
@@ -1255,6 +1267,8 @@ def execute_target_sale(pos_key: str, sell_price: float = None, sell_qty: float 
             "notes": f"Kısmi Satış (Konsolide Ortalama @${avg_cost:,.2f}) | Gelir: +${total_proceeds:,.2f}{fee_info_str} | Net K/Z: {'+' if net_pnl >= 0 else ''}${net_pnl:,.2f}",
             "category": active_txs[0].get("category", "Altcoin") if active_txs else "Altcoin"
         }
+        if kaynak:
+            closed_record["source_ref"] = kaynak
         data["transactions"].append(closed_record)
 
     else:
@@ -1281,6 +1295,8 @@ def execute_target_sale(pos_key: str, sell_price: float = None, sell_qty: float 
                 tx["fee_usd"] = round(lot_fee, 4)
                 tx["cost_method"] = "FIFO"
                 tx["notes"] = (tx.get("notes", "") + f" [FIFO Satış @${target_price:.4f} | Maliyet: ${tx_cost:.4f}]").strip()
+                if kaynak:
+                    tx["source_ref"] = kaynak
                 remaining_sell -= portion
             else:
                 portion = remaining_sell
@@ -1307,7 +1323,8 @@ def execute_target_sale(pos_key: str, sell_price: float = None, sell_qty: float 
                     "fee_usd": round(lot_fee, 4),
                     "cost_method": "FIFO",
                     "notes": f"Kısmi Satış (FIFO Lot #{tx['id']} @${tx_cost:.4f})",
-                    "category": tx.get("category", "Altcoin")
+                    "category": tx.get("category", "Altcoin"),
+                    **({"source_ref": kaynak} if kaynak else {}),
                 })
                 remaining_sell = 0
 

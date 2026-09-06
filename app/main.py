@@ -31,6 +31,7 @@ from data_manager import (
 )
 from price_service import price_service
 from market_service import market_service
+from trade_sync import trade_sync
 import archive
 import reconcile
 import connections
@@ -68,6 +69,10 @@ price_service.start_background_updater()
 # açılışı yavaşlatmamalıdır.
 market_service.price_engine = price_service
 market_service.start_background_updater()
+# FAZ F7 — Borsada yapılan işlemlerin yakalanması. En geç başlayan servis:
+# imzalı çağrı yapıyor, kasa kilitliyken zaten çalışamıyor ve hiçbir şekilde
+# acil değil.
+trade_sync.start_background_updater()
 logger.info("Sunucu hazır: http://127.0.0.1:8000")
 
 class TransactionCreate(BaseModel):
@@ -1332,6 +1337,51 @@ def get_market():
 @app.get("/api/market/history")
 def get_market_history(days: int = 90):
     return {"series": archive.market_series(days=max(1, min(int(days), 3650)))}
+
+
+# -------------------------------------------------------------
+# FAZ F7: BORSA İŞLEMLERİNİN YAKALANMASI
+# -------------------------------------------------------------
+# Bu uçların hiçbiri deftere KENDİLİĞİNDEN yazmaz. `scan` yalnızca borsayı
+# okur ve bulduğunu bekleme listesine koyar; deftere yazan tek uç `apply`
+# ve o da kullanıcının açık isteğiyle çalışır.
+@app.get("/api/exchange-trades")
+def get_exchange_trades(status: str = "pending", limit: int = 200):
+    durum = None if str(status).lower() in ("all", "hepsi", "") else status
+    kutu = trade_sync.inbox(status=durum, limit=max(1, min(int(limit), 2000)))
+    kutu["capabilities"] = exchanges.status().get("capabilities", {})
+    return kutu
+
+
+@app.post("/api/exchange-trades/scan")
+def scan_exchange_trades(payload: dict = Body(None)):
+    p = payload or {}
+    rapor = trade_sync.scan(location=p.get("location"),
+                            full=bool(p.get("full", True)))
+    return rapor
+
+
+@app.post("/api/exchange-trades/{event_uid:path}/apply")
+def apply_exchange_trade(event_uid: str, payload: dict = Body(None)):
+    p = payload or {}
+    try:
+        sonuc = trade_sync.apply_event(
+            event_uid, cost_method=p.get("cost_method") or "Konsolide Ortalama",
+            live_prices=price_service.get_prices())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Borsa işlemi deftere işlenemedi (%s): %s", event_uid, e)
+        raise HTTPException(status_code=500, detail=f"İşlenemedi: {e}")
+    return {**sonuc, **_f1_snapshot()}
+
+
+@app.post("/api/exchange-trades/{event_uid:path}/dismiss")
+def dismiss_exchange_trade(event_uid: str):
+    try:
+        return trade_sync.dismiss_event(event_uid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 # -------------------------------------------------------------
 # FAZ 7: GERÇEKLEŞMİŞ KÂR/ZARAR & EXCEL DIŞA AKTARIM ENDPOINT'LERİ

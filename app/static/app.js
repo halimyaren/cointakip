@@ -438,6 +438,16 @@ function portfolioApp() {
     settingsBackupsLoading: false,
     settingsRestoreResult: null,
 
+    // FAZ F7 — Borsada yapılan işlemlerin gelen kutusu.
+    //
+    // Buradaki satırlar defter kaydı DEĞİLDİR; onay bekleyen gözlemlerdir.
+    // Ayrımı arayüzde de korumak şart: onaylanmamış bir satışın portföy
+    // matematiğine sızması, kullanıcının görmediği bir karar demek olurdu.
+    exchangeTrades: { events: [], counts: {}, last_report: {}, sync_state: [], capabilities: {} },
+    exchangeScanBusy: false,
+    exchangeApplyBusy: '',
+    exchangeCostMethod: {},
+
     // Faz 7: Gerçekleşmiş Kâr/Zarar (Realized PnL) & Dışa Aktarma
     realizedMetrics: null,
     exportLoading: false,
@@ -471,6 +481,7 @@ function portfolioApp() {
       // Kullanıcının varsayılan sekmesi YZ ise `$watch` hiç tetiklenmez;
       // şerit boş kalırdı.
       if (this.activeTab === 'ai') this.fetchMarket();
+      if (this.activeTab === 'ledger') this.fetchExchangeTrades();
 
       // Re-init icons when tab changes
       this.$watch('activeTab', (val) => {
@@ -481,6 +492,9 @@ function portfolioApp() {
           }
           if (val === 'ledger') {
             this.fetchRealizedMetrics();
+            // FAZ F7 — Gelen kutusu yalnızca OKUNUR; tarama sunucunun kendi
+            // temposunda arka planda dönüyor.
+            this.fetchExchangeTrades();
           }
           // FAZ M1 — YZ sekmesi açıldığında piyasa şeridi tazelenir.
           // Sunucu veriyi zaten arka planda topluyor; bu yalnızca okuma.
@@ -4316,6 +4330,140 @@ function portfolioApp() {
         this.settingsRestoreResult = { ok: false, error: String(e.message || e) };
       }
       this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+    },
+
+    // -------------------------------------------------------------
+    // BORSA İŞLEMLERİ (FAZ F7)
+    //
+    // Bu bölümdeki hiçbir çağrı deftere kendiliğinden yazmaz. `apply` tek
+    // yazan uçtur ve yalnızca kullanıcının düğmesine bağlıdır.
+    // -------------------------------------------------------------
+    async fetchExchangeTrades() {
+      try {
+        const resp = await fetch('/api/exchange-trades');
+        if (resp.ok) this.exchangeTrades = await resp.json();
+      } catch (e) {
+        console.debug('Borsa işlemleri alınamadı:', e);
+      } finally {
+        this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+      }
+    },
+
+    async scanExchangeTrades() {
+      if (this.exchangeScanBusy) return;
+      this.exchangeScanBusy = true;
+      try {
+        const resp = await fetch('/api/exchange-trades/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ full: true })
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Tarama yapılamadı.');
+        await this.fetchExchangeTrades();
+        if (body.skipped) {
+          this.notify(body.message || 'Tarama atlandı.', 'error', 7000);
+        } else {
+          const yeni = body.new_events || 0;
+          this.notify(yeni > 0 ? `${yeni} yeni borsa işlemi bulundu.`
+                               : 'Yeni işlem yok.', yeni > 0 ? 'success' : 'info', 4000);
+        }
+      } catch (e) {
+        this.notify(e.message || 'Tarama yapılamadı.', 'error', 6000);
+      } finally {
+        this.exchangeScanBusy = false;
+      }
+    },
+
+    async applyExchangeTrade(ev) {
+      const yontem = this.exchangeCostMethod[ev.event_uid] || 'Konsolide Ortalama';
+      const satis = ev.hint && ev.hint.action === 'sell';
+      const onay = await this.askConfirm({
+        title: 'Borsa işlemini deftere işle',
+        message: `${ev.symbol} — ${this.formatNum(ev.qty, 8)} adet ` +
+                 (satis ? 'satış' : 'alım') + ' deftere yazılacak.',
+        detail: (satis
+          ? `Maliyet yöntemi: ${yontem}. Açık lotlar azaltılacak veya kapatılacak, ` +
+            'satış geliri kasaya eklenecek ve gerçekleşmiş K/Z hesaplanacak. '
+          : 'Deftere yeni bir açık pozisyon eklenecek. ') +
+          ((ev.hint && ev.hint.possible_duplicate)
+            ? 'DİKKAT: aynı gün ve benzer miktarda kapanmış bir kayıt zaten var; ' +
+              'bu işlem elle işlenmiş olabilir. '
+            : '') +
+          'İşlem tarihi borsadan geldiği gibi kullanılır.',
+        confirmText: 'Deftere İşle',
+        tone: (ev.hint && ev.hint.possible_duplicate) ? 'danger' : 'primary'
+      });
+      if (!onay) return;
+
+      this.exchangeApplyBusy = ev.event_uid;
+      try {
+        const resp = await fetch('/api/exchange-trades/' +
+                                 encodeURIComponent(ev.event_uid) + '/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cost_method: yontem })
+        });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'İşlenemedi.');
+        this._applyLedgerSnapshot(body);
+        if (body.warning) this.notify(body.warning, 'error', 12000);
+        else this.notify(`${ev.symbol} deftere işlendi.`, 'success', 5000);
+        await this.fetchExchangeTrades();
+        await this.fetchPortfolio();
+        await this.fetchRealizedMetrics();
+      } catch (e) {
+        this.notify(e.message || 'İşlenemedi.', 'error', 8000);
+      } finally {
+        this.exchangeApplyBusy = '';
+      }
+    },
+
+    async dismissExchangeTrade(ev) {
+      const onay = await this.askConfirm({
+        title: 'Bu satırı yok say',
+        message: `${ev.symbol} satırı gelen kutusundan kaldırılacak.`,
+        detail: 'Defterde hiçbir şey değişmez. Satır bir daha "bekliyor" ' +
+                'listesine dönmez; borsa kaydı arşivde durmaya devam eder.',
+        confirmText: 'Yok Say',
+        tone: 'primary'
+      });
+      if (!onay) return;
+      try {
+        const resp = await fetch('/api/exchange-trades/' +
+                                 encodeURIComponent(ev.event_uid) + '/dismiss',
+                                 { method: 'POST' });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || 'Yok sayılamadı.');
+        await this.fetchExchangeTrades();
+      } catch (e) {
+        this.notify(e.message || 'Yok sayılamadı.', 'error', 6000);
+      }
+    },
+
+    // İlk taramanın sınırı GÖRÜNÜR olmalı: kullanıcı, geçmişin neden
+    // gelmediğini kodda aramamalı.
+    get exchangeBaselineNote() {
+      const b = [];
+      for (const ex of ((this.exchangeTrades.last_report || {}).exchanges || [])) {
+        const kurulan = (ex.baseline_established || []).length;
+        if (kurulan > 0) b.push(`${ex.exchange}: ${kurulan} akışta başlangıç noktası kuruldu`);
+      }
+      if (!b.length) return '';
+      return b.join(' · ') + '. Bu noktadan ÖNCEKİ işlemler yakalanmaz; ' +
+             'geçmişi getirmek ayrı bir iştir.';
+    },
+
+    // MEXC toz dönüşümü geçmişi için bir uç sunmuyor. Bunu söylemezsek
+    // kullanıcı orada bir dönüşüm yapıp neden görünmediğini arar.
+    get exchangeDustGap() {
+      const yok = Object.entries(this.exchangeTrades.capabilities || {})
+        .filter(([, c]) => c && c.dust === false)
+        .map(([k]) => k);
+      if (!yok.length) return '';
+      return yok.join(', ') + ' küçük bakiye (toz) dönüşümü geçmişi için bir ' +
+             'API ucu sunmuyor; orada yapılan dönüşümler yakalanamaz, ' +
+             'yalnızca "açıklanamayan bakiye değişimi" olarak görünür.';
     },
 
     // -------------------------------------------------------------

@@ -857,7 +857,116 @@
     <!-- TAB 2: DCA İŞLEM DEFTERİ (İŞLEM KARNESİ & GERÇEKLEŞMİŞ K/Z) -->
     <!-- ============================================================= -->
     <div x-show="activeTab === 'ledger'" class="space-y-4" x-transition:enter="transition ease-out duration-150">
-      
+
+      <!-- ================================================================
+           FAZ F7 — BORSA İŞLEMLERİ (gelen kutusu)
+
+           Burada duran hiçbir satır defter kaydı DEĞİLDİR. Borsanın
+           söylediği ham gerçek ile kullanıcının deftere yazmaya karar
+           verdiği şey ayrı tutulur; deftere yazan tek şey "İşle" düğmesidir.
+           ================================================================ -->
+      <div class="bg-slate-900 rounded-xl border border-slate-800 shadow-md font-sans">
+        <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-slate-800">
+          <div class="flex items-center space-x-2.5">
+            <i data-lucide="inbox" class="w-4 h-4 text-cyan-400"></i>
+            <span class="text-[12.5px] font-semibold text-slate-200">BORSA İŞLEMLERİ</span>
+            <span x-show="(exchangeTrades?.counts?.pending || 0) > 0"
+                  class="px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 text-[11px] font-bold font-mono-nums"
+                  x-text="(exchangeTrades?.counts?.pending || 0) + ' bekliyor'"></span>
+            <span x-show="(exchangeTrades?.counts?.pending || 0) === 0"
+                  class="text-[11px] text-slate-500">bekleyen yok</span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <span class="text-[11px] text-slate-500"
+                  x-show="exchangeTrades?.last_report?.scanned_at"
+                  x-text="'Son tarama: ' + (exchangeTrades?.last_report?.scanned_at || '').replace('T',' ')"></span>
+            <button @click="scanExchangeTrades()" :disabled="exchangeScanBusy"
+                    class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-[11.5px] text-slate-200 border border-slate-700 flex items-center space-x-1.5">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5" :class="exchangeScanBusy ? 'animate-spin' : ''"></i>
+              <span x-text="exchangeScanBusy ? 'Taranıyor…' : 'Şimdi tara'"></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Taramanın neden çalışmadığı SÖYLENİR. Sessiz atlama, kullanıcıyı
+             "neden hiçbir şey çıkmıyor" sorusuyla kodda arama yapmaya iter. -->
+        <div x-show="exchangeTrades?.last_report?.message"
+             class="px-4 py-2.5 text-[11.5px] text-amber-300 bg-amber-500/5 border-b border-slate-800"
+             x-text="exchangeTrades?.last_report?.message"></div>
+
+        <div x-show="exchangeBaselineNote"
+             class="px-4 py-2.5 text-[11.5px] text-slate-400 bg-slate-950/40 border-b border-slate-800"
+             x-text="exchangeBaselineNote"></div>
+
+        <div x-show="exchangeDustGap"
+             class="px-4 py-2.5 text-[11.5px] text-slate-400 bg-slate-950/40 border-b border-slate-800"
+             x-text="exchangeDustGap"></div>
+
+        <!-- Boş durum: sınır burada yazılı. -->
+        <div x-show="!(exchangeTrades?.events || []).length" class="px-4 py-4 text-[11.5px] text-slate-500 leading-relaxed">
+          Borsada yapılan alım-satımlar burada listelenir ve deftere <b class="text-slate-300">yalnızca siz onaylayınca</b> girer.
+          Bir sembol ilk kez tarandığında sadece başlangıç noktası kurulur: bu sürüm
+          <b class="text-slate-300">o andan sonrasını</b> yakalar, geçmişi geriye dönük getirmez.
+        </div>
+
+        <div class="divide-y divide-slate-800/70">
+          <template x-for="ev in (exchangeTrades?.events || [])" :key="ev.event_uid">
+            <div class="px-4 py-3">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="flex items-center flex-wrap gap-2">
+                    <span class="px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide"
+                          :class="ev.kind === 'DUST' ? 'bg-amber-500/15 text-amber-300'
+                                  : ev.kind === 'UNEXPLAINED' ? 'bg-rose-500/15 text-rose-300'
+                                  : (ev.side === 'BUY' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-sky-500/15 text-sky-300')"
+                          x-text="ev.kind === 'DUST' ? 'TOZ DÖNÜŞÜMÜ' : ev.kind === 'UNEXPLAINED' ? 'AÇIKLANAMAYAN' : (ev.side === 'BUY' ? 'ALIM' : 'SATIŞ')"></span>
+                    <span class="text-[13px] font-semibold text-slate-100" x-text="ev.symbol"></span>
+                    <span class="text-[11px] text-slate-500" x-text="ev.exchange"></span>
+                    <span class="text-[11px] text-slate-500 font-mono-nums" x-text="(ev.trade_at || '').replace('T',' ')"></span>
+                  </div>
+                  <div class="mt-1 text-[11.5px] text-slate-300 font-mono-nums" x-show="ev.kind !== 'UNEXPLAINED'">
+                    <span x-text="formatNum(ev.qty, 8) + ' ' + (ev.base_asset || '')"></span>
+                    <span class="text-slate-500 mx-1">@</span>
+                    <span x-text="formatNum(ev.price, 8) + ' ' + (ev.quote_asset || '')"></span>
+                    <span class="text-slate-500 mx-1">=</span>
+                    <span x-text="formatNum(ev.quote_qty, 6) + ' ' + (ev.quote_asset || '')"></span>
+                    <span x-show="(ev.fee_qty || 0) > 0" class="text-amber-400 ml-2"
+                          x-text="'komisyon ' + formatNum(ev.fee_qty, 8) + ' ' + (ev.fee_asset || '')"></span>
+                  </div>
+                  <div class="mt-1 text-[11.5px] text-rose-300 font-mono-nums" x-show="ev.kind === 'UNEXPLAINED'"
+                       x-text="(ev.side === 'BUY' ? '+' : '−') + formatNum(ev.qty, 8) + ' ' + ev.base_asset"></div>
+                  <div class="mt-1 text-[11px] text-slate-400" x-text="ev.hint?.reason"></div>
+                  <div x-show="ev.hint?.warning" class="mt-1 text-[11px] text-amber-300" x-text="ev.hint?.warning"></div>
+                  <div x-show="ev.hint?.possible_duplicate"
+                       class="mt-1.5 px-2 py-1.5 rounded-lg bg-amber-500/5 border border-amber-500/20 text-[11px] text-amber-200">
+                    <span x-text="ev.hint?.possible_duplicate?.note"></span>
+                    <span class="text-amber-400 font-mono-nums"
+                          x-text="' (#' + ev.hint?.possible_duplicate?.tx_id + ', ' + formatNum(ev.hint?.possible_duplicate?.qty, 8) + ')'"></span>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-2 shrink-0">
+                  <select x-show="ev.hint?.action === 'sell'" x-model="exchangeCostMethod[ev.event_uid]"
+                          class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-200">
+                    <option value="Konsolide Ortalama">Konsolide Ortalama</option>
+                    <option value="FIFO">FIFO</option>
+                  </select>
+                  <button x-show="ev.hint?.applicable" @click="applyExchangeTrade(ev)"
+                          :disabled="exchangeApplyBusy === ev.event_uid"
+                          class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-[11.5px] text-white font-semibold">
+                    Deftere işle
+                  </button>
+                  <button @click="dismissExchangeTrade(ev)"
+                          class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11.5px] text-slate-300 border border-slate-700">
+                    Yok say
+                  </button>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
       <!-- FAZ F1 — Yazımlar toplam gerçekleşmiş K/Z'ye dahildir, ama bir
            alım-satım kararının sonucu değildir. Ayrımı göstermezsek kullanıcı
            kendi ticaret performansını olduğundan kötü okur. -->
@@ -6010,6 +6119,6 @@
   </div>
 
   <!-- App Frontend Script -->
-  <script src="/static/app.js?v=2.7"></script>
+  <script src="/static/app.js?v=2.8"></script>
 </body>
 </html>

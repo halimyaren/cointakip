@@ -64,7 +64,9 @@ SNAPSHOT_REFRESH_TTL = 3600.0
 # kurulduğu için mevcut arşivler açıldıklarında kendiliğinden tamamlanır;
 # göç adımı gerekmiyor, eski satırlar da olduğu gibi kalıyor.
 # 3 — `market_snapshots` tablosu eklendi (FAZ M1). Aynı yöntem.
-SCHEMA_VERSION = 3
+# 4 — `exchange_events`, `exchange_sync_state`, `exchange_balance_state`
+#     eklendi (FAZ F7 — borsa işlemlerinin yakalanması). Aynı yöntem.
+SCHEMA_VERSION = 4
 
 
 def archive_path():
@@ -218,6 +220,71 @@ def init_archive():
                     raw_json              TEXT
                 );
 
+                -- FAZ F7 — Borsada yapılan işlemler.
+                --
+                -- NEDEN ARŞİVDE, NEDEN DEFTERDE DEĞİL: buradaki satırlar
+                -- HENÜZ defter kaydı değil. Borsanın söylediği ham gerçek
+                -- ile kullanıcının defterine yazmaya karar verdiği şey iki
+                -- ayrı düzlemdir ve aynı tabloda tutulmaları, onaylanmamış
+                -- bir işlemin portföy matematiğine sızması demek olurdu.
+                --
+                -- `event_uid` tekilleştirmenin taşıyıcısıdır: borsanın kendi
+                -- işlem numarasını içerir, yani aynı işlem kaç kez çekilirse
+                -- çekilsin bir kez yazılır. Deftere işlendiğinde bu kimlik
+                -- defter kaydına da damgalanır (`source_ref`), böylece aynı
+                -- satış iki kez işlenemez.
+                CREATE TABLE IF NOT EXISTS exchange_events (
+                    event_uid     TEXT PRIMARY KEY,
+                    exchange      TEXT NOT NULL,
+                    kind          TEXT NOT NULL,   -- TRADE | DUST
+                    symbol        TEXT,
+                    base_asset    TEXT,
+                    quote_asset   TEXT,
+                    side          TEXT,            -- BUY | SELL
+                    qty           REAL,
+                    price         REAL,
+                    quote_qty     REAL,
+                    fee_asset     TEXT,
+                    fee_qty       REAL,
+                    trade_at      TEXT,            -- ISO8601
+                    trade_ts      REAL,
+                    status        TEXT NOT NULL DEFAULT 'pending',
+                    applied_tx_id INTEGER,
+                    applied_at    TEXT,
+                    dismissed_at  TEXT,
+                    seen_at       TEXT NOT NULL,
+                    raw_json      TEXT
+                );
+
+                -- Sembol başına imleç. `scope` bir sembol ('ARBUSDT') ya da
+                -- sembol-dışı bir akış ('__dust__') olabilir.
+                CREATE TABLE IF NOT EXISTS exchange_sync_state (
+                    exchange     TEXT NOT NULL,
+                    scope        TEXT NOT NULL,
+                    cursor       TEXT,
+                    last_sync_at TEXT,
+                    last_sync_ts REAL,
+                    last_error   TEXT,
+                    PRIMARY KEY (exchange, scope)
+                );
+
+                -- En son görülen bakiye. Tek amacı fark almak: bir varlığın
+                -- miktarı değiştiği hâlde onu açıklayan bir işlem
+                -- bulunamıyorsa kullanıcıya SUSMAK yerine "şunu göremiyorum"
+                -- denir. Toz dönüşümü tam olarak bu boşluktan girmişti.
+                CREATE TABLE IF NOT EXISTS exchange_balance_state (
+                    exchange TEXT NOT NULL,
+                    asset    TEXT NOT NULL,
+                    qty      REAL,
+                    seen_at  TEXT,
+                    seen_ts  REAL,
+                    PRIMARY KEY (exchange, asset)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_exevents_status
+                    ON exchange_events(status, trade_ts);
+                CREATE INDEX IF NOT EXISTS idx_exevents_symbol
+                    ON exchange_events(exchange, symbol);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_date ON snapshots(taken_date);
                 CREATE INDEX IF NOT EXISTS idx_pos_symbol ON snapshot_positions(symbol);
                 CREATE INDEX IF NOT EXISTS idx_ai_reports_ts ON ai_reports(created_ts);
@@ -875,3 +942,252 @@ def market_snapshot_count():
                 "SELECT COUNT(*) AS a FROM market_snapshots").fetchone()["a"] or 0)
     except Exception:
         return 0
+
+
+# =====================================================================
+# FAZ F7 — BORSA İŞLEMLERİ
+# =====================================================================
+# Buradaki işlevler de modülün 1 numaralı kuralına uyar: hiçbiri istisna
+# fırlatmaz. Ama sessiz de kalmazlar — `record_exchange_events` yazamadığında
+# None döner ve çağıran taraf bunu "sıfır yeni işlem" ile karıştırmaz.
+
+EVENT_PENDING = "pending"
+EVENT_APPLIED = "applied"
+EVENT_DISMISSED = "dismissed"
+
+_EVENT_ALANLARI = (
+    "event_uid", "exchange", "kind", "symbol", "base_asset", "quote_asset",
+    "side", "qty", "price", "quote_qty", "fee_asset", "fee_qty",
+    "trade_at", "trade_ts", "raw_json",
+)
+
+
+def record_exchange_events(rows):
+    """Yeni borsa işlemlerini yazar. Zaten görülmüş olanlar ATLANIR.
+
+    Dönen değer YENİ yazılan satır sayısıdır; yazamazsa None. İkisi farklı
+    şeydir: "yeni işlem yok" ile "arşive ulaşamadım" aynı şekilde
+    raporlanırsa kullanıcı her ikisinde de aynı boş ekranı görür.
+
+    `INSERT OR IGNORE` bilinçli: aynı işlem tekrar çekildiğinde üzerine
+    yazsaydık, kullanıcının o satır için verdiği karar (işlendi / yok sayıldı)
+    silinir ve satır yeniden "bekliyor" hâline dönerdi.
+    """
+    try:
+        if not rows:
+            return 0
+        if not init_archive():
+            return None
+        simdi = datetime.now().isoformat(timespec="seconds")
+        yeni = 0
+        with _connect() as conn:
+            for r in rows:
+                degerler = [r.get(a) for a in _EVENT_ALANLARI]
+                imlec = conn.execute(f"""
+                    INSERT OR IGNORE INTO exchange_events
+                        ({', '.join(_EVENT_ALANLARI)}, status, seen_at)
+                    VALUES ({', '.join('?' * len(_EVENT_ALANLARI))}, ?, ?)
+                """, (*degerler, EVENT_PENDING, simdi))
+                yeni += imlec.rowcount or 0
+        return yeni
+    except Exception as e:
+        logger.warning("Borsa işlemleri arşive yazılamadı: %s", e)
+        return None
+
+
+def list_exchange_events(status=EVENT_PENDING, limit=200, exchange=None):
+    """İşlem satırları, YENİDEN ESKİYE. `status=None` hepsini verir."""
+    try:
+        init_archive()
+        sorgu = "SELECT * FROM exchange_events"
+        kosullar, params = [], []
+        if status:
+            kosullar.append("status = ?")
+            params.append(str(status))
+        if exchange:
+            kosullar.append("exchange = ?")
+            params.append(str(exchange).upper())
+        if kosullar:
+            sorgu += " WHERE " + " AND ".join(kosullar)
+        sorgu += " ORDER BY trade_ts DESC, event_uid DESC LIMIT ?"
+        params.append(int(max(1, min(int(limit), 2000))))
+        with _connect() as conn:
+            return [dict(r) for r in conn.execute(sorgu, params).fetchall()]
+    except Exception as e:
+        logger.debug("Borsa işlemleri okunamadı: %s", e)
+        return []
+
+
+def get_exchange_event(event_uid):
+    try:
+        init_archive()
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM exchange_events WHERE event_uid = ?",
+                (str(event_uid),)).fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        logger.debug("Borsa işlemi okunamadı (%s): %s", event_uid, e)
+        return None
+
+
+def set_event_status(event_uid, status, tx_id=None):
+    """Satırın durumunu değiştirir. Yalnızca `pending` satır değiştirilebilir.
+
+    Bu kısıt bilinçli: deftere işlenmiş bir satırı tekrar işlemek çift kayıt,
+    yok sayılmış bir satırı sessizce yeniden açmak da kaybolmuş bir karar
+    demektir. İkisi de kullanıcının haberi olmadan olmamalı.
+    """
+    try:
+        init_archive()
+        simdi = datetime.now().isoformat(timespec="seconds")
+        with _connect() as conn:
+            if status == EVENT_APPLIED:
+                imlec = conn.execute("""
+                    UPDATE exchange_events
+                       SET status = ?, applied_tx_id = ?, applied_at = ?
+                     WHERE event_uid = ? AND status = ?
+                """, (EVENT_APPLIED, tx_id, simdi, str(event_uid), EVENT_PENDING))
+            elif status == EVENT_DISMISSED:
+                imlec = conn.execute("""
+                    UPDATE exchange_events
+                       SET status = ?, dismissed_at = ?
+                     WHERE event_uid = ? AND status = ?
+                """, (EVENT_DISMISSED, simdi, str(event_uid), EVENT_PENDING))
+            else:
+                return False
+        return (imlec.rowcount or 0) > 0
+    except Exception as e:
+        logger.warning("Borsa işleminin durumu değiştirilemedi (%s): %s",
+                       event_uid, e)
+        return False
+
+
+def exchange_event_counts():
+    """{'pending': n, 'applied': n, 'dismissed': n} — arayüzün rozeti."""
+    out = {EVENT_PENDING: 0, EVENT_APPLIED: 0, EVENT_DISMISSED: 0}
+    try:
+        init_archive()
+        with _connect() as conn:
+            for r in conn.execute(
+                    "SELECT status, COUNT(*) AS a FROM exchange_events "
+                    "GROUP BY status").fetchall():
+                out[r["status"]] = int(r["a"] or 0)
+    except Exception as e:
+        logger.debug("Borsa işlem sayıları okunamadı: %s", e)
+    return out
+
+
+def applied_source_refs():
+    """Deftere işlenmiş satırların kimlikleri — çift kayıt denetimi için."""
+    try:
+        init_archive()
+        with _connect() as conn:
+            return {r["event_uid"] for r in conn.execute(
+                "SELECT event_uid FROM exchange_events WHERE status = ?",
+                (EVENT_APPLIED,)).fetchall()}
+    except Exception:
+        return set()
+
+
+# ---------------------------------------------------------------------
+# Eşitleme imleci
+# ---------------------------------------------------------------------
+def get_sync_cursor(exchange, scope):
+    try:
+        init_archive()
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM exchange_sync_state WHERE exchange = ? AND scope = ?",
+                (str(exchange).upper(), str(scope))).fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        logger.debug("Eşitleme imleci okunamadı: %s", e)
+        return None
+
+
+def set_sync_cursor(exchange, scope, cursor=None, error=None):
+    """İmleci ve son deneme bilgisini yazar.
+
+    Hata durumunda imleç KORUNUR (`COALESCE`): başarısız bir çağrı yüzünden
+    imleci sıfırlamak, bir sonraki turda tüm geçmişi yeniden çekmek ya da
+    daha kötüsü aradaki işlemleri atlamak demek olurdu.
+    """
+    try:
+        init_archive()
+        simdi = time.time()
+        with _connect() as conn:
+            conn.execute("""
+                INSERT INTO exchange_sync_state
+                    (exchange, scope, cursor, last_sync_at, last_sync_ts, last_error)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(exchange, scope) DO UPDATE SET
+                    cursor = COALESCE(excluded.cursor, exchange_sync_state.cursor),
+                    last_sync_at = excluded.last_sync_at,
+                    last_sync_ts = excluded.last_sync_ts,
+                    last_error = excluded.last_error
+            """, (str(exchange).upper(), str(scope),
+                  None if cursor is None else str(cursor),
+                  datetime.now().isoformat(timespec="seconds"), simdi,
+                  str(error)[:300] if error else None))
+        return True
+    except Exception as e:
+        logger.warning("Eşitleme imleci yazılamadı: %s", e)
+        return False
+
+
+def sync_state(exchange=None):
+    try:
+        init_archive()
+        sorgu = "SELECT * FROM exchange_sync_state"
+        params = []
+        if exchange:
+            sorgu += " WHERE exchange = ?"
+            params.append(str(exchange).upper())
+        with _connect() as conn:
+            return [dict(r) for r in conn.execute(sorgu, params).fetchall()]
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------
+# Bakiye fotoğrafı (fark almak için)
+# ---------------------------------------------------------------------
+def get_balance_state(exchange):
+    """{varlık: miktar}. Hiç kayıt yoksa boş sözlük — "ilk tarama" demektir."""
+    try:
+        init_archive()
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT asset, qty FROM exchange_balance_state WHERE exchange = ?",
+                (str(exchange).upper(),)).fetchall()
+        return {r["asset"]: float(r["qty"] or 0.0) for r in rows}
+    except Exception as e:
+        logger.debug("Bakiye durumu okunamadı: %s", e)
+        return {}
+
+
+def set_balance_state(exchange, balances):
+    """Bakiye fotoğrafını tazeler. Artık görülmeyen varlıklar SİLİNİR.
+
+    Silmek şart: bir varlık bakiyeden tamamen çıktığında satırı bırakırsak
+    her turda aynı "kayboldu" farkını yeniden üretirdik.
+    """
+    try:
+        init_archive()
+        borsa = str(exchange).upper()
+        simdi = time.time()
+        iso = datetime.now().isoformat(timespec="seconds")
+        temiz = {str(k).upper(): float(v) for k, v in (balances or {}).items()}
+        with _connect() as conn:
+            conn.execute("DELETE FROM exchange_balance_state WHERE exchange = ?",
+                         (borsa,))
+            conn.executemany("""
+                INSERT INTO exchange_balance_state
+                    (exchange, asset, qty, seen_at, seen_ts)
+                VALUES (?,?,?,?,?)
+            """, [(borsa, a, q, iso, simdi) for a, q in temiz.items()])
+        return True
+    except Exception as e:
+        logger.warning("Bakiye durumu yazılamadı: %s", e)
+        return False
