@@ -550,6 +550,18 @@
               <span class="ml-1 text-[10px] opacity-80 font-mono-nums" x-text="'(' + countCoinsByExchange(exch) + ')'"></span>
             </button>
           </template>
+
+          <!-- Aynı coin iki borsada duruyorsa tablo iki satır gösterir; bu
+               kasıtlıdır (maliyetler farklı, coini ancak durduğu yerde
+               satabilirsiniz). Ama "Konsolide" başlığı coin başına tek satır
+               beklentisi yaratıyor. Anahtar ikisini de mümkün kılıyor. -->
+          <button @click="mergeByCoin = !mergeByCoin"
+                  class="ml-2 px-3 py-1 rounded-lg text-xs font-semibold transition flex items-center space-x-1.5"
+                  :class="mergeByCoin ? 'bg-cyan-600 text-white shadow-sm' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                  title="Aynı coin birden fazla borsada duruyorsa tek satırda birleştirir. Satırı açarak konum kırılımını görebilirsiniz. Kapalıyken her konum ayrı satırdır — maliyetler konuma göre farklı olduğu için varsayılan budur.">
+            <i data-lucide="combine" class="w-3.5 h-3.5"></i>
+            <span>Coin bazında birleştir</span>
+          </button>
         </div>
 
         <!-- Quick Sort Buttons -->
@@ -630,17 +642,35 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800/80 font-mono-nums">
-              <template x-for="(coin, index) in filteredConsolidatedCoins" :key="coin.pos_key || coin.symbol">
-                <tr class="hover:bg-slate-800/50 transition group" :class="index % 2 === 1 ? 'bg-slate-900/60' : 'bg-slate-950/40'">
+              <template x-for="(coin, index) in displayedCoins" :key="coin.pos_key || coin.symbol">
+                <tr class="hover:bg-slate-800/50 transition group"
+                    :class="coin._child ? 'bg-slate-900/80 border-l-2 border-cyan-500/40'
+                                        : (index % 2 === 1 ? 'bg-slate-900/60' : 'bg-slate-950/40')">
                   <!-- Number -->
-                  <td class="py-3 px-3 text-center text-slate-500 font-sans text-[11px]" x-text="index + 1"></td>
-                  
+                  <td class="py-3 px-3 text-center text-slate-500 font-sans text-[11px]"
+                      x-text="coin._child ? '↳' : coin._no"></td>
+
                   <!-- 1. Varlık & Borsa (Compact Cell) -->
-                  <td class="py-3 px-4 font-sans">
+                  <td class="py-3 px-4 font-sans" :class="coin._child ? 'pl-8' : ''">
                     <div class="flex items-center space-x-2">
                       <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" :class="coin.pnl_usd >= 0 ? 'bg-emerald-400' : 'bg-rose-400'"></span>
-                      <span x-text="coin.display_name" class="font-bold text-white tracking-wide text-sm"></span>
-                      <span class="px-1.5 py-0.5 rounded text-[9px] font-bold" :class="getExchangeBadgeStyle(coin.exchange || 'BINANCE')" x-text="coin.exchange || 'BINANCE'"></span>
+                      <span x-text="coin.display_name" class="font-bold tracking-wide"
+                            :class="coin._child ? 'text-slate-300 text-[13px]' : 'text-white text-sm'"></span>
+
+                      <!-- Birleşik satır: konum sayısı + genişletme. Tek bir
+                           borsa rozeti basmak yanlış olurdu; bu satır tek bir
+                           konumu değil hepsini anlatıyor. -->
+                      <template x-if="coin._merged">
+                        <button @click="toggleMergedCoin(coin.symbol)"
+                                class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/25 transition flex items-center space-x-1"
+                                :title="expandedMergedCoins[coin.symbol] ? 'Konum kırılımını gizle' : 'Bu coin birden fazla konumda duruyor. Kırılımı görmek ve işlem yapmak için açın.'">
+                          <span x-text="coin._locationCount + ' konum'"></span>
+                          <span x-text="expandedMergedCoins[coin.symbol] ? '▾' : '▸'"></span>
+                        </button>
+                      </template>
+                      <template x-if="!coin._merged">
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold" :class="getExchangeBadgeStyle(coin.exchange || 'BINANCE')" x-text="coin.exchange || 'BINANCE'"></span>
+                      </template>
                     </div>
                     <div class="mt-1 flex items-center space-x-1.5">
                       <span class="px-2 py-0.5 rounded text-[10px] font-medium" :class="getCategoryStyle(coin.category)" x-text="coin.category"></span>
@@ -650,7 +680,7 @@
                       </button>
                       <!-- Fiyat kaynağı yoksa bunu saklamıyoruz: pozisyon maliyet
                            üzerinden değerleniyor ve bu açıkça söylenmeli. -->
-                      <button x-show="coin.no_source" @click="openSourceForm(coin)"
+                      <button x-show="coin.no_source && !coin._merged" @click="openSourceForm(coin)"
                               class="text-[9.5px] text-amber-300 hover:text-amber-200 font-semibold px-1.5 py-0.5 rounded bg-amber-950/70 hover:bg-amber-900/70 border border-amber-800/70 transition flex items-center space-x-1"
                               title="Bu coin hiçbir fiyat kaynağında bulunamadı. Kaynak tanımlamak için tıklayın.">
                         <span>🔌</span>
@@ -658,7 +688,7 @@
                       </button>
                       <!-- Sembol adları zincirler arasında benzersiz değildir;
                            otomatik eşleşme başka bir tokenı bulmuş olabilir. -->
-                      <button x-show="!coin.no_source && coin.price_match_by === 'symbol'" @click="openSourceForm(coin)"
+                      <button x-show="!coin.no_source && coin.price_match_by === 'symbol' && !coin._merged" @click="openSourceForm(coin)"
                               class="text-[9.5px] text-orange-300 hover:text-orange-200 font-semibold px-1.5 py-0.5 rounded bg-orange-950/60 hover:bg-orange-900/60 border border-orange-800/60 transition flex items-center space-x-1"
                               title="Bu fiyat yalnızca sembol adına göre eşleştirildi. Aynı sembolü taşıyan başka bir zincirdeki token olabilir. Kesinleştirmek için kontrat adresi veya borsa market adı tanımlayın.">
                         <span>⚠️</span>
@@ -667,8 +697,17 @@
                     </div>
                     <!-- FAZ F1 — Defter eylemleri. Transfer ve yazım bilinçli olarak
                          AYRI düğmelerdir: biri varlığı taşır (maliyet korunur),
-                         diğeri öldüğünü kabul eder (maliyet zarar yazılır). -->
-                    <div class="mt-1 flex items-center space-x-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
+                         diğeri öldüğünü kabul eder (maliyet zarar yazılır).
+
+                         Eskiden `opacity-0` idi ve düğmeler yalnızca fare üstüne
+                         gelince görünüyordu. Gizli bir düğme keşfedilemeyen bir
+                         düğmedir: kullanıcı bunları on gün boyunca fark etmedi ve
+                         "kasıtlı mı?" diye sordu. Dokunmatik ekranda ise "üstüne
+                         gelme" diye bir şey yoktur, orada hiç görünmüyorlardı.
+                         Artık sönük duruyorlar, üstüne gelince belirginleşiyorlar
+                         — hem keşfedilebilir hem de göz kalabalığı yapmıyor. -->
+                    <div x-show="!coin._merged"
+                         class="mt-1 flex items-center space-x-1.5 opacity-60 group-hover:opacity-100 focus-within:opacity-100 transition">
                       <button @click="openTransferForm(coin)"
                               class="text-[9.5px] text-slate-400 hover:text-sky-300 font-semibold px-1.5 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 border border-slate-700 transition flex items-center space-x-1"
                               title="Bu varlığı başka bir borsaya veya cüzdana taşı. Satış değildir: nakit hareketi olmaz, maliyet tabanı korunur.">
@@ -739,7 +778,9 @@
                       </div>
                     </template>
 
-                    <div class="mt-1 flex items-center justify-end">
+                    <!-- Hesaplayıcı ve hedefler konum bazlıdır: birleşik satırda
+                         gösterilmezler, alt satırlarda yerlerinde durur. -->
+                    <div x-show="!coin._merged" class="mt-1 flex items-center justify-end">
                       <button @click="openDcaModal(coin)" class="text-[9.5px] text-slate-400 hover:text-cyan-400 font-medium flex items-center space-x-1 py-0.5 px-1.5 rounded hover:bg-slate-800 border border-slate-700/60 hover:border-cyan-500/40 transition" title="Akıllı DCA & Maliyet Düşürme Hesaplayıcısını Aç">
                         <span>🧮</span>
                         <span>DCA Hesapla</span>
@@ -808,7 +849,7 @@
                     </template>
 
                     <!-- If No Target Set Button -->
-                    <template x-if="!coin.target">
+                    <template x-if="!coin.target && !coin._merged">
                       <div class="mt-1 flex justify-end">
                         <button @click="openTargetModal(coin)" class="text-[10px] text-slate-500 hover:text-amber-400 font-medium flex items-center space-x-1 py-0.5 px-2 rounded-md hover:bg-slate-800 border border-transparent hover:border-slate-700 transition">
                           <span>🎯</span>
@@ -830,7 +871,7 @@
                   <span x-text="dashboardExchangeFilter === 'all' ? 'GENEL AKTİF SPOT TOPLAM' : (dashboardExchangeFilter + ' GRUBU TOPLAMI')"></span>
                 </td>
                 <td class="py-3.5 px-4 text-center" x-text="filteredDashboardTotals.txCount + ' Alım'"></td>
-                <td class="py-3.5 px-4 text-right text-slate-400 font-sans text-[11px]" x-text="filteredConsolidatedCoins.length + ' Çeşit Varlık'"></td>
+                <td class="py-3.5 px-4 text-right text-slate-400 font-sans text-[11px]" x-text="displayedVarietyCount + (mergeByCoin ? ' Çeşit Coin' : ' Çeşit Varlık')"></td>
                 <td class="py-3.5 px-4 text-right text-teal-300">
                   <div x-text="'$' + formatNum(filteredDashboardTotals.currentValue, 2)"></div>
                   <div class="text-[10px] text-slate-400" x-text="'Yatırım: $' + formatNum(filteredDashboardTotals.invested, 2)"></div>
@@ -866,8 +907,13 @@
            verdiği şey ayrı tutulur; deftere yazan tek şey "İşle" düğmesidir.
            ================================================================ -->
       <div class="bg-slate-900 rounded-xl border border-slate-800 shadow-md font-sans">
-        <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-slate-800">
-          <div class="flex items-center space-x-2.5">
+        <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3"
+             :class="exchangeInboxVisible ? 'border-b border-slate-800' : ''">
+          <!-- Kutu bekleyen işlem yokken tek satıra iner. Boş bir panelin
+               İşlem Defteri'nin en üstünde yer kaplaması, eklediği değerden
+               fazlasını götürüyordu. -->
+          <button @click="toggleExchangeInbox()"
+                  class="flex items-center space-x-2.5 text-left hover:opacity-80 transition">
             <i data-lucide="inbox" class="w-4 h-4 text-cyan-400"></i>
             <span class="text-[12.5px] font-semibold text-slate-200">BORSA İŞLEMLERİ</span>
             <span x-show="(exchangeTrades?.counts?.pending || 0) > 0"
@@ -875,7 +921,8 @@
                   x-text="(exchangeTrades?.counts?.pending || 0) + ' bekliyor'"></span>
             <span x-show="(exchangeTrades?.counts?.pending || 0) === 0"
                   class="text-[11px] text-slate-500">bekleyen yok</span>
-          </div>
+            <span class="text-[11px] text-slate-500" x-text="exchangeInboxVisible ? '▾' : '▸'"></span>
+          </button>
           <div class="flex items-center space-x-2">
             <span class="text-[11px] text-slate-500"
                   x-show="exchangeTrades?.last_report?.scanned_at"
@@ -887,6 +934,12 @@
             </button>
           </div>
         </div>
+
+        <!-- Sade `x-show`: Alpine'ın collapse eklentisi vendor'da YOK
+             (alpine.min.js yalnızca "eklenti yüklü değil" uyarısını kayıtlı
+             tutuyor). Tek bir animasyon için yeni bir bağımlılık paketlemek,
+             bu projenin "derleme adımı yok" sözüne değmez. -->
+        <div x-show="exchangeInboxVisible">
 
         <!-- Taramanın neden çalışmadığı SÖYLENİR. Sessiz atlama, kullanıcıyı
              "neden hiçbir şey çıkmıyor" sorusuyla kodda arama yapmaya iter. -->
@@ -965,6 +1018,8 @@
             </div>
           </template>
         </div>
+
+        </div><!-- /exchangeInboxVisible -->
       </div>
 
       <!-- FAZ F1 — Yazımlar toplam gerçekleşmiş K/Z'ye dahildir, ama bir
@@ -6119,6 +6174,6 @@
   </div>
 
   <!-- App Frontend Script -->
-  <script src="/static/app.js?v=2.8"></script>
+  <script src="/static/app.js?v=2.9"></script>
 </body>
 </html>

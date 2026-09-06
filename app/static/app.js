@@ -48,6 +48,11 @@ function portfolioApp() {
     ledgerFilter: 'all',
     simCategoryFilter: 'all',
     dashboardExchangeFilter: 'all',
+    // Konsolide tabloyu coin başına tek satıra indirir. Varsayılan kapalı:
+    // konum bazlı görünüm matematiksel olarak doğru olandır (bkz.
+    // `displayedCoins`). Açıkken birleşik satırlar genişletilebilir.
+    mergeByCoin: false,
+    expandedMergedCoins: {},
     selectedKasaExchange: 'ALL',
     
     // Sort Keys (Default: En Kârlıdan En Az Kârlıya / Zarara Doğru)
@@ -447,6 +452,10 @@ function portfolioApp() {
     exchangeScanBusy: false,
     exchangeApplyBusy: '',
     exchangeCostMethod: {},
+    // null = otomatik: bekleyen varsa açık, yoksa kapalı. Kullanıcı tıklarsa
+    // true/false olur ve karar onun olur. Boş bir kutunun İşlem Defteri'nin
+    // en üstünde yer kaplaması, eklediği değerden fazlasını götürüyordu.
+    exchangeInboxOpen: null,
 
     // Faz 7: Gerçekleşmiş Kâr/Zarar (Realized PnL) & Dışa Aktarma
     realizedMetrics: null,
@@ -642,17 +651,113 @@ function portfolioApp() {
         list = list.filter(c => c.display_name.toUpperCase().includes(q) || (c.category && c.category.toUpperCase().includes(q)));
       }
 
-      list.sort((a, b) => {
-        let valA = a[this.sortKey];
-        let valB = b[this.sortKey];
-        if (valA === undefined || valA === null) valA = 0;
-        if (valB === undefined || valB === null) valB = 0;
-        if (typeof valA === 'string') {
-          return this.sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-        }
-        return this.sortAsc ? (valA - valB) : (valB - valA);
-      });
+      list.sort((a, b) => this._coinKarsilastir(a, b));
       return list;
+    },
+
+    _coinKarsilastir(a, b) {
+      let valA = a[this.sortKey];
+      let valB = b[this.sortKey];
+      if (valA === undefined || valA === null) valA = 0;
+      if (valB === undefined || valB === null) valB = 0;
+      if (typeof valA === 'string') {
+        return this.sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      }
+      return this.sortAsc ? (valA - valB) : (valB - valA);
+    },
+
+    // -------------------------------------------------------------
+    // COIN BAZINDA BİRLEŞTİRME
+    //
+    // Tablo normalde SEMBOL@BORSA ile gruplar ve bu kasıtlıdır: aynı coinin
+    // iki konumdaki maliyeti farklıdır (TIA'da %40 fark ölçüldü) ve coini
+    // ancak durduğu yerde satabilirsiniz. Tek satırda birleştirmek, hiçbir
+    // borsada işlem yapamayacağınız bir ortalama fiyat üretirdi.
+    //
+    // Ama sütunun adı "Konsolide" ve kullanıcı haklı olarak coin başına tek
+    // satır bekliyor — üstelik net başa baş ZATEN sembol bazlı hesaplandığı
+    // için iki satır aynı "Net B.B" değerini gösteriyor ve tam olarak
+    // kopya gibi duruyor. Bu yüzden birleştirme bir SEÇENEK: varsayılan
+    // matematiği doğru olan konum bazlı görünüm, isteyen tek satıra alır ve
+    // satırı açıp konum kırılımını görür.
+    // -------------------------------------------------------------
+    get displayedCoins() {
+      const liste = this.filteredConsolidatedCoins;
+      if (!this.mergeByCoin) {
+        return liste.map((c, i) => ({ ...c, _no: i + 1 }));
+      }
+
+      const gruplar = new Map();
+      for (const c of liste) {
+        const k = c.symbol || c.display_name;
+        if (!gruplar.has(k)) gruplar.set(k, []);
+        gruplar.get(k).push(c);
+      }
+
+      const ustSatirlar = [];
+      for (const [sembol, uyeler] of gruplar) {
+        ustSatirlar.push(uyeler.length === 1
+          ? { ...uyeler[0] }
+          : this._birlesikSatir(sembol, uyeler));
+      }
+      ustSatirlar.sort((a, b) => this._coinKarsilastir(a, b));
+
+      const duz = [];
+      let no = 0;
+      for (const satir of ustSatirlar) {
+        duz.push({ ...satir, _no: ++no });
+        if (satir._merged && this.expandedMergedCoins[satir.symbol]) {
+          for (const u of satir._members) duz.push({ ...u, _child: true });
+        }
+      }
+      return duz;
+    },
+
+    _birlesikSatir(sembol, uyeler) {
+      const topla = (alan) => uyeler.reduce((t, c) => t + (Number(c[alan]) || 0), 0);
+      const adet = topla('total_qty');
+      const yatirilan = topla('total_invested');
+      const deger = topla('current_value');
+      const ortMaliyet = adet > 0 ? yatirilan / adet : 0;
+      // Fiyat konumdan bağımsızdır (aynı sembol, aynı kaynak); kaynağı olan
+      // ilk üyeden alınır. Hiçbirinde yoksa satır "kaynak yok" olur.
+      const fiyatli = uyeler.find(c => !c.no_source) || uyeler[0];
+
+      return {
+        ...fiyatli,
+        _merged: true,
+        _members: uyeler,
+        _locationCount: uyeler.length,
+        pos_key: 'merged:' + sembol,
+        symbol: sembol,
+        display_name: fiyatli.display_name,
+        exchange: null,
+        dca_count: topla('dca_count'),
+        total_qty: adet,
+        total_invested: yatirilan,
+        current_value: deger,
+        daily_diff_usd: topla('daily_diff_usd'),
+        portfolio_share_pct: topla('portfolio_share_pct'),
+        avg_cost: ortMaliyet,
+        pnl_usd: deger - yatirilan,
+        pnl_pct: yatirilan > 0 ? ((deger - yatirilan) / yatirilan) * 100 : 0,
+        breakeven_req_rise_pct: (fiyatli.live_price > 0 && ortMaliyet > fiyatli.live_price)
+          ? ((ortMaliyet - fiyatli.live_price) / fiyatli.live_price) * 100 : 0,
+        no_source: uyeler.every(c => c.no_source),
+        // Hedef konum bazlıdır; birleşik satırda gösterilmez, alt satırda
+        // durmaya devam eder. Var olmayan bir hedefi göstermek yerine yok
+        // saymak, yanlış yerden satış tetiklemekten iyidir.
+        target: null,
+      };
+    },
+
+    toggleMergedCoin(sembol) {
+      this.expandedMergedCoins[sembol] = !this.expandedMergedCoins[sembol];
+    },
+
+    // Alt bilgi satırındaki "çeşit" sayısı görünenle aynı olmalı.
+    get displayedVarietyCount() {
+      return this.displayedCoins.filter(c => !c._child).length;
     },
 
     // Dynamic Totals for Consolidated Table Footer
@@ -4439,6 +4544,18 @@ function portfolioApp() {
       } catch (e) {
         this.notify(e.message || 'Yok sayılamadı.', 'error', 6000);
       }
+    },
+
+    get exchangeInboxVisible() {
+      if (this.exchangeInboxOpen === null) {
+        return (this.exchangeTrades?.counts?.pending || 0) > 0;
+      }
+      return this.exchangeInboxOpen;
+    },
+
+    toggleExchangeInbox() {
+      this.exchangeInboxOpen = !this.exchangeInboxVisible;
+      this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
     },
 
     // İlk taramanın sınırı GÖRÜNÜR olmalı: kullanıcı, geçmişin neden
