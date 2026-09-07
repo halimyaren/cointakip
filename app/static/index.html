@@ -228,6 +228,21 @@
           <i data-lucide="eye-off" class="w-3.5 h-3.5 text-amber-400" x-show="privacyMode"></i>
         </button>
 
+        <!-- FAZ F7a: ANAHTAR KASASI GÖSTERGESİ
+             Kasa kartının kendisi "Canlı Grafikler & Isı Haritası → Canlı
+             Bağlantılar" bölümünün dibinde. Orası bir kasa için kimsenin
+             bakmayacağı bir yer; uygulamanın sahibi bile kendi kasasını
+             ararken takıldı. Kartı taşımak yerine DURUMU her ekranda
+             görünür kılıyoruz: kilitliyse tıklanınca doğrudan oraya götürür.
+             Bu gösterge yalnızca durum bilgisi taşır, PIN sormaz. -->
+        <button x-show="vaultStatus.pin_enabled && !vaultStatus.unlocked"
+                @click="goToVault()"
+                class="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-amber-950/60 hover:bg-amber-900/60 text-amber-300 border border-amber-500/40 text-xs font-medium transition"
+                title="Anahtar kasası kilitli. Borsa ve sağlayıcı anahtarları okunamıyor; açmak için tıklayın.">
+          <span>🔒</span>
+          <span class="hidden sm:inline">Kasa kilitli</span>
+        </button>
+
         <!-- Faz 8: Quick Lock Button (Visible when PIN is enabled) -->
         <button x-show="pinEnabled" @click="lockApp()" class="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-cyan-300 text-xs font-medium border border-slate-700 transition" title="Uygulamayı Hemen Kilitle">
           <i data-lucide="lock" class="w-3.5 h-3.5 text-cyan-400"></i>
@@ -919,8 +934,13 @@
             <span x-show="(exchangeTrades?.counts?.pending || 0) > 0"
                   class="px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 text-[11px] font-bold font-mono-nums"
                   x-text="(exchangeTrades?.counts?.pending || 0) + ' bekliyor'"></span>
-            <span x-show="(exchangeTrades?.counts?.pending || 0) === 0"
+            <!-- Kilitliyken "bekleyen yok" YAZILMAZ: bakılamadığı bir durumu
+                 "işlem yok" diye sunmak yanlış bir iddiadır. -->
+            <span x-show="(exchangeTrades?.counts?.pending || 0) === 0
+                          && !(vaultStatus.pin_enabled && !vaultStatus.unlocked)"
                   class="text-[11px] text-slate-500">bekleyen yok</span>
+            <span x-show="vaultStatus.pin_enabled && !vaultStatus.unlocked"
+                  class="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 text-[11px] font-bold">🔒 kasa kilitli</span>
             <span class="text-[11px] text-slate-500" x-text="exchangeInboxVisible ? '▾' : '▸'"></span>
           </button>
           <div class="flex items-center space-x-2">
@@ -946,6 +966,29 @@
         <div x-show="exchangeTrades?.last_report?.message"
              class="px-4 py-2.5 text-[11.5px] text-amber-300 bg-amber-500/5 border-b border-slate-800"
              x-text="exchangeTrades?.last_report?.message"></div>
+
+        <!-- Kasa kilitliyken PIN BURADA sorulur.
+             Kasa kartı "Canlı Grafikler & Isı Haritası → Canlı Bağlantılar"
+             sekmesinin dibinde duruyor; taramanın önündeki tek engeli
+             kaldırmak için kullanıcıyı oraya yollamak, işi bıraktığı yerden
+             üç tık uzağa göndermek demekti. -->
+        <div x-show="!vaultStatus.unlocked && vaultStatus.pin_enabled"
+             class="px-4 py-3 border-b border-slate-800 bg-slate-950/40">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-sm">🔒</span>
+            <span class="text-[11.5px] text-slate-400">Anahtar kasası kilitli.</span>
+            <input type="password" x-model="vaultPin" placeholder="PIN"
+                   @keydown.enter="unlockVaultAndScan()"
+                   class="w-28 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-[11.5px] text-white focus:border-cyan-500 focus:outline-none">
+            <button @click="unlockVaultAndScan()" :disabled="vaultBusy || !vaultPin"
+                    class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[11.5px] font-bold">
+              Kasayı Aç ve Tara
+            </button>
+          </div>
+          <p class="mt-1.5 text-[10.5px] text-slate-500">
+            PIN hiçbir yere kaydedilmez; yalnızca kasayı açtığınız oturum boyunca bellekte kalır.
+          </p>
+        </div>
 
         <div x-show="exchangeBaselineNote"
              class="px-4 py-2.5 text-[11.5px] text-slate-400 bg-slate-950/40 border-b border-slate-800"
@@ -2224,8 +2267,10 @@
           </div>
         </template>
 
-        <!-- Anahtar kasası -->
-        <div class="rounded-xl bg-slate-900 border border-slate-800 p-4 space-y-3">
+        <!-- Anahtar kasası. Kimlik, üst bardaki "Kasa kilitli" göstergesinin
+             buraya kaydırabilmesi için. -->
+        <div id="anahtar-kasasi"
+             class="rounded-xl bg-slate-900 border border-slate-800 p-4 space-y-3">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex items-center gap-2">
               <span class="text-sm" x-text="vaultStatus.unlocked ? '🔓' : '🔒'"></span>
@@ -6174,6 +6219,6 @@
   </div>
 
   <!-- App Frontend Script -->
-  <script src="/static/app.js?v=2.9"></script>
+  <script src="/static/app.js?v=3.0"></script>
 </body>
 </html>

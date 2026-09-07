@@ -184,6 +184,92 @@ class TestTozDonusumu:
 
 
 # =====================================================================
+class TestTozAralikParametreleri:
+    """7 Eylül 2026, canlı hesapta bulunan hata.
+
+    İlk (aralıksız) çağrı çalışmış, imleç kurulmuştu. Sonraki her tur
+    `startTime`'ı TEK BAŞINA gönderdiği için Binance şunu döndürüyordu:
+
+        -1102  Mandatory parameter 'endTTime' was not sent...
+
+    Toz akışı böylece sessizce ölmüştü. Daha kötüsü ikincil zarardı: her
+    turda bir hata oluştuğu için `_yazilacak_bakiye` bakiye fotoğrafının
+    TAMAMINI donduruyor ve açıklanamayan değişim tespiti hiç çalışmıyordu —
+    yani toz özelliğini eklemekteki asıl amaç olan güvenlik ağı kapalıydı.
+    """
+
+    def _yakala(self, monkeypatch):
+        yakalanan = {}
+
+        def sahte_get(profil, yol, anahtar, gizli, params):
+            yakalanan.update({"yol": yol, "params": dict(params or {})})
+            return {"userAssetDribblets": []}
+
+        monkeypatch.setattr(exchanges, "signed_get", sahte_get)
+        monkeypatch.setattr(exchanges, "_anahtarlar", lambda *a, **k: ("k", "s"))
+        return yakalanan
+
+    def test_duzenli_tarama_hic_aralik_gondermez(self, servis, monkeypatch):
+        """Düzenli tarama artık sunucu tarafı filtreye bel bağlamıyor.
+
+        Uç zaten son 100 kayıtla sınırlı, ağırlığı 1 ve toz dönüşümü saatte
+        en fazla bir kez yapılabiliyor. Aralık göndermemek, aynı hatanın
+        tekrar edilme ihtimalini tümden ortadan kaldırır.
+        """
+        yakalanan = self._yakala(monkeypatch)
+        archive.set_sync_cursor("BINANCE", trade_sync.TOZ_KAPSAMI,
+                                cursor=1757100000000)
+        servis._tozu_cek("BINANCE", dict(BINANCE_PROFIL))
+        assert yakalanan["params"] == {}
+
+    def test_baslangic_verilirse_bitis_de_gonderilir(self, monkeypatch):
+        """Asıl kural: Binance bu ikisini ÇİFT ister."""
+        yakalanan = self._yakala(monkeypatch)
+        exchanges.fetch_dust_log(dict(BINANCE_PROFIL), start_time_ms=1757100000000)
+        assert "startTime" in yakalanan["params"]
+        assert "endTime" in yakalanan["params"]
+        assert yakalanan["params"]["endTime"] > yakalanan["params"]["startTime"]
+
+    def test_bitis_verilirse_baslangic_da_gonderilir(self, monkeypatch):
+        yakalanan = self._yakala(monkeypatch)
+        exchanges.fetch_dust_log(dict(BINANCE_PROFIL), end_time_ms=1757100000000)
+        assert yakalanan["params"]["endTime"] == 1757100000000
+        assert yakalanan["params"]["startTime"] == (
+            1757100000000 - exchanges.DUST_VARSAYILAN_PENCERE_MS)
+
+    def test_imlecten_eski_kayitlar_yerelde_suzulur(self, servis, monkeypatch):
+        """Aralığı sunucuya bırakmadığımıza göre süzmeyi kendimiz yapmalıyız.
+
+        TOZ_CEVABI'ndaki iki kayıt da 1757100000000 anına ait; imleç oraya
+        kurulmuşken hiçbiri yeniden olay üretmemeli.
+        """
+        monkeypatch.setattr(exchanges, "fetch_dust_log",
+                            lambda *a, **k: exchanges.dust_rows(TOZ_CEVABI))
+        archive.set_sync_cursor("BINANCE", trade_sync.TOZ_KAPSAMI,
+                                cursor=1757100000000)
+        sonuc = servis._tozu_cek("BINANCE", dict(BINANCE_PROFIL))
+        assert sonuc["events"] == []
+
+    def test_imlecten_yeni_kayit_gecer(self, servis, monkeypatch):
+        monkeypatch.setattr(exchanges, "fetch_dust_log",
+                            lambda *a, **k: exchanges.dust_rows(TOZ_CEVABI))
+        archive.set_sync_cursor("BINANCE", trade_sync.TOZ_KAPSAMI,
+                                cursor=1757099999999)
+        sonuc = servis._tozu_cek("BINANCE", dict(BINANCE_PROFIL))
+        assert len(sonuc["events"]) == 2
+
+    def test_basarili_tur_eski_hatayi_temizler(self, servis, monkeypatch):
+        """Hata kaydı kalıcı olsaydı, düzeltmeden sonra bile fotoğraf
+        donmaya devam ederdi."""
+        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+        archive.set_sync_cursor("BINANCE", trade_sync.TOZ_KAPSAMI,
+                                error="HTTP 400: endTTime")
+        servis._tozu_cek("BINANCE", dict(BINANCE_PROFIL))
+        assert not archive.get_sync_cursor(
+            "BINANCE", trade_sync.TOZ_KAPSAMI).get("last_error")
+
+
+# =====================================================================
 class TestNormalizasyon:
 
     def test_satis_olayi(self):
@@ -819,3 +905,74 @@ class TestArayuz:
         blok = js[js.index("async applyExchangeTrade"):js.index("async dismissExchangeTrade")]
         assert "askConfirm" in blok
         assert blok.index("askConfirm") < blok.index("fetch(")
+
+
+# =====================================================================
+class TestKasaErisimi:
+    """Kullanıcı kendi uygulamasında kasayı bulamadı.
+
+    Kasa kartı "Canlı Grafikler & Isı Haritası → Canlı Bağlantılar"
+    bölümünün dibinde duruyor. Taramanın çalışmamasının en sık sebebi
+    kilitli kasa olduğuna göre, kilidi açmak işin YAPILDIĞI yerden
+    erişilebilir olmalı. Kartı taşımıyoruz; erişimi getiriyoruz.
+    """
+
+    def _oku(self, ad):
+        yol = os.path.join(APP_DIR, "static", ad)
+        return open(yol, encoding="utf-8").read()
+
+    def test_hata_metni_olmayan_bir_menu_yolu_tarif_etmez(self):
+        """Eski metin "Anahtar Kasası → PIN → Kasayı Aç" diyordu ve kullanıcı
+        öyle bir menü aradı. Öyle bir menü yok."""
+        kaynak = open(os.path.join(APP_DIR, "trade_sync.py"),
+                      encoding="utf-8").read()
+        blok = kaynak[kaynak.index("vault_locked"):]
+        blok = blok[:blok.index("borsalar = []")]
+        assert "Anahtar Kasası →" not in blok
+        assert "PIN" in blok
+
+    def test_kutu_kilitliyken_pin_sorar(self):
+        html = self._oku("index.html")
+        assert "unlockVaultAndScan()" in html
+        assert "Kasayı Aç ve Tara" in html
+
+    def test_kilitliyken_kutu_kendiliginden_acilir(self):
+        """Kapalı bir kutunun içindeki PIN kutusu görünmez; kilitliyken
+        kutunun açık gelmesi bu düzeltmenin çalışması için şart."""
+        js = self._oku("app.js")
+        blok = js[js.index("get exchangeInboxVisible"):
+                  js.index("goToVault()")]
+        assert "vaultStatus" in blok
+        assert "unlocked" in blok
+
+    def test_kilitliyken_bekleyen_yok_yazilmaz(self):
+        """"Bakamadım" ile "işlem yok" ayrı iddialardır."""
+        html = self._oku("index.html")
+        assert "kasa kilitli" in html
+        blok = html[html.index("BORSA İŞLEMLERİ</span>"):]
+        blok = blok[:blok.index("Şimdi tara")]
+        # Yorum metnini değil, ROZETİN KENDİSİNİ arıyoruz.
+        nerede = blok.index(">bekleyen yok<")
+        satir = blok[max(0, nerede - 400):nerede]
+        assert "vaultStatus" in satir
+
+    def test_ust_barda_kasa_gostergesi_var(self):
+        html = self._oku("index.html")
+        assert "goToVault()" in html
+        assert 'id="anahtar-kasasi"' in html
+
+    def test_kasa_durumu_gelen_kutusu_yanitiyla_gelir(self):
+        """Kullanıcı kasanın kilitli olduğunu görmek için başka bir sekmeye
+        gitmek zorunda kalmamalı."""
+        kaynak = open(os.path.join(APP_DIR, "main.py"), encoding="utf-8").read()
+        blok = kaynak[kaynak.index('@app.get("/api/exchange-trades")'):]
+        blok = blok[:blok.index('@app.post("/api/exchange-trades/scan")')]
+        assert "keyvault.status()" in blok
+
+    def test_kasa_durumu_sir_tasimaz(self):
+        """Gösterge yalnızca durum bilgisidir; PIN veya anahtar taşımaz."""
+        import keyvault
+        durum = keyvault.status()
+        for anahtar in durum:
+            assert anahtar in ("available", "pin_enabled", "sealed",
+                               "unlocked", "entry_count")

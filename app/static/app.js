@@ -491,6 +491,9 @@ function portfolioApp() {
       // şerit boş kalırdı.
       if (this.activeTab === 'ai') this.fetchMarket();
       if (this.activeTab === 'ledger') this.fetchExchangeTrades();
+      // Üst bardaki kasa göstergesi her sekmede duruyor; durumu da her
+      // sekmede bilinmeli, yalnızca Bağlantılar açıldığında değil.
+      this.fetchVaultStatus();
 
       // Re-init icons when tab changes
       this.$watch('activeTab', (val) => {
@@ -1473,6 +1476,16 @@ function portfolioApp() {
         this.notify(`${konum} bağlantısı silindi.`, 'success', 3000);
       } catch (e) {
         this.notify(e.message || 'Silinemedi.', 'error', 5000);
+      }
+    },
+
+    // Yalnızca durum okur; sır taşımaz, PIN göndermez.
+    async fetchVaultStatus() {
+      try {
+        const resp = await fetch('/api/vault/status');
+        if (resp.ok) this.vaultStatus = await resp.json();
+      } catch (e) {
+        console.debug('Kasa durumu okunamadı:', e);
       }
     },
 
@@ -4446,7 +4459,13 @@ function portfolioApp() {
     async fetchExchangeTrades() {
       try {
         const resp = await fetch('/api/exchange-trades');
-        if (resp.ok) this.exchangeTrades = await resp.json();
+        if (resp.ok) {
+          this.exchangeTrades = await resp.json();
+          // Kasa durumu artık bu yanıtla geliyor. Eskiden yalnızca
+          // fetchConnections() tazeliyordu; yani Defter sekmesinde duran
+          // kullanıcı kasanın kilitli olduğunu panelden göremiyordu.
+          if (this.exchangeTrades.vault) this.vaultStatus = this.exchangeTrades.vault;
+        }
       } catch (e) {
         console.debug('Borsa işlemleri alınamadı:', e);
       } finally {
@@ -4478,6 +4497,17 @@ function portfolioApp() {
       } finally {
         this.exchangeScanBusy = false;
       }
+    },
+
+    // Kasayı gelen panelin içinden açar ve hemen taramaya geçer.
+    //
+    // NEDEN AYRI BİR METOT: kullanıcının istediği şey "kasayı açmak" değil,
+    // borsa işlemlerini görmek. Kasa yalnızca önündeki engel. Açtıktan sonra
+    // ayrıca "Şimdi tara"ya bastırmak, engeli kaldırıp işi yarım bırakmaktır.
+    async unlockVaultAndScan() {
+      if (this.vaultBusy || !this.vaultPin) return;
+      await this.unlockVault();
+      if (this.vaultStatus.unlocked) await this.scanExchangeTrades();
     },
 
     async applyExchangeTrade(ev) {
@@ -4548,9 +4578,28 @@ function portfolioApp() {
 
     get exchangeInboxVisible() {
       if (this.exchangeInboxOpen === null) {
+        // Kilitli kasa da kutuyu açar. Bekleyen işlem "yok" görünmesinin en
+        // sık sebebi zaten kilitli kasa; kutuyu kapalı tutmak, kullanıcıya
+        // "işlem yok" dedirtip aslında BAKILAMADIĞINI gizlerdi.
+        if (this.vaultStatus && this.vaultStatus.pin_enabled
+            && !this.vaultStatus.unlocked) return true;
         return (this.exchangeTrades?.counts?.pending || 0) > 0;
       }
       return this.exchangeInboxOpen;
+    },
+
+    // Üst bardaki "Kasa kilitli" göstergesinden kasa kartına götürür.
+    // Sekme + alt sekme zincirini kullanıcının bilmesi gerekmemeli.
+    goToVault() {
+      this.activeTab = 'charts';
+      this.tvSubTab = 'connections';
+      this.fetchConnections();
+      this.fetchExchanges();
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+        const el = document.getElementById('anahtar-kasasi');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
     },
 
     toggleExchangeInbox() {

@@ -835,6 +835,12 @@ MY_TRADES_LIMIT = 1000
 MY_TRADES_WEIGHT = 20
 DUST_LOG_WEIGHT = 1
 
+# Yalnızca `endTime` verilip `startTime` verilmediğinde geriye doğru açılan
+# pencere. Binance ikisini çift istediği için bir değer üretmek zorundayız;
+# 90 gün, uç zaten son 100 kayıtla sınırlı olduğu için pratikte tamamını
+# kapsar. Düzenli tarama bu yolu hiç kullanmaz: aralıksız çağırıp süzer.
+DUST_VARSAYILAN_PENCERE_MS = 90 * 24 * 60 * 60 * 1000
+
 
 def _anahtarlar(konum, api_key, api_secret):
     """Verilmişse onları, verilmemişse kasadakileri kullanır."""
@@ -899,6 +905,13 @@ def fetch_dust_log(profil, start_time_ms=None, end_time_ms=None,
     Sınırlar (Binance): yalnızca son 100 kayıt ve 2020-12-01 sonrası.
     Düz bir liste döndürür; iç içe yapıyı burada açıyoruz çünkü bu, borsanın
     biçimine ait bir ayrıntıdır.
+
+    ARALIK PARAMETRELERİ ÇİFTTİR. Binance `startTime` ile `endTime`'ı birlikte
+    ister; yalnız birini göndermek `-1102` ile geri döner. Bu, canlı hesapta
+    öğrenildi: baseline çağrısı (aralıksız) çalışıyordu ama sonraki her tur
+    `startTime`'ı tek başına gönderdiği için hata alıyordu ve toz akışı
+    sessizce ölmüştü. Eksik olan taraf çağıranın bilmesi gereken bir ayrıntı
+    olmasın diye burada tamamlanır.
     """
     yol = endpoint_path(profil, "dust_log_path")
     if not yol:
@@ -910,10 +923,11 @@ def fetch_dust_log(profil, start_time_ms=None, end_time_ms=None,
     anahtar, gizli = _anahtarlar(konum, api_key, api_secret)
 
     params = {}
-    if start_time_ms:
-        params["startTime"] = int(start_time_ms)
-    if end_time_ms:
-        params["endTime"] = int(end_time_ms)
+    if start_time_ms or end_time_ms:
+        simdi = int(time.time() * 1000)
+        params["endTime"] = int(end_time_ms) if end_time_ms else simdi
+        params["startTime"] = (int(start_time_ms) if start_time_ms
+                               else params["endTime"] - DUST_VARSAYILAN_PENCERE_MS)
 
     ham = signed_get(profil, yol, anahtar, gizli, params)
     return dust_rows(ham)

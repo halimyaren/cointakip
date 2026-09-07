@@ -1350,6 +1350,10 @@ def get_exchange_trades(status: str = "pending", limit: int = 200):
     durum = None if str(status).lower() in ("all", "hepsi", "") else status
     kutu = trade_sync.inbox(status=durum, limit=max(1, min(int(limit), 2000)))
     kutu["capabilities"] = exchanges.status().get("capabilities", {})
+    # Kasa durumu buradan da veriliyor: taramanın çalışmamasının en sık
+    # sebebi kilitli kasa ve kullanıcının bunu görmek için başka bir sekmeye
+    # gitmesi gerekmemeli. Yalnızca durum (açık/kapalı) taşınır, sır taşınmaz.
+    kutu["vault"] = keyvault.status()
     return kutu
 
 

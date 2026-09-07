@@ -489,8 +489,18 @@ Yani: **geçmişinizi bu özellik getirmez**, onun için hâlâ yukarıdaki dosy
 var. Bu özellik bugünden sonrasını yakalar.
 
 Tarama arka planda 5 dakikada bir çalışır; **Şimdi tara** düğmesiyle elle de
-başlatabilirsiniz. Anahtar kasanız kilitliyse tarama sessizce atlanır — borsa
-anahtarlarınız şifreli kasada duruyor ve kasa her açılışta elle açılıyor.
+başlatabilirsiniz.
+
+**Kasa kilitliyse tarama yapılamaz.** Borsa anahtarlarınız şifreli kasada duruyor
+ve kasa her açılışta elle açılıyor. Bu durumda kutu size "işlem yok" demez —
+başlıkta **🔒 kasa kilitli** rozeti çıkar, kutu kendiliğinden açılır ve PIN'inizi
+oracıkta sorar. **Kasayı Aç ve Tara** dediğinizde kasa açılır ve tarama hemen
+başlar; başka bir sekmeye gitmeniz gerekmez. Kasa kilitliyken ekranın üst
+şeridinde de bir **🔒 Kasa kilitli** düğmesi durur; ona tıklamak sizi doğrudan
+Anahtar Kasası kartına götürür.
+
+Bu ayrım bilerek yapıldı: *bakamadım* ile *işlem yok* birbirinden farklı iki
+şeydir ve ikincisi gibi sunulan birincisi, olmayan bir güvenceye dönüşür.
 
 ---
 

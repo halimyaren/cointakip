@@ -418,8 +418,15 @@ class TradeSyncService:
             if not keyvault.is_unlocked():
                 return self._rapor_kaydet({
                     "ok": False, "skipped": "vault_locked",
-                    "message": ("Anahtar kasası kilitli. Borsa işlemleri "
-                                "okunamaz; Anahtar Kasası → PIN → Kasayı Aç.")})
+                    # Metin bir MENÜ YOLU TARİF ETMEZ. Eski hâli "Anahtar
+                    # Kasası → PIN → Kasayı Aç" diyordu ve kullanıcı öyle bir
+                    # menü aradı: kasa aslında "Canlı Grafikler & Isı
+                    # Haritası" sekmesinin altındaki "Canlı Bağlantılar"
+                    # bölümünde bir kart. Artık kutunun kendisi PIN soruyor,
+                    # metin de oraya işaret ediyor.
+                    "message": ("Anahtar kasası kilitli; borsa işlemleri "
+                                "okunamaz. Aşağıdaki kutuya PIN'inizi girip "
+                                "kasayı açın.")})
 
             borsalar = []
             for konum, profil in profiller.items():
@@ -635,11 +642,18 @@ class TradeSyncService:
         durum = archive.get_sync_cursor(konum, TOZ_KAPSAMI) or {}
         ham_imlec = durum.get("cursor")
         temel_kurulmadi = ham_imlec is None
-        son_zaman = int(_f(ham_imlec, 0.0)) if ham_imlec is not None else 0
+        imlec_basi = int(_f(ham_imlec, 0.0)) if ham_imlec is not None else 0
+        son_zaman = imlec_basi
 
+        # ARALIK GÖNDERMİYORUZ, YERELDE SÜZÜYORUZ. Uç zaten yalnızca son 100
+        # kaydı veriyor, ağırlığı 1 ve toz dönüşümü saatte en fazla bir kez
+        # yapılabiliyor; beş dakikada bir bakan bir tarama için sunucu tarafı
+        # aralık filtresinin kazandıracağı hiçbir şey yok. Buna karşılık
+        # `startTime`/`endTime` çiftini yanlış kurmak akışın tamamını
+        # susturuyordu — canlı hesapta böyle oldu. Süzmeyi kendimiz yapınca
+        # o kırılganlık ortadan kalkıyor.
         try:
-            satirlar = exchanges.fetch_dust_log(
-                profil, start_time_ms=(son_zaman + 1) if son_zaman else None)
+            satirlar = exchanges.fetch_dust_log(profil)
         except Exception as e:
             archive.set_sync_cursor(konum, TOZ_KAPSAMI, error=e)
             logger.debug("Toz dönüşümü okunamadı (%s): %s", konum, e)
@@ -653,7 +667,7 @@ class TradeSyncService:
                 logger.debug("Toz satırı okunamadı: %s", e)
                 continue
             son_zaman = max(son_zaman, olay["_operate_time"])
-            if not temel_kurulmadi:
+            if not temel_kurulmadi and olay["_operate_time"] > imlec_basi:
                 olaylar.append(olay)
 
         archive.set_sync_cursor(konum, TOZ_KAPSAMI, cursor=son_zaman)
