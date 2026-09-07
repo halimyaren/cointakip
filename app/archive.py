@@ -1167,6 +1167,57 @@ def get_balance_state(exchange):
         return {}
 
 
+def get_balance_state_ts(exchange):
+    """Bakiye fotoğrafının ne zaman çekildiği. Fotoğraf yoksa None.
+
+    Fotoğrafın YAŞI, içeriği kadar önemlidir: bir hata yüzünden fotoğraf
+    tazelenmediğinde karşılaştırma penceresi tek bir taramadan daha geniş
+    olur ve o pencereye düşen işlemler tek tek bilinmek zorundadır.
+    """
+    try:
+        init_archive()
+        with _connect() as conn:
+            r = conn.execute(
+                "SELECT MIN(seen_ts) AS ts FROM exchange_balance_state "
+                "WHERE exchange = ?", (str(exchange).upper(),)).fetchone()
+        return None if not r or r["ts"] is None else float(r["ts"])
+    except Exception as e:
+        logger.debug("Bakiye fotoğrafı damgası okunamadı: %s", e)
+        return None
+
+
+def events_since(exchange, since_ts, kinds=None):
+    """Fotoğraf çekildikten SONRA gerçekleşmiş borsa olayları.
+
+    NEDEN VAR: açıklanamayan bakiye değişimi hesabı, farkı yalnızca O
+    TARAMANIN bulgularıyla mahsup ederse yanlış alarm üretir. Fotoğraf bir
+    hata yüzünden dondurulduğunda (`_yazilacak_bakiye` bunu bilerek yapar)
+    pencere genişler ve daha ÖNCEKİ bir taramada yakalanmış, hatta deftere
+    işlenmiş bir işlem "açıklanamayan" diye geri gelir.
+
+    7 Eylül 2026'da tam olarak bu oldu: toz ucu 22 saat hata verdiği için
+    fotoğraf donmuş, düzelmenin ardından ilk tarama kullanıcının çoktan
+    deftere işlediği ARB satışını üç ayrı anomali olarak raporlamıştı.
+
+    `status` filtresi YOK: yok sayılmış bir işlem de bakiyeyi değiştirmiştir.
+    Kullanıcının o satırla ilgili kararı, işlemin gerçekleşmiş olduğu
+    gerçeğini değiştirmez.
+    """
+    try:
+        init_archive()
+        sorgu = ("SELECT * FROM exchange_events "
+                 "WHERE exchange = ? AND trade_ts IS NOT NULL AND trade_ts > ?")
+        params = [str(exchange).upper(), float(since_ts or 0.0)]
+        if kinds:
+            sorgu += " AND kind IN (%s)" % ",".join("?" * len(kinds))
+            params.extend([str(k) for k in kinds])
+        with _connect() as conn:
+            return [dict(r) for r in conn.execute(sorgu, params).fetchall()]
+    except Exception as e:
+        logger.debug("Fotoğraf sonrası olaylar okunamadı: %s", e)
+        return []
+
+
 def set_balance_state(exchange, balances):
     """Bakiye fotoğrafını tazeler. Artık görülmeyen varlıklar SİLİNİR.
 

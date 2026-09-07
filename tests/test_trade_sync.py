@@ -396,6 +396,134 @@ class TestAciklanamayanDegisim:
 
 
 # =====================================================================
+class TestDonmusFotograf:
+    """7 Eylül 2026 gecesi yaşanan yanlış alarm.
+
+    Toz ucu 22 saat hata verdi. `_yazilacak_bakiye` bunu doğru bulup bakiye
+    fotoğrafını 00:58'de DONDURDU — sinyali tüketmemek için, bilerek. Ama
+    `aciklanamayan_degisimler` farkı yalnızca O TARAMANIN bulgularıyla
+    mahsup ediyordu. Toz düzelince ilk başarılı tarama, donmuş (satış
+    öncesi) fotoğrafı güncel (satış sonrası) bakiyeyle karşılaştırdı ve
+    kullanıcının SABAH ÇOKTAN DEFTERE İŞLEDİĞİ ARB satışını üç ayrı
+    "açıklanamayan" satır olarak raporladı:
+
+        -144.6 ARB   +27.60414 USDT   -0.00002757 BNB
+
+    Kullanıcı haklı olarak programın sapıttığını düşündü. İki kural
+    birbiriyle çelişiyordu; bu sınıf çelişkinin kapandığını kilitler.
+    """
+
+    FOTOGRAF_TS = 1757000000.0
+
+    def _fotograf(self, monkeypatch, varliklar):
+        monkeypatch.setattr(archive, "get_balance_state", lambda ex: varliklar)
+        monkeypatch.setattr(archive, "get_balance_state_ts",
+                            lambda ex: self.FOTOGRAF_TS)
+
+    def test_onceki_taramada_yakalanan_satis_anomali_uretmez(
+            self, servis, kasa_acik, monkeypatch):
+        """Vakanın kendisi. Satış arşivde DURUYOR ama bu turun bulgusu
+        değil; buna rağmen farkı açıklamalı."""
+        satis = trade_sync.normalize_trade(
+            "BINANCE", _trade(195467667, qty="144.6", price="0.1909",
+                              quote="27.60414", commission="0.00002757",
+                              commission_asset="BNB",
+                              time_ms=int((self.FOTOGRAF_TS + 60) * 1000)))
+        archive.record_exchange_events([satis])
+
+        self._fotograf(monkeypatch, {"ARB": 1446.2774, "USDT": 1220.332466,
+                                     "BNB": 0.00146542})
+        monkeypatch.setattr(exchanges, "read_exchange",
+                            lambda k, p=None: _bakiye_okumasi(
+                                {"ARB": 1301.6774, "USDT": 1247.936606,
+                                 "BNB": 0.00143785}))
+        monkeypatch.setattr(exchanges, "fetch_my_trades", lambda *a, **k: [])
+        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+
+        rapor = servis._borsayi_tara("BINANCE", dict(BINANCE_PROFIL), full=True)
+        assert rapor["unexplained"] == []
+
+    def test_deftere_islenmis_olay_da_sayilir(self, servis, kasa_acik,
+                                              monkeypatch):
+        """Kullanıcının satırla ilgili kararı, işlemin gerçekleşmiş olduğu
+        gerçeğini değiştirmez."""
+        satis = trade_sync.normalize_trade(
+            "BINANCE", _trade(700, qty="100", price="0.40", quote="40.0",
+                              time_ms=int((self.FOTOGRAF_TS + 60) * 1000)))
+        archive.record_exchange_events([satis])
+        archive.set_event_status(satis["event_uid"], archive.EVENT_APPLIED, None)
+
+        self._fotograf(monkeypatch, {"ARB": 100.0, "USDT": 10.0})
+        monkeypatch.setattr(exchanges, "read_exchange",
+                            lambda k, p=None: _bakiye_okumasi({"USDT": 49.96}))
+        monkeypatch.setattr(exchanges, "fetch_my_trades", lambda *a, **k: [])
+        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+
+        rapor = servis._borsayi_tara("BINANCE", dict(BINANCE_PROFIL), full=True)
+        assert rapor["unexplained"] == []
+
+    def test_yok_sayilan_olay_da_sayilir(self, servis, kasa_acik, monkeypatch):
+        """"Yok say" kararı bakiyeyi geri getirmez."""
+        satis = trade_sync.normalize_trade(
+            "BINANCE", _trade(701, qty="100", price="0.40", quote="40.0",
+                              time_ms=int((self.FOTOGRAF_TS + 60) * 1000)))
+        archive.record_exchange_events([satis])
+        archive.set_event_status(satis["event_uid"], archive.EVENT_DISMISSED)
+
+        self._fotograf(monkeypatch, {"ARB": 100.0, "USDT": 10.0})
+        monkeypatch.setattr(exchanges, "read_exchange",
+                            lambda k, p=None: _bakiye_okumasi({"USDT": 49.96}))
+        monkeypatch.setattr(exchanges, "fetch_my_trades", lambda *a, **k: [])
+        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+
+        rapor = servis._borsayi_tara("BINANCE", dict(BINANCE_PROFIL), full=True)
+        assert rapor["unexplained"] == []
+
+    def test_fotograftan_onceki_olay_mahsup_edilmez(self, servis):
+        """Fotoğraf çekilmeden önce olmuş bir işlemin etkisi zaten `onceki`
+        içinde sayılıdır; ikinci kez mahsup etmek TERS yönde yanlış bir
+        anomali üretirdi."""
+        eski = trade_sync.normalize_trade(
+            "BINANCE", _trade(500, time_ms=int((self.FOTOGRAF_TS - 600) * 1000)))
+        archive.record_exchange_events([eski])
+        archive.set_balance_state("BINANCE", {"USDT": 10.0})
+
+        cikan = servis._aciklayici_olaylar("BINANCE", [])
+        assert [o["event_uid"] for o in cikan] == []
+
+    def test_ayni_olay_iki_kez_mahsup_edilmez(self, servis, monkeypatch):
+        """Bu turun bulgusu arşivde de varsa çift sayılmamalı."""
+        satis = trade_sync.normalize_trade(
+            "BINANCE", _trade(800, time_ms=int((self.FOTOGRAF_TS + 60) * 1000)))
+        archive.record_exchange_events([satis])
+        monkeypatch.setattr(archive, "get_balance_state_ts",
+                            lambda ex: self.FOTOGRAF_TS)
+
+        cikan = servis._aciklayici_olaylar("BINANCE", [satis])
+        assert len(cikan) == 1
+
+    def test_kendi_gozlemimiz_mahsup_edilmez(self, servis, monkeypatch):
+        """Açıklanamayan satırlar BİZİM gözlemimizdir. Onları mahsup etmek,
+        bir farkı kendisiyle açıklamak — yani çift saymak — olurdu."""
+        anomali = servis._anomali_olayi(
+            "BINANCE", {"asset": "USDT", "delta": 500.0, "explained": 0.0,
+                        "unexplained": 500.0})
+        anomali["trade_ts"] = self.FOTOGRAF_TS + 60
+        archive.record_exchange_events([anomali])
+        monkeypatch.setattr(archive, "get_balance_state_ts",
+                            lambda ex: self.FOTOGRAF_TS)
+
+        cikan = servis._aciklayici_olaylar("BINANCE", [])
+        assert cikan == []
+
+    def test_fotograf_yoksa_eski_davranis_surer(self, servis, monkeypatch):
+        """İlk tarama yolunu bozmuyoruz."""
+        monkeypatch.setattr(archive, "get_balance_state_ts", lambda ex: None)
+        olay = trade_sync.normalize_trade("BINANCE", _trade(900))
+        assert servis._aciklayici_olaylar("BINANCE", [olay]) == [olay]
+
+
+# =====================================================================
 class TestImlec:
     """İmleç mantığı: ilk tarama başlangıç kurar, sonrası yakalar."""
 

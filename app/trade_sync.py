@@ -518,7 +518,8 @@ class TradeSyncService:
         anomaliler = []
         anomali_atlandi = bool(hatalar) and not ilk_bakiye_taramasi
         if not ilk_bakiye_taramasi and not hatalar:
-            anomaliler = aciklanamayan_degisimler(farklar, olaylar)
+            anomaliler = aciklanamayan_degisimler(
+                farklar, self._aciklayici_olaylar(konum, olaylar))
 
         yeni_sayisi = archive.record_exchange_events(olaylar)
         if anomaliler:
@@ -549,6 +550,50 @@ class TradeSyncService:
             "dust_supported": exchanges.supports(profil, "dust_log_path"),
             "first_balance_scan": ilk_bakiye_taramasi,
         }
+
+    @staticmethod
+    def _aciklayici_olaylar(konum, olaylar):
+        """Bakiye farkını açıklayabilecek TÜM olaylar.
+
+        Bu taramanın bulguları TEK BAŞINA yetmez. `_yazilacak_bakiye` bir
+        hata durumunda fotoğrafı bilerek dondurur; o an karşılaştırma
+        penceresi tek bir taramadan geniş hâle gelir ve pencereye düşen ama
+        DAHA ÖNCEKİ bir taramada yakalanmış işlemler ortada kalır. Bu iki
+        kural birbiriyle çelişiyordu ve çelişkinin bedelini kullanıcı ödedi:
+
+        7 Eylül 2026'da toz ucu 22 saat boyunca hata verdi, fotoğraf 00:58'de
+        dondu, düzelmenin ardından ilk tarama kullanıcının sabah çoktan
+        deftere işlediği ARB satışını üç ayrı "açıklanamayan" satır olarak
+        raporladı. Kullanıcı haklı olarak programın sapıttığını düşündü.
+
+        Çözüm: farkı yalnızca bu turun bulgularıyla değil, FOTOĞRAFTAN SONRA
+        gerçekleşmiş tüm arşiv olaylarıyla mahsup etmek.
+
+        Yalnızca TRADE ve DUST sayılır. Açıklanamayan satırlar bizim kendi
+        gözlemimizdir; onları mahsup etmek, bir farkı kendisiyle açıklamak
+        yani çift saymak olurdu.
+        """
+        import archive
+
+        fotograf_ts = archive.get_balance_state_ts(konum)
+        if fotograf_ts is None:
+            return list(olaylar or [])
+
+        birlesik, gorulen = [], set()
+        for o in list(olaylar or []) + archive.events_since(
+                konum, fotograf_ts, kinds=(TRADE, DUST)):
+            uid = str(o.get("event_uid") or "")
+            if uid and uid in gorulen:
+                continue
+            # Fotoğraftan ÖNCEKİ bir işlemin etkisi zaten `onceki` içinde
+            # sayılıdır; onu bir kez daha mahsup etmek ters yönde yanlış bir
+            # anomali üretirdi.
+            if _f(o.get("trade_ts"), 0.0) <= fotograf_ts:
+                continue
+            if uid:
+                gorulen.add(uid)
+            birlesik.append(o)
+        return birlesik
 
     @staticmethod
     def _yazilacak_bakiye(onceki, simdiki, hatalar, arsiv_yazamadi):
