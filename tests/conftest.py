@@ -36,6 +36,7 @@ import data_manager                      # noqa: E402
 import price_service as price_module     # noqa: E402
 import market_service as market_module   # noqa: E402
 import trade_sync as trade_sync_module   # noqa: E402
+import exchanges as exchanges_module     # noqa: E402
 
 
 # Sabit test fiyatları — ağ erişimi olmadan deterministik sonuç verir
@@ -213,6 +214,28 @@ def izole_veri(tmp_path, monkeypatch):
         esitleyici, "scan",
         lambda location=None, full=False: {"ok": False, "skipped": "test"})
     esitleyici._son_rapor = {}
+
+    # --- DUVAR: BORSA MODÜLÜNÜN AĞA ÇIKAN TEK KAPISI KAPATILIR ---
+    #
+    # `scan`'i susturmak yetmiyor: testler `_borsayi_tara` gibi iç işlevleri
+    # doğrudan çağırıyor ve onlar tek tek uç işlevlerine gidiyor. Her yeni uç
+    # eklendiğinde ilgili testlere bir `monkeypatch` daha yazmayı hatırlamak
+    # gerekiyordu — ve unutulan bir tanesi, test oturumunun kullanıcının
+    # GERÇEK Binance hesabına, gerçek API anahtarıyla bağlanması demekti.
+    # FAZ F7b dört yeni uç eklerken bu tam olarak yaşandı.
+    #
+    # Bu yüzden yönlendirme değil DUVAR. Kapı `_http_get`: `urllib` çağrısını
+    # yapan tek yer orası, dolayısıyla imzalı ya da imzasız HİÇBİR istek
+    # kaçamaz. Bir ucu kasten sınayan testler zaten `_http_get`i (ya da daha
+    # üstteki `signed_get`i) kendileri değiştiriyor; değiştirmeyen her çağrı
+    # testi gürültülü şekilde düşürür, sessizce ağa çıkmaz.
+    def _ag_cikisi_yasak(url, headers=None):
+        raise AssertionError(
+            f"Test gerçek bir borsa isteği yapmaya çalıştı: {url}\n"
+            "Bu istek kullanıcının gerçek hesabına giderdi. İlgili uç "
+            "işlevini ya da `_http_get`i monkeypatch ile değiştirin.")
+
+    monkeypatch.setattr(exchanges_module, "_http_get", _ag_cikisi_yasak)
 
     yield veri_dizini
 

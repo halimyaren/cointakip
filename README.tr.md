@@ -103,11 +103,21 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   fiyatla değerlenmeye devam eden 7 açık pozisyon. "Küçük bakiye" piyasa değeri
   için küçüktür, maliyet tabanı için değil. MEXC böyle bir uç sunmuyor ve
   uygulama bunu kapatıyormuş gibi yapmak yerine açıkça söylüyor.
-- **Açıklanamayan bakiye değişimi gizlenmez** — para yatırma/çekme, Earn ve
-  vadeli transferleri şimdilik kapsam dışı. Bakiye değişip de bunu açıklayan bir
-  işlem bulunamadığında hangi varlığın ne kadar değiştiği söylenir, susulmaz. Bir
-  sembolün ilk taraması yalnızca başlangıç noktası kurar: bu özellik bundan
-  sonrasını yakalar, geçmişi geriye dönük getirmez.
+- **Earn geliri ve para hareketleri de okunur** — bakiyeyi değiştiren tek şey
+  alım-satım değil. Simple Earn faizi (esnek ve vadeli), para yatırma ve para
+  çekme ayrı uçlardan okunur. Earn geliri deftere **alındığı günün piyasa
+  fiyatıyla** yeni bir açık lot olarak eklenir; böylece gelir elde edildiği
+  andaki değeriyle maliyet tabanına girer ve sonraki satışta yalnızca aradaki
+  fark kâr sayılır. Para giriş/çıkışı ise deftere **yazılamaz**: gelen coin çoğu
+  zaman başka bir konumdan gelen transferdir ve maliyeti zaten defterde durur —
+  onu "alım" saymak, maliyeti bilinmeyen bir lot uydurmak olurdu.
+- **Açıklanamayan bakiye değişimi gizlenmez** — bakiye değişip de bunu açıklayan
+  bir olay bulunamadığında hangi varlığın ne kadar değiştiği söylenir, susulmaz.
+  Bir uyarının değeri ne kadar sık **haklı** olduğuyla ölçülür: Earn her gün
+  faiz ödediği için o akış okunmasaydı bu uyarı birkaç günde gürültüye boğulur
+  ve okunmaz hâle gelirdi. Geriye kalan başlıca boşluk vadeli/marj hesap
+  transferleridir. Bir sembolün ilk taraması yalnızca başlangıç noktası kurar:
+  bu özellik bundan sonrasını yakalar, geçmişi geriye dönük getirmez.
 - **Borsa mutabakatı** — borsanızın web arayüzünden indirdiğiniz dosyaları
   (Binance CSV, MEXC XLSX) defterinizle karşılaştırır ve farkları gösterir.
   Karşılaştırma **deftere hiçbir şey yazmaz**. Rapor, gerçek bir tutarsızlığı
@@ -304,11 +314,12 @@ app/
 ├── reconcile.py      Borsa dışa aktarımı ↔ defter mutabakatı ve düzeltme
 │                     önerileri (salt okunur; yazma data_manager'dan geçer)
 ├── connections.py    Bağlantı kayıt defteri + zincir okuyucuları (EVM, Solana)
-├── exchanges.py      Borsa API profilleri + salt-okunur bakiye, işlem ve toz
-│                     dönüşümü okuyucuları; imza ailesi başına yazılır
-│                     (yalnızca GET, emir vermez)
-├── trade_sync.py     Borsa işlemlerini ve toz dönüşümlerini onay kutusuna
-│                     düşürür; deftere kendiliğinden asla yazmaz
+├── exchanges.py      Borsa API profilleri + salt-okunur bakiye, işlem, toz
+│                     dönüşümü, Earn ödülü ve para hareketi okuyucuları;
+│                     imza ailesi başına yazılır (yalnızca GET, emir vermez)
+├── trade_sync.py     Borsa işlemlerini, toz dönüşümlerini, Earn gelirini ve
+│                     para hareketlerini onay kutusuna düşürür; deftere
+│                     kendiliğinden asla yazmaz
 ├── tax_export.py     Vergi-hazır dışa aktarım (salt okunur; vergi hesaplamaz)
 ├── keyvault.py       API anahtarları için PIN'den türetilmiş şifreleme
 ├── ai_service.py     Gemini entegrasyonu + yerel yedek motor

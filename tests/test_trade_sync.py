@@ -49,6 +49,20 @@ BINANCE_PROFIL = {
 }
 
 
+def _akislari_sustur(monkeypatch, **ustler):
+    """Hesap düzeyindeki BÜTÜN akışları boşa çeker.
+
+    `conftest` imzalı çağrının tek kapısını (`signed_get`) duvarla kapattığı
+    için, bir akış susturulmazsa test AĞA ÇIKMAYA ÇALIŞIR ve gürültülü şekilde
+    düşer. Bu yardımcı, taramanın tamamını sınayan testlerin ilgilenmedikleri
+    akışları tek satırda susturmasını sağlar; `ustler` ile yalnızca sınanan
+    akış değiştirilir.
+    """
+    for ad in ("fetch_dust_log", "fetch_earn_rewards",
+               "fetch_deposits", "fetch_withdrawals"):
+        monkeypatch.setattr(exchanges, ad, ustler.get(ad, lambda *a, **k: []))
+
+
 def _trade(id_, symbol="ARBUSDT", qty="100", price="0.40", quote="40.0",
            buyer=False, commission="0.04", commission_asset="USDT",
            time_ms=1757000000000):
@@ -261,7 +275,7 @@ class TestTozAralikParametreleri:
     def test_basarili_tur_eski_hatayi_temizler(self, servis, monkeypatch):
         """Hata kaydı kalıcı olsaydı, düzeltmeden sonra bile fotoğraf
         donmaya devam ederdi."""
-        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+        _akislari_sustur(monkeypatch)
         archive.set_sync_cursor("BINANCE", trade_sync.TOZ_KAPSAMI,
                                 error="HTTP 400: endTTime")
         servis._tozu_cek("BINANCE", dict(BINANCE_PROFIL))
@@ -438,7 +452,7 @@ class TestDonmusFotograf:
                                 {"ARB": 1301.6774, "USDT": 1247.936606,
                                  "BNB": 0.00143785}))
         monkeypatch.setattr(exchanges, "fetch_my_trades", lambda *a, **k: [])
-        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+        _akislari_sustur(monkeypatch)
 
         rapor = servis._borsayi_tara("BINANCE", dict(BINANCE_PROFIL), full=True)
         assert rapor["unexplained"] == []
@@ -457,7 +471,7 @@ class TestDonmusFotograf:
         monkeypatch.setattr(exchanges, "read_exchange",
                             lambda k, p=None: _bakiye_okumasi({"USDT": 49.96}))
         monkeypatch.setattr(exchanges, "fetch_my_trades", lambda *a, **k: [])
-        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+        _akislari_sustur(monkeypatch)
 
         rapor = servis._borsayi_tara("BINANCE", dict(BINANCE_PROFIL), full=True)
         assert rapor["unexplained"] == []
@@ -474,7 +488,7 @@ class TestDonmusFotograf:
         monkeypatch.setattr(exchanges, "read_exchange",
                             lambda k, p=None: _bakiye_okumasi({"USDT": 49.96}))
         monkeypatch.setattr(exchanges, "fetch_my_trades", lambda *a, **k: [])
-        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+        _akislari_sustur(monkeypatch)
 
         rapor = servis._borsayi_tara("BINANCE", dict(BINANCE_PROFIL), full=True)
         assert rapor["unexplained"] == []
@@ -808,7 +822,7 @@ class TestTaramaDavranisi:
         monkeypatch.setattr(exchanges, "read_exchange",
                             lambda k, p=None: _bakiye_okumasi({"ARB": 100.0}))
         monkeypatch.setattr(exchanges, "fetch_my_trades", lambda *a, **k: [])
-        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+        _akislari_sustur(monkeypatch)
         rapor = servis._borsayi_tara("BINANCE", dict(BINANCE_PROFIL), full=True)
         assert rapor["first_balance_scan"] is True
         assert rapor["unexplained"] == []
@@ -863,7 +877,7 @@ class TestTaramaDavranisi:
             raise exchanges.ExchangeError("HTTP 500")
 
         monkeypatch.setattr(exchanges, "fetch_my_trades", patla)
-        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+        _akislari_sustur(monkeypatch)
         rapor = servis._borsayi_tara("BINANCE", dict(BINANCE_PROFIL), full=True)
         assert rapor["unexplained"] == []
         assert rapor["unexplained_skipped"] is True
@@ -879,7 +893,7 @@ class TestTaramaDavranisi:
             exchanges, "read_exchange",
             lambda k, p=None: _bakiye_okumasi({"ARB": 1.0, "TIA": 1.0}))
         monkeypatch.setattr(exchanges, "fetch_my_trades", sahte)
-        monkeypatch.setattr(exchanges, "fetch_dust_log", lambda *a, **k: [])
+        _akislari_sustur(monkeypatch)
         rapor = servis._borsayi_tara("BINANCE", dict(BINANCE_PROFIL), full=True)
         assert rapor["ok"] is True
         assert [h["scope"] for h in rapor["errors"]] == ["ARBUSDT"]
@@ -1011,9 +1025,13 @@ class TestArayuz:
         assert "scanExchangeTrades()" in html
 
     def test_toz_ve_anomali_ayri_etiketlenir(self):
-        html = self._oku("index.html")
-        assert "TOZ DÖNÜŞÜMÜ" in html
-        assert "AÇIKLANAMAYAN" in html
+        # Etiketler FAZ F7b'de `app.js` içindeki tek bir eşlemeye taşındı:
+        # tür sayısı beşe çıkınca HTML'deki üçlü operatör zinciri hem
+        # okunmaz oldu hem de her yeni türde iki yerde güncelleme istiyordu.
+        js = self._oku("app.js")
+        assert "TOZ DÖNÜŞÜMÜ" in js
+        assert "AÇIKLANAMAYAN" in js
+        assert "exchangeKindLabel" in self._oku("index.html")
 
     def test_ilk_tarama_siniri_arayuzde_yaziyor(self):
         """Kullanıcı geçmişin neden gelmediğini kodda aramamalı."""
@@ -1033,6 +1051,257 @@ class TestArayuz:
         blok = js[js.index("async applyExchangeTrade"):js.index("async dismissExchangeTrade")]
         assert "askConfirm" in blok
         assert blok.index("askConfirm") < blok.index("fetch(")
+
+
+# =====================================================================
+class TestEarnVeParaHareketleri:
+    """FAZ F7b. Çıkış noktası yine somut bir olay.
+
+    7 Eylül 2026 gecesi gelen kutusunda `+0.00040177 APT` göründü ve
+    "açıklanamayan" diye işaretlendi. Doğruydu — ama Simple Earn her gün
+    faiz ödüyor, yani Earn'de duran her varlık her gün böyle bir satır
+    üretecekti. Birkaç gün sonra kullanıcı o satırları okumadan kapatmayı
+    öğrenir ve açıklanamayan-değişim uyarısı, tam da onu çalışır hâle
+    getirmek için uğraştığımız hafta, değerini kaybederdi.
+
+    Aynı şey para giriş/çıkışı için de geçerli. İkisi de bakiyeyi değiştirir,
+    ikisi de spot işlem değildir, ikisi de okunmazsa gürültü üretir.
+    """
+
+    EARN_CEVABI = {
+        "total": 2,
+        "rows": [
+            {"asset": "APT", "rewards": "0.00040177", "projectId": "APT001",
+             "type": "REALTIME", "time": 1757200000000},
+            {"asset": "ENA", "rewards": "0.51230000", "projectId": "ENA001",
+             "type": "BONUS", "time": 1757200500000},
+        ],
+    }
+
+    # ------------------------------------------------------- Earn
+    def test_earn_cevabi_duz_satirlara_acilir(self):
+        satirlar = exchanges.earn_rows(self.EARN_CEVABI)
+        apt = next(s for s in satirlar if s["asset"] == "APT")
+        assert apt["amount"] == pytest.approx(0.00040177)
+        assert apt["time"] == 1757200000000
+
+    def test_vadeli_urunde_miktar_alani_baska_adla_gelir(self):
+        """Esnekte `rewards`, vadelide `amount`. Aynı şeyin iki adı olması
+        borsanın biçimine ait bir ayrıntıdır ve dışarı sızmamalı."""
+        ham = {"rows": [{"asset": "AXS", "amount": "1.25",
+                         "positionId": 123, "time": 1757200000000}]}
+        satir = exchanges.earn_rows(ham, locked=True)[0]
+        assert satir["amount"] == pytest.approx(1.25)
+        assert satir["locked"] is True
+
+    def test_earn_bir_gelirdir_karsiligi_yoktur(self):
+        satir = exchanges.earn_rows(self.EARN_CEVABI)[0]
+        olay = trade_sync.normalize_earn("BINANCE", satir)
+        assert olay["kind"] == trade_sync.EARN
+        assert olay["side"] == "BUY"
+        assert olay["quote_asset"] == ""
+        assert olay["quote_qty"] == 0.0
+        assert olay["fee_qty"] == 0.0
+        # Ödülün KENDİ fiyatı yoktur; fiyat işleme anında belirlenir.
+        assert olay["price"] == 0.0
+
+    def test_earn_bakiyeyi_yalnizca_artirir(self):
+        satir = exchanges.earn_rows(self.EARN_CEVABI)[0]
+        etki = trade_sync.olay_bakiye_etkisi(
+            trade_sync.normalize_earn("BINANCE", satir))
+        assert etki == {"APT": pytest.approx(0.00040177)}
+
+    def test_earn_apt_vakasini_aciklar(self, servis, kasa_acik, monkeypatch):
+        """Asıl vaka: o +0.00040177 APT artık anomali DEĞİL."""
+        monkeypatch.setattr(archive, "get_balance_state",
+                            lambda ex: {"APT": 44.43896519})
+        monkeypatch.setattr(archive, "get_balance_state_ts", lambda ex: 1757100000.0)
+        monkeypatch.setattr(exchanges, "read_exchange",
+                            lambda k, p=None: _bakiye_okumasi({"APT": 44.43936696}))
+        monkeypatch.setattr(exchanges, "fetch_my_trades", lambda *a, **k: [])
+        _akislari_sustur(monkeypatch, fetch_earn_rewards=(
+            lambda p, locked=False, **k: ([] if locked
+                                          else exchanges.earn_rows(self.EARN_CEVABI))))
+        archive.set_sync_cursor("BINANCE", trade_sync.EARN_ESNEK_KAPSAMI, cursor=1)
+
+        rapor = servis._borsayi_tara("BINANCE", dict(BINANCE_PROFIL), full=True)
+        assert rapor["unexplained"] == []
+
+    def test_mexc_earn_ucu_sunmuyor_ve_bu_gizlenmez(self):
+        mexc = exchanges.BUILTIN_PROFILES["MEXC"]
+        assert exchanges.supports(mexc, "earn_flexible_path") is False
+        assert exchanges.supports(mexc, "earn_locked_path") is False
+        with pytest.raises(exchanges.ExchangeError, match="Earn"):
+            exchanges.fetch_earn_rewards(mexc)
+
+    def test_earn_sayfa_boyu_acikca_gonderilir(self, monkeypatch):
+        """Uç varsayılanı 10'dur. Belirtmezsek 11. ödül sessizce kaybolur ve
+        sistem "başka ödül yok" sanır."""
+        yakalanan = {}
+
+        def sahte(profil, yol, anahtar, gizli, params):
+            yakalanan.update(params)
+            return {"rows": []}
+
+        monkeypatch.setattr(exchanges, "signed_get", sahte)
+        monkeypatch.setattr(exchanges, "_anahtarlar", lambda *a, **k: ("k", "s"))
+        exchanges.fetch_earn_rewards(dict(BINANCE_PROFIL))
+        assert yakalanan["size"] == exchanges.EARN_SAYFA_BOYU
+        assert yakalanan["size"] > 10
+
+    # ------------------------------------------- Para giriş/çıkışı
+    def test_bekleyen_yatirma_olay_uretmez(self):
+        """Bekleyen bir yatırma henüz bakiyede değildir; onu saymak olmayan
+        bir parayla bir farkı açıklamak olurdu."""
+        with pytest.raises(ValueError, match="bakiyeye geçmemiş"):
+            trade_sync.normalize_deposit("BINANCE", {
+                "coin": "USDT", "amount": "100", "status": 0,
+                "insertTime": 1757200000000, "id": "d1"})
+
+    def test_gerceklesmis_yatirma_bakiyeyi_artirir(self):
+        olay = trade_sync.normalize_deposit("BINANCE", {
+            "coin": "USDT", "amount": "100", "status": 1,
+            "insertTime": 1757200000000, "id": "d2"})
+        assert trade_sync.olay_bakiye_etkisi(olay) == {"USDT": pytest.approx(100.0)}
+
+    def test_cekmede_ag_komisyonu_da_bakiyeden_cikar(self):
+        """İki ayrı tutar var. Yalnızca `amount` sayılırsa komisyon kadar bir
+        fark her seferinde "açıklanamayan" olarak kalırdı."""
+        olay = trade_sync.normalize_withdraw("BINANCE", {
+            "coin": "ETH", "amount": "1.0", "transactionFee": "0.003",
+            "status": 6, "applyTime": "2026-09-07 12:00:00", "id": "w1"})
+        assert trade_sync.olay_bakiye_etkisi(olay) == {"ETH": pytest.approx(-1.003)}
+
+    def test_iade_edilmis_cekme_olay_uretmez(self):
+        for durum in (1, 3, 5):
+            with pytest.raises(ValueError, match="iade"):
+                trade_sync.normalize_withdraw("BINANCE", {
+                    "coin": "ETH", "amount": "1.0", "transactionFee": "0.003",
+                    "status": durum, "applyTime": "2026-09-07 12:00:00"})
+
+    def test_tamamlanmamis_cekme_de_sayilir(self):
+        """Binance bakiyeyi TALEP ANINDA düşer. "Tamamlandı mı" ölçütüyle
+        beklemek, işleme alınmış bir çekmeyi görünmez yapardı."""
+        olay = trade_sync.normalize_withdraw("BINANCE", {
+            "coin": "ETH", "amount": "1.0", "transactionFee": "0.003",
+            "status": 4, "applyTime": "2026-09-07 12:00:00", "id": "w2"})
+        assert olay["kind"] == trade_sync.WITHDRAW
+
+    def test_metin_bicimli_zaman_okunur(self):
+        """`applyTime` bir sayı değil "2026-09-07 12:00:00" metnidir. İki
+        biçimi de kabul etmezsek akışın yarısı sessizce okunamaz."""
+        assert exchanges._zaman_ms(1757200000000) == 1757200000000
+        assert exchanges._zaman_ms("2026-09-07 12:00:00") > 0
+        assert exchanges._zaman_ms("bozuk") == 0
+        assert exchanges._zaman_ms(None) == 0
+
+    # ------------------------------------------------- Deftere işleme
+    def test_para_girisi_deftere_islenemez(self):
+        """Girişi "alım" saymak, maliyeti bilinmeyen bir lot uydurmaktır ve
+        maliyet tabanını sessizce bozar."""
+        olay = trade_sync.normalize_deposit("BINANCE", {
+            "coin": "APT", "amount": "5", "status": 1,
+            "insertTime": 1757200000000, "id": "d3"})
+        archive.record_exchange_events([olay])
+        servis = TradeSyncService()
+        with pytest.raises(ValueError, match="Transfer"):
+            servis.apply_event(olay["event_uid"])
+
+    def test_para_cikisi_deftere_islenemez(self):
+        olay = trade_sync.normalize_withdraw("BINANCE", {
+            "coin": "APT", "amount": "5", "transactionFee": "0.1",
+            "status": 6, "applyTime": "2026-09-07 12:00:00", "id": "w3"})
+        archive.record_exchange_events([olay])
+        servis = TradeSyncService()
+        with pytest.raises(ValueError, match="Transfer|Zarar Yaz"):
+            servis.apply_event(olay["event_uid"])
+
+    def test_earn_alindigi_gunun_fiyatiyla_islenir(self, servis, monkeypatch):
+        """Kullanıcının kararı (8 Eylül 2026): gelir, elde edildiği andaki
+        değeriyle maliyet tabanına döner."""
+        import price_service
+        monkeypatch.setattr(price_service.price_service, "gunluk_kapanis",
+                            lambda sembol, tarih: 8.25)
+
+        satir = exchanges.earn_rows(self.EARN_CEVABI)[0]
+        olay = trade_sync.normalize_earn("BINANCE", satir)
+        archive.record_exchange_events([olay])
+        sonuc = servis.apply_event(olay["event_uid"])
+        assert sonuc["success"] is True
+
+        from data_manager import load_portfolio
+        kayit = [t for t in load_portfolio()["transactions"]
+                 if t.get("source_ref") == olay["event_uid"]][0]
+        assert kayit["status"] == "Aktif"
+        assert kayit["cost"] == pytest.approx(8.25)
+        assert kayit["qty"] == pytest.approx(0.00040177)
+        assert "Earn geliri" in kayit["notes"]
+
+    def test_bugunun_odulu_canli_fiyatla_islenir(self, servis, monkeypatch):
+        """Bugünün ödülü için canlı fiyat zaten o günün fiyatıdır; ağa ikinci
+        kez çıkılmamalı. Fiyat anahtarı `APTUSDT` biçiminde gelir."""
+        import price_service
+        monkeypatch.setattr(
+            price_service.price_service, "gunluk_kapanis",
+            lambda s, t: pytest.fail("bugünün ödülü için ağa çıkılmamalı"))
+
+        from datetime import datetime as dt
+        simdi_ms = int(dt.now().timestamp() * 1000)
+        olay = trade_sync.normalize_earn("BINANCE", {
+            "asset": "APT", "amount": 0.5, "time": simdi_ms, "ref": "x"})
+        archive.record_exchange_events([olay])
+        servis.apply_event(olay["event_uid"],
+                           live_prices={"APTUSDT": {"price": 9.10}})
+
+        from data_manager import load_portfolio
+        kayit = [t for t in load_portfolio()["transactions"]
+                 if t.get("source_ref") == olay["event_uid"]][0]
+        assert kayit["cost"] == pytest.approx(9.10)
+
+    def test_fiyat_bulunamazsa_earn_reddedilir(self, servis, monkeypatch):
+        """Uydurma bir fiyatla yazmak, yanlış bir sayıyı doğru gibi deftere
+        koymak olurdu. Maliyet tabanı vergi sonucu doğurur."""
+        import price_service
+        monkeypatch.setattr(price_service.price_service, "gunluk_kapanis",
+                            lambda sembol, tarih: None)
+
+        satir = exchanges.earn_rows(self.EARN_CEVABI)[0]
+        olay = trade_sync.normalize_earn("BINANCE", satir)
+        archive.record_exchange_events([olay])
+        with pytest.raises(ValueError, match="fiyat"):
+            servis.apply_event(olay["event_uid"], live_prices={})
+
+    # ------------------------------------------------------- Genel
+    def test_akis_hatasi_fotografin_tamamini_dondurur(self, servis):
+        """Hesap düzeyindeki akışlar hangi varlığı etkilediklerini söylemez;
+        biri okunamadıysa hiçbir varlık için "değişimi gördüm" diyemeyiz."""
+        for kapsam in trade_sync.HESAP_KAPSAMLARI:
+            yazilacak = servis._yazilacak_bakiye(
+                {"APT": 1.0}, {"APT": 2.0},
+                [{"scope": kapsam, "error": "HTTP 500"}], False)
+            assert yazilacak == {"APT": 1.0}, kapsam
+
+    def test_yeni_turler_farki_aciklayabilir(self):
+        """Açıklayıcı türler listesi eksik kalırsa yeni akışlar okunur ama
+        anomali hesabında sayılmaz — yani gürültü yine sürerdi."""
+        for tur in (trade_sync.TRADE, trade_sync.DUST, trade_sync.EARN,
+                    trade_sync.DEPOSIT, trade_sync.WITHDRAW):
+            assert tur in trade_sync.ACIKLAYICI_TURLER
+        assert trade_sync.UNEXPLAINED not in trade_sync.ACIKLAYICI_TURLER
+
+    def test_yeni_uclar_korumali_alanlardir(self):
+        """Bu alanlar API anahtarının NEREYE gönderileceğini belirler."""
+        for alan in ("earn_flexible_path", "earn_locked_path",
+                     "deposit_path", "withdraw_path"):
+            with pytest.raises(ValueError):
+                exchanges.update_profile_fields("BINANCE",
+                                                {alan: "https://kotu.example"})
+
+    def test_arayuz_yeni_turleri_etiketler(self):
+        js = open(os.path.join(APP_DIR, "static", "app.js"),
+                  encoding="utf-8").read()
+        for etiket in ("EARN GELİRİ", "PARA GİRİŞİ", "PARA ÇIKIŞI"):
+            assert etiket in js
 
 
 # =====================================================================

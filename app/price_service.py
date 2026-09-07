@@ -102,6 +102,8 @@ class SmartPriceDiscoveryEngine:
         self.prices = {} # { "BTCUSDT": { "price": ..., "open_price": ..., "change_pct": ..., "source": "BINANCE", "is_dead": False, "updated_at": ... } }
         self.symbol_search_index = []
         self.sparkline_cache = {}
+        # Geçmiş bir günün kapanışı bir daha değişmez; süresiz önbelleklenir.
+        self.gunluk_kapanis_cache = {}
         self.is_running = False
         self.lock = threading.Lock()
         self.last_update_ts = 0
@@ -920,6 +922,58 @@ class SmartPriceDiscoveryEngine:
             "is_dead": True,
             "updated_at": time.time(),
         }
+
+    def gunluk_kapanis(self, symbol, tarih):
+        """Bir varlığın BELİRLİ BİR GÜNDEKİ kapanış fiyatı (USD).
+
+        FAZ F7b — Earn geliri deftere alındığı günün fiyatıyla yazılıyor.
+        Uygulama günlerce kapalı kaldıysa ödül eski olabilir ve o ödülü
+        bugünün fiyatıyla yazmak, aradaki her fiyat hareketini sessizce kâr
+        veya zarara çevirirdi. Maliyet tabanı vergi sonucu doğurduğu için
+        burada tahmin değil ölçüm gerekir.
+
+        Binance'in genel `klines` ucu kullanılır: **anahtarsız, herkese açık
+        ve GET.** Bulunamazsa None döner ve çağıran işlemi reddeder;
+        uydurulmuş bir fiyatla deftere yazmak yanlış sayıyı doğru gibi
+        göstermek olurdu.
+
+        Sonuç önbelleğe alınır: geçmiş bir günün kapanışı bir daha DEĞİŞMEZ,
+        yani aynı gün için ikinci kez ağa çıkmanın hiçbir karşılığı yok.
+        """
+        sym = str(symbol or "").upper().strip()
+        gun = str(tarih or "").strip()[:10]
+        if not sym or len(gun) != 10:
+            return None
+
+        anahtar = f"{sym}|{gun}"
+        with self.lock:
+            if anahtar in self.gunluk_kapanis_cache:
+                return self.gunluk_kapanis_cache[anahtar]
+
+        lookup = sym if sym.endswith("USDT") else f"{sym}USDT"
+        try:
+            baslangic = int(time.mktime(time.strptime(gun, "%Y-%m-%d")) * 1000)
+        except ValueError:
+            return None
+        bitis = baslangic + 24 * 60 * 60 * 1000 - 1
+
+        try:
+            url = (f"https://api.binance.com/api/v3/klines?symbol={lookup}"
+                   f"&interval=1d&startTime={baslangic}&endTime={bitis}&limit=1")
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0",
+                              "Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, list) and data and len(data[0]) > 4:
+                kapanis = float(data[0][4])
+                if kapanis > 0:
+                    with self.lock:
+                        self.gunluk_kapanis_cache[anahtar] = kapanis
+                    return kapanis
+        except Exception as e:
+            logger.debug("Gunluk kapanis alinamadi (%s/%s): %s", lookup, gun, e)
+        return None
 
     def get_sparkline_7d(self, symbol, live_price=0.0, change_24h=0.0):
         """

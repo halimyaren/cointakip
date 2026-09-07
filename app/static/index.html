@@ -998,6 +998,10 @@
              class="px-4 py-2.5 text-[11.5px] text-slate-400 bg-slate-950/40 border-b border-slate-800"
              x-text="exchangeDustGap"></div>
 
+        <div x-show="exchangeEarnGap"
+             class="px-4 py-2.5 text-[11.5px] text-slate-400 bg-slate-950/40 border-b border-slate-800"
+             x-text="exchangeEarnGap"></div>
+
         <!-- Boş durum: sınır burada yazılı. -->
         <div x-show="!(exchangeTrades?.events || []).length" class="px-4 py-4 text-[11.5px] text-slate-500 leading-relaxed">
           Borsada yapılan alım-satımlar burada listelenir ve deftere <b class="text-slate-300">yalnızca siz onaylayınca</b> girer.
@@ -1012,15 +1016,18 @@
                 <div class="min-w-0">
                   <div class="flex items-center flex-wrap gap-2">
                     <span class="px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide"
-                          :class="ev.kind === 'DUST' ? 'bg-amber-500/15 text-amber-300'
-                                  : ev.kind === 'UNEXPLAINED' ? 'bg-rose-500/15 text-rose-300'
-                                  : (ev.side === 'BUY' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-sky-500/15 text-sky-300')"
-                          x-text="ev.kind === 'DUST' ? 'TOZ DÖNÜŞÜMÜ' : ev.kind === 'UNEXPLAINED' ? 'AÇIKLANAMAYAN' : (ev.side === 'BUY' ? 'ALIM' : 'SATIŞ')"></span>
+                          :class="exchangeKindClass(ev)"
+                          x-text="exchangeKindLabel(ev)"></span>
                     <span class="text-[13px] font-semibold text-slate-100" x-text="ev.symbol"></span>
                     <span class="text-[11px] text-slate-500" x-text="ev.exchange"></span>
                     <span class="text-[11px] text-slate-500 font-mono-nums" x-text="(ev.trade_at || '').replace('T',' ')"></span>
                   </div>
-                  <div class="mt-1 text-[11.5px] text-slate-300 font-mono-nums" x-show="ev.kind !== 'UNEXPLAINED'">
+                  <!-- Karşı varlığı OLAN olaylar: alım, satış, toz dönüşümü.
+                       Earn geliri ve para hareketlerinde karşılık yoktur;
+                       onlara "@ 0 USDT = 0" yazmak uydurma bir fiyat
+                       göstermek olurdu. -->
+                  <div class="mt-1 text-[11.5px] text-slate-300 font-mono-nums"
+                       x-show="ev.kind === 'TRADE' || ev.kind === 'DUST'">
                     <span x-text="formatNum(ev.qty, 8) + ' ' + (ev.base_asset || '')"></span>
                     <span class="text-slate-500 mx-1">@</span>
                     <span x-text="formatNum(ev.price, 8) + ' ' + (ev.quote_asset || '')"></span>
@@ -1029,8 +1036,14 @@
                     <span x-show="(ev.fee_qty || 0) > 0" class="text-amber-400 ml-2"
                           x-text="'komisyon ' + formatNum(ev.fee_qty, 8) + ' ' + (ev.fee_asset || '')"></span>
                   </div>
-                  <div class="mt-1 text-[11.5px] text-rose-300 font-mono-nums" x-show="ev.kind === 'UNEXPLAINED'"
-                       x-text="(ev.side === 'BUY' ? '+' : '−') + formatNum(ev.qty, 8) + ' ' + ev.base_asset"></div>
+                  <div class="mt-1 text-[11.5px] font-mono-nums"
+                       :class="ev.kind === 'UNEXPLAINED' ? 'text-rose-300'
+                               : ev.kind === 'EARN' ? 'text-emerald-300' : 'text-slate-300'"
+                       x-show="ev.kind !== 'TRADE' && ev.kind !== 'DUST'">
+                    <span x-text="(ev.side === 'BUY' ? '+' : '−') + formatNum(ev.qty, 8) + ' ' + ev.base_asset"></span>
+                    <span x-show="(ev.fee_qty || 0) > 0" class="text-amber-400 ml-2"
+                          x-text="'ağ komisyonu ' + formatNum(ev.fee_qty, 8) + ' ' + (ev.fee_asset || '')"></span>
+                  </div>
                   <div class="mt-1 text-[11px] text-slate-400" x-text="ev.hint?.reason"></div>
                   <div x-show="ev.hint?.warning" class="mt-1 text-[11px] text-amber-300" x-text="ev.hint?.warning"></div>
                   <div x-show="ev.hint?.possible_duplicate"
@@ -6219,6 +6232,6 @@
   </div>
 
   <!-- App Frontend Script -->
-  <script src="/static/app.js?v=3.0"></script>
+  <script src="/static/app.js?v=3.1"></script>
 </body>
 </html>

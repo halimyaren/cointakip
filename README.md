@@ -103,11 +103,22 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   open and still being priced. "Small balance" is small in market value, not in
   cost basis. MEXC exposes no such endpoint, and the app says so rather than
   pretending to cover it.
-- **Unexplained balance changes are reported, not hidden** — deposits, withdrawals,
-  Earn subscriptions and futures transfers are out of scope for now. When a balance
-  moves and no trade explains it, you are told which asset moved and by how much,
-  instead of silence. The first scan of a symbol only sets a starting point: this
-  captures what happens from now on and does not backfill history.
+- **Earn income and capital flows are read too** — trading is not the only thing
+  that moves a balance. Simple Earn rewards (flexible and locked), deposits and
+  withdrawals are read from their own endpoints. Earn income can be booked to the
+  ledger as a new open lot **at the market price of the day it was received**, so
+  the income enters your cost basis at its value when earned and a later sale
+  counts only the difference as gain. Deposits and withdrawals **cannot** be
+  booked: an incoming coin is usually a transfer from another location whose cost
+  is already in your ledger, and calling it a purchase would invent a lot with an
+  unknown cost basis.
+- **Unexplained balance changes are reported, not hidden** — when a balance moves
+  and no event explains it, you are told which asset moved and by how much,
+  instead of silence. A warning is only worth as much as how often it is *right*:
+  Earn pays interest daily, so leaving that flow unread would have drowned this
+  warning in noise within days. The main remaining gap is futures/margin account
+  transfers. The first scan of a symbol only sets a starting point: this captures
+  what happens from now on and does not backfill history.
 - **Exchange reconciliation** — compares the export files you download from your
   exchange (Binance CSV, MEXC XLSX) against your ledger and shows the differences.
   The comparison **writes nothing to the ledger**. The report distinguishes a
@@ -310,9 +321,11 @@ app/
 │                     proposals (read-only; writes go through data_manager)
 ├── connections.py    Connection registry + on-chain readers (EVM, Solana)
 ├── exchanges.py      Exchange API profiles + read-only balance, trade and
-│                     dust-log readers, written per signing family
+│                     dust-log, Earn-reward and capital-flow readers,
+│                     written per signing family
 │                     (GET only, never trades)
-├── trade_sync.py     Captures fills and dust conversions into an approval
+├── trade_sync.py     Captures fills, dust conversions, Earn income and
+│                     capital flows into an approval
 │                     inbox; never writes to the ledger on its own
 ├── tax_export.py     Tax-ready export (read-only; calculates no tax, USD only)
 ├── keyvault.py       PIN-derived encryption for API keys (session-only)

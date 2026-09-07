@@ -154,6 +154,14 @@ BUILTIN_PROFILES = {
         # okuma" sözü bozulmuyor.
         "my_trades_path": "/api/v3/myTrades",
         "dust_log_path": "/sapi/v1/asset/dribblet",
+        # FAZ F7b — bakiyeyi değiştiren ama işlem OLMAYAN akışlar. Bunlar
+        # okunmazsa Earn faizi ve her para giriş/çıkışı sonsuza kadar
+        # "açıklanamayan bakiye değişimi" üretir ve o uyarı gürültüye
+        # boğulup değerini kaybeder. Dördü de GET.
+        "earn_flexible_path": "/sapi/v1/simple-earn/flexible/history/rewardsRecord",
+        "earn_locked_path": "/sapi/v1/simple-earn/locked/history/rewardsRecord",
+        "deposit_path": "/sapi/v1/capital/deposit/hisrec",
+        "withdraw_path": "/sapi/v1/capital/withdraw/history",
         "key_header": "X-MBX-APIKEY",
         "balances_field": "balances",
         "asset_field": "asset",
@@ -174,6 +182,15 @@ BUILTIN_PROFILES = {
         # demektir; uydurma bir yol yazmak sessiz başarısızlık üretirdi.
         "my_trades_path": "/api/v3/myTrades",
         "dust_log_path": "",
+        # FAZ F7b — MEXC'in Simple Earn karşılığı bir ödül geçmişi ucu YOK;
+        # boş bırakmak "bu yetenek burada yok" demektir. Para giriş/çıkış
+        # uçlarını ise Binance'ten klonluyor (ağırlık 1, en fazla 90 gün),
+        # o yüzden onlar tanımlı. MEXC varsayılanı son 7 gündür ama biz
+        # aralığı her zaman açıkça gönderdiğimiz için fark etmiyor.
+        "earn_flexible_path": "",
+        "earn_locked_path": "",
+        "deposit_path": "/api/v3/capital/deposit/hisrec",
+        "withdraw_path": "/api/v3/capital/withdraw/history",
         # MEXC imzalamayı Binance'ten birebir klonlar AMA anahtarı kendi
         # başlığında bekler. `X-MBX-APIKEY` gönderilirse başlık okunmaz ve
         # borsa, hiç başlık yollanmamış gibi `400 api key required` döner.
@@ -307,7 +324,8 @@ def validate_profile(spec: dict) -> tuple:
     temiz = {}
     for alan in ("location", "name", "family", "base_url", "account_path",
                  "time_path", "restrictions_path", "my_trades_path",
-                 "dust_log_path", "balances_field",
+                 "dust_log_path", "earn_flexible_path", "earn_locked_path",
+                 "deposit_path", "withdraw_path", "balances_field",
                  "asset_field", "free_field", "locked_field", "label",
                  "key_header", "key_expires_at"):
         deger = spec.get(alan)
@@ -331,7 +349,8 @@ def validate_profile(spec: dict) -> tuple:
     temiz["base_url"] = temiz["base_url"].rstrip("/")
 
     for alan in ("account_path", "time_path", "restrictions_path",
-                 "my_trades_path", "dust_log_path"):
+                 "my_trades_path", "dust_log_path", "earn_flexible_path",
+                 "earn_locked_path", "deposit_path", "withdraw_path"):
         if temiz[alan] and not temiz[alan].startswith("/"):
             temiz[alan] = "/" + temiz[alan]
 
@@ -415,7 +434,8 @@ def update_profile_fields(location: str, alanlar: dict) -> dict:
     # olmaması demekti; bunu söylemek zorundayız.
     for alan in ("location", "family", "base_url", "account_path",
                  "time_path", "restrictions_path", "my_trades_path",
-                 "dust_log_path", "key_header"):
+                 "dust_log_path", "earn_flexible_path", "earn_locked_path",
+                 "deposit_path", "withdraw_path", "key_header"):
         if alan not in istek:
             continue
         yeni = str(istek[alan] or "").strip()
@@ -983,6 +1003,200 @@ def dust_rows(ham):
 
 
 # =====================================================================
+# FAZ F7b — İŞLEM OLMAYAN AMA BAKİYEYİ DEĞİŞTİREN AKIŞLAR
+# =====================================================================
+# Bir spot işlem bakiyeyi değiştirir ve `myTrades`'te görünür. Ama bakiyeyi
+# değiştiren TEK şey o değil. Earn faizi her gün damlar, para giriş/çıkışı
+# her an olabilir ve hiçbiri işlem kaydına düşmez. Bunlar okunmazsa her biri
+# sonsuza kadar "açıklanamayan bakiye değişimi" üretir — ve günde birkaç
+# sahte uyarı, uyarının kendisini okunmaz hâle getirir.
+#
+# ÖLÇÜLEN KISITLAR (Binance belgeleri, 8 Eylül 2026):
+#   Earn ödülleri  ağırlık 150, en fazla 30 gün, sayfa boyu VARSAYILAN 10
+#   Para yatırma   ağırlık 1,   en fazla 90 gün, limit varsayılan/azami 1000
+#   Para çekme     UID 18000 (saniyede 10), en fazla 90 gün, limit 1000
+#
+# Sayfa boyu tuzağı gerçek: `size` gönderilmezse Earn ucu 10 satır döner ve
+# sistem "başka ödül yok" sanır. Her zaman 100 gönderiyoruz.
+EARN_WEIGHT = 150
+CAPITAL_WEIGHT = 1
+EARN_SAYFA_BOYU = 100          # uç varsayılanı 10; belirtmemek satır kaybettirir
+EARN_SAYFA_TAVANI = 3
+EARN_PENCERE_MS = 30 * 24 * 60 * 60 * 1000
+CAPITAL_PENCERE_MS = 90 * 24 * 60 * 60 * 1000
+
+# Para yatırma durumları. Yalnızca bakiyeye GERÇEKTEN geçmiş olanlar sayılır;
+# bekleyen bir yatırma henüz bakiyede yoktur ve onu saymak, olmayan bir parayı
+# açıklamak olurdu. 6 = "hesaba geçti ama çekilemez" — bakiyededir, sayılır.
+DEPOSIT_GECERLI_DURUMLAR = {1, 6}
+
+# Para çekme durumları. Binance bakiyeyi TALEP ANINDA düşer, tamamlandığında
+# değil. Bu yüzden ölçüt "tamamlandı mı" değil "iade edildi mi": iptal (1),
+# reddedildi (3) ve başarısız (5) dışındaki her durumda para bakiyeden çıkmıştır.
+WITHDRAW_IADE_DURUMLARI = {1, 3, 5}
+
+
+def _zaman_ms(deger):
+    """Borsanın zaman alanını milisaniyeye çevirir.
+
+    Binance para çekme geçmişinde `applyTime` bir SAYI değil
+    "2019-10-12 11:12:02" biçiminde bir metindir; para yatırmada ise
+    `insertTime` milisaniyedir. İki biçimi de kabul etmek zorundayız,
+    yoksa akışın yarısı sessizce okunamaz.
+    """
+    if deger is None or deger == "":
+        return 0
+    try:
+        return int(float(deger))
+    except (TypeError, ValueError):
+        pass
+    for bicim in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return int(datetime.strptime(str(deger).strip(), bicim).timestamp() * 1000)
+        except ValueError:
+            continue
+    return 0
+
+
+def _aralik(start_time_ms, end_time_ms, pencere_ms):
+    """(startTime, endTime) — HER ZAMAN ÇİFT.
+
+    Toz akışında öğrenilen ders: Binance aralık parametrelerini çift ister ve
+    tek taraflı bir istek `-1102` ile geri döner. Orada bu 22 saat boyunca
+    akışı sessizce öldürmüştü. Burada aralığı tek bir yerden üretiyoruz ki
+    aynı hata bir daha yapılamasın.
+
+    Pencere tavanı da burada uygulanır: imleç tavandan eskiyse başlangıç
+    kırpılır. Kırpmak veri kaybettirmez çünkü ilk tarama zaten yalnızca
+    başlangıç noktası kurar ve düzenli turlarda imleç dakikalar önceye aittir.
+    """
+    simdi = int(time.time() * 1000)
+    bitis = int(end_time_ms) if end_time_ms else simdi
+    baslangic = int(start_time_ms) if start_time_ms else (bitis - pencere_ms)
+    if bitis - baslangic > pencere_ms:
+        baslangic = bitis - pencere_ms
+    return baslangic, bitis
+
+
+def fetch_earn_rewards(profil, locked=False, start_time_ms=None,
+                       end_time_ms=None, api_key=None, api_secret=None):
+    """Simple Earn ödül geçmişi. **Salt okuma (GET), ağırlık 150.**
+
+    `locked=True` vadeli ürünlerin ödüllerini verir; ikisi ayrı uçtur ve
+    biri diğerinin satırlarını içermez.
+
+    Sayfalama `current` ile yapılır. Tavan bilinçli olarak düşük (3 sayfa =
+    300 satır): 30 günlük pencerede bundan fazla ödül satırı olması, beş
+    dakikada bir çalışan bir tur için anlamlı değil ve ağırlığı 150 olan bir
+    ucu gereksiz yere zorlamanın karşılığı yok.
+    """
+    alan = "earn_locked_path" if locked else "earn_flexible_path"
+    yol = endpoint_path(profil, alan)
+    if not yol:
+        raise ExchangeError(
+            f"{profil.get('name') or profil.get('location')} Simple Earn ödül "
+            "geçmişi için bir uç sunmuyor.")
+
+    konum = str(profil.get("location") or "").upper().strip()
+    anahtar, gizli = _anahtarlar(konum, api_key, api_secret)
+    baslangic, bitis = _aralik(start_time_ms, end_time_ms, EARN_PENCERE_MS)
+
+    satirlar = []
+    for sayfa in range(1, EARN_SAYFA_TAVANI + 1):
+        ham = signed_get(profil, yol, anahtar, gizli, {
+            "startTime": baslangic, "endTime": bitis,
+            "current": sayfa, "size": EARN_SAYFA_BOYU,
+        })
+        parca = earn_rows(ham, locked=locked)
+        satirlar.extend(parca)
+        if len(parca) < EARN_SAYFA_BOYU:
+            break
+    return satirlar
+
+
+def earn_rows(ham, locked=False):
+    """Earn cevabını düz satırlara açar. **Ağa çıkmaz.**
+
+    Esnek üründe miktar alanı `rewards`, vadelide `amount`. Aynı şeyi iki
+    ayrı adla döndürmeleri borsanın biçimine ait bir ayrıntıdır ve bu modülün
+    dışına sızmamalı.
+    """
+    if isinstance(ham, list):
+        rows = ham
+    elif isinstance(ham, dict):
+        rows = ham.get("rows")
+        if rows is None and isinstance(ham.get("data"), dict):
+            rows = ham["data"].get("rows")
+    else:
+        raise ExchangeError("Earn ödül yanıtı beklenen biçimde değil.")
+    if not isinstance(rows, list):
+        return []
+
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        varlik = str(r.get("asset") or "").upper().strip()
+        miktar = r.get("amount") if locked else r.get("rewards")
+        if miktar is None:
+            miktar = r.get("rewards", r.get("amount"))
+        zaman = _zaman_ms(r.get("time"))
+        if not varlik or zaman <= 0:
+            continue
+        out.append({
+            "asset": varlik,
+            "amount": float(miktar or 0.0),
+            "time": zaman,
+            "locked": bool(locked),
+            # Kimliği kuracak alan. Esnekte `projectId`, vadelide
+            # `positionId`; ikisi de yoksa zaman + varlık yeterince ayırt eder.
+            "ref": str(r.get("positionId") or r.get("projectId")
+                       or r.get("type") or "").strip(),
+            "reward_type": str(r.get("type") or "").strip(),
+        })
+    return out
+
+
+def fetch_deposits(profil, start_time_ms=None, end_time_ms=None,
+                   api_key=None, api_secret=None):
+    """Para yatırma geçmişi. **Salt okuma (GET), ağırlık 1.**"""
+    return _capital_gecmisi(profil, "deposit_path", start_time_ms,
+                            end_time_ms, api_key, api_secret)
+
+
+def fetch_withdrawals(profil, start_time_ms=None, end_time_ms=None,
+                      api_key=None, api_secret=None):
+    """Para çekme geçmişi. **Salt okuma (GET).**
+
+    Ağırlığı IP değil UID tabanlıdır (18000, saniyede 10 istek). Beş
+    dakikada bir tek çağrı bu sınırın yanından bile geçmez.
+    """
+    return _capital_gecmisi(profil, "withdraw_path", start_time_ms,
+                            end_time_ms, api_key, api_secret)
+
+
+def _capital_gecmisi(profil, alan, start_time_ms, end_time_ms,
+                     api_key, api_secret):
+    yol = endpoint_path(profil, alan)
+    if not yol:
+        raise ExchangeError(
+            f"{profil.get('name') or profil.get('location')} bu para hareketi "
+            "geçmişi için bir uç sunmuyor.")
+
+    konum = str(profil.get("location") or "").upper().strip()
+    anahtar, gizli = _anahtarlar(konum, api_key, api_secret)
+    baslangic, bitis = _aralik(start_time_ms, end_time_ms, CAPITAL_PENCERE_MS)
+
+    ham = signed_get(profil, yol, anahtar, gizli,
+                     {"startTime": baslangic, "endTime": bitis, "limit": 1000})
+    if isinstance(ham, dict):
+        ham = ham.get("rows") or ham.get("data") or []
+    if not isinstance(ham, list):
+        raise ExchangeError("Para hareketi yanıtı beklenen biçimde değil.")
+    return ham
+
+
+# =====================================================================
 # Toplu okuma
 # =====================================================================
 def read_all(only_enabled=True) -> dict:
@@ -1067,6 +1281,10 @@ def status() -> dict:
         # kullanıcının "toz dönüşümüm neden çıkmadı" diye kod aramaması
         # gereken tek yer burasıdır.
         "capabilities": {k: {"trades": supports(p, "my_trades_path"),
-                             "dust": supports(p, "dust_log_path")}
+                             "dust": supports(p, "dust_log_path"),
+                             "earn": (supports(p, "earn_flexible_path")
+                                      or supports(p, "earn_locked_path")),
+                             "transfers": (supports(p, "deposit_path")
+                                           or supports(p, "withdraw_path"))}
                          for k, p in profiller.items()},
     }

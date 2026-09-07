@@ -40,10 +40,34 @@ TASARIM KURALLARI
 
 3) AÇIKLAYAMADIĞIMIZ DEĞİŞİMİ SAKLAMAYIZ.
    Her taramada bakiye fotoğrafı alınır. Bir varlığın miktarı değişmiş ama
-   bunu açıklayan bir işlem bulunamamışsa kullanıcıya SUSULMAZ; "şu varlık
-   şu kadar değişti, sebebini göremiyorum" denir. Para yatırma/çekme, Earn
-   ve vadeli transferleri bu sürümün kapsamı dışında — kapsam dışı olmak,
-   görünmez olmak demek değildir.
+   bunu açıklayan bir olay bulunamamışsa kullanıcıya SUSULMAZ; "şu varlık
+   şu kadar değişti, sebebini göremiyorum" denir.
+
+   ...AMA BU UYARI GÜRÜLTÜYE BOĞULURSA ÖLÜR. (FAZ F7b)
+   7 Eylül 2026'da gelen kutusunda `+0.00040177 APT` göründü ve doğru
+   şekilde "açıklanamayan" dendi. Doğruydu — ama Simple Earn HER GÜN faiz
+   ödüyor, yani Earn'de duran her varlık her gün böyle bir satır üretecekti.
+   Birkaç gün sonra kullanıcı o satırları okumadan kapatmayı öğrenir ve
+   uyarı, tam da onu çalışır hâle getirmek için uğraştığımız hafta değerini
+   kaybederdi. Bir uyarının değeri, ne kadar sık haklı olduğuyla ölçülür.
+
+   Bu yüzden bakiyeyi değiştiren ama işlem OLMAYAN akışlar da okunur:
+   Simple Earn ödülleri (esnek + vadeli), para yatırma ve para çekme.
+   Geriye kalan gerçek boşluk vadeli/marj hesap transferleridir ve o hâlâ
+   açıklanamayan olarak görünür — kapsam dışı olmak, görünmez olmak
+   demek değildir.
+
+6) HER GELİR DEFTERE YAZILMAZ; HER BAKİYE HAREKETİ GELİR DEĞİLDİR. (F7b)
+   Earn ödülü deftere İŞLENEBİLİR: alındığı günün piyasa fiyatıyla yeni bir
+   açık lot olur (kullanıcı kararı, 8 Eylül 2026). Böylece gelir elde
+   edildiği andaki değeriyle maliyet tabanına döner ve sonraki satışta
+   yalnızca aradaki fark kâr sayılır.
+
+   Para giriş/çıkışı deftere İŞLENEMEZ. Bir para girişi çoğu zaman başka
+   bir konumdan gelen transferdir ve maliyeti zaten defterde durur; onu
+   "alım" diye yazmak maliyeti bilinmeyen bir lot uydurmak, yani maliyet
+   tabanını sessizce bozmak olurdu. Bu satırlar bakiye değişimini açıklar
+   ve kullanıcıyı Transfer özelliğine yönlendirir.
 
 4) İLK TARAMA YALNIZCA BAŞLANGIÇ NOKTASI KURAR.
    Bir sembol ilk kez tarandığında hiçbir işlem "bekliyor" listesine
@@ -85,8 +109,17 @@ SAYFA_TAVANI = 5
 # Aynı anda kaç borsa taranır.
 PARALEL_ISCI = 2
 
-# Toz dönüşümü akışının imleç adı (sembol değil, hesap düzeyinde bir akış).
+# Hesap düzeyindeki akışların imleç adları (sembol değil).
 TOZ_KAPSAMI = "__dust__"
+EARN_ESNEK_KAPSAMI = "__earn_flex__"
+EARN_VADELI_KAPSAMI = "__earn_locked__"
+YATIRMA_KAPSAMI = "__deposit__"
+CEKME_KAPSAMI = "__withdraw__"
+
+# Hepsi hesap düzeyinde: hangi varlığı etkilediklerini önceden bilemeyiz, o
+# yüzden biri hata verdiğinde bakiye fotoğrafının TAMAMI eski hâlinde bırakılır.
+HESAP_KAPSAMLARI = (TOZ_KAPSAMI, EARN_ESNEK_KAPSAMI, EARN_VADELI_KAPSAMI,
+                    YATIRMA_KAPSAMI, CEKME_KAPSAMI)
 
 # Bakiye farkı eşleştirme toleransı. Borsa miktarları ondalık basamak
 # yuvarlamasıyla geliyor; birebir eşitlik aramak her turda sahte "açıklanamayan
@@ -106,6 +139,28 @@ GECERSIZ_SEMBOL_IZLERI = ("-1121", "invalid symbol", "invalid_symbol")
 TRADE = "TRADE"
 DUST = "DUST"
 UNEXPLAINED = "UNEXPLAINED"
+
+# FAZ F7b. Üçü de bakiyeyi değiştirir ama hiçbiri spot işlem değildir.
+#
+# EARN deftere İŞLENEBİLİR: gelir, alındığı günün piyasa fiyatıyla yeni bir
+# açık lot olur. Bu kullanıcının açık kararıdır (8 Eylül 2026). Gerekçesi
+# standart muhasebe: gelir, elde edildiği andaki gerçeğe uygun değeriyle
+# maliyet tabanına döner, sonraki satışta yalnızca aradaki fark kâr sayılır.
+# Sıfır maliyetli yazmak geliri kazanıldığı yıldan satıldığı yıla taşırdı.
+#
+# DEPOSIT/WITHDRAW deftere İŞLENEMEZ. Bir para girişi çoğu zaman başka bir
+# konumdan gelen TRANSFERDİR ve uygulamanın bunun için kendi özelliği var.
+# Girişi "alım" diye yazmak, maliyeti bilinmeyen bir lot uydurmak demektir;
+# bu, maliyet tabanını sessizce bozar. Bu satırlar bakiye değişimini açıklar
+# ve kullanıcıyı Transfer özelliğine yönlendirir — o kadar.
+EARN = "EARN"
+DEPOSIT = "DEPOSIT"
+WITHDRAW = "WITHDRAW"
+
+# Bakiye farkını açıklayabilen olay türleri. UNEXPLAINED burada YOKTUR:
+# o bizim kendi gözlemimizdir ve onunla mahsup etmek bir farkı kendisiyle
+# açıklamak, yani çift saymak olurdu.
+ACIKLAYICI_TURLER = (TRADE, DUST, EARN, DEPOSIT, WITHDRAW)
 
 
 # =====================================================================
@@ -217,6 +272,135 @@ def normalize_dust(exchange, satir):
         "trade_ts": _f(zaman_ms) / 1000.0,
         "raw_json": _json_dump(satir),
         "_operate_time": int(_f(zaman_ms)),
+    }
+
+
+def normalize_earn(exchange, satir):
+    """Simple Earn ödül satırını olay sözlüğüne çevirir.
+
+    Bu bir GELİRDİR: karşılığında hiçbir şey verilmez, karşı varlık yoktur,
+    komisyon yoktur. `price` burada 0 bırakılır çünkü ödülün kendi fiyatı
+    yoktur — deftere işlenirken ALINDIĞI GÜNÜN piyasa fiyatı kullanılır ve
+    o fiyat bu satırın değil, işleme anının bilgisidir.
+    """
+    borsa = str(exchange or "").upper().strip()
+    varlik = str(satir.get("asset") or "").upper().strip()
+    miktar = _f(satir.get("amount"))
+    zaman_ms = _f(satir.get("time"))
+    if not varlik or miktar <= 0 or zaman_ms <= 0:
+        raise ValueError("Earn ödül satırı eksik")
+
+    # Kimlik zamandan ve varlıktan kuruluyor: uçların ikisi de kararlı bir
+    # satır kimliği vermiyor. Aynı varlığa aynı milisaniyede iki ayrı ödül
+    # yazılması pratikte olmayan bir durum; `ref` de ayırt ediciliği artırır.
+    ref = str(satir.get("ref") or "").strip()
+    tur = "locked" if satir.get("locked") else "flex"
+    return {
+        "event_uid": f"{borsa}:earn:{tur}:{varlik}:{int(zaman_ms)}:{ref}",
+        "exchange": borsa,
+        "kind": EARN,
+        "symbol": varlik,
+        "base_asset": varlik,
+        "quote_asset": "",
+        "side": "BUY",
+        "qty": miktar,
+        "price": 0.0,
+        "quote_qty": 0.0,
+        "fee_asset": "",
+        "fee_qty": 0.0,
+        "trade_at": _iso(zaman_ms),
+        "trade_ts": zaman_ms / 1000.0,
+        "raw_json": _json_dump(satir),
+        "_operate_time": int(zaman_ms),
+    }
+
+
+def normalize_deposit(exchange, satir):
+    """Para yatırma satırını olay sözlüğüne çevirir.
+
+    Yalnızca bakiyeye GERÇEKTEN geçmiş yatırmalar olay olur; bekleyen bir
+    yatırma henüz bakiyede değildir ve onu saymak, olmayan bir parayla bir
+    farkı açıklamak olurdu.
+    """
+    import exchanges
+
+    borsa = str(exchange or "").upper().strip()
+    varlik = str(satir.get("coin") or "").upper().strip()
+    miktar = _f(satir.get("amount"))
+    durum = int(_f(satir.get("status"), -1))
+    zaman_ms = exchanges._zaman_ms(satir.get("insertTime")
+                                   or satir.get("completeTime"))
+    if not varlik or miktar <= 0 or zaman_ms <= 0:
+        raise ValueError("para yatırma satırı eksik")
+    if durum not in exchanges.DEPOSIT_GECERLI_DURUMLAR:
+        raise ValueError(f"para yatırma bakiyeye geçmemiş (durum {durum})")
+
+    kimlik = str(satir.get("id") or satir.get("txId") or int(zaman_ms))
+    return {
+        "event_uid": f"{borsa}:deposit:{varlik}:{kimlik}",
+        "exchange": borsa,
+        "kind": DEPOSIT,
+        "symbol": varlik,
+        "base_asset": varlik,
+        "quote_asset": "",
+        "side": "BUY",
+        "qty": miktar,
+        "price": 0.0,
+        "quote_qty": 0.0,
+        "fee_asset": "",
+        "fee_qty": 0.0,
+        "trade_at": _iso(zaman_ms),
+        "trade_ts": zaman_ms / 1000.0,
+        "raw_json": _json_dump(satir),
+        "_operate_time": int(zaman_ms),
+    }
+
+
+def normalize_withdraw(exchange, satir):
+    """Para çekme satırını olay sözlüğüne çevirir.
+
+    İKİ AYRI TUTAR VAR ve ikisi de bakiyeden çıkar: gönderilen miktar ve ağ
+    komisyonu. Yalnızca `amount` sayılırsa komisyon kadar bir fark her
+    seferinde "açıklanamayan" olarak kalırdı.
+
+    Ölçüt "tamamlandı mı" DEĞİLDİR: Binance bakiyeyi talep anında düşer.
+    Para ancak iptal/ret/başarısızlık hâlinde geri gelir.
+    """
+    import exchanges
+
+    borsa = str(exchange or "").upper().strip()
+    varlik = str(satir.get("coin") or "").upper().strip()
+    miktar = _f(satir.get("amount"))
+    komisyon = _f(satir.get("transactionFee"))
+    durum = int(_f(satir.get("status"), -1))
+    zaman_ms = exchanges._zaman_ms(satir.get("applyTime")
+                                   or satir.get("completeTime"))
+    if not varlik or miktar <= 0 or zaman_ms <= 0:
+        raise ValueError("para çekme satırı eksik")
+    if durum in exchanges.WITHDRAW_IADE_DURUMLARI:
+        raise ValueError(f"para çekme iade edilmiş (durum {durum})")
+
+    kimlik = str(satir.get("id") or satir.get("txId") or int(zaman_ms))
+    return {
+        "event_uid": f"{borsa}:withdraw:{varlik}:{kimlik}",
+        "exchange": borsa,
+        "kind": WITHDRAW,
+        "symbol": varlik,
+        "base_asset": varlik,
+        "quote_asset": "",
+        "side": "SELL",
+        "qty": miktar,
+        "price": 0.0,
+        "quote_qty": 0.0,
+        # Ağ komisyonu çekilen varlığın KENDİSİNDEN gider; `olay_bakiye_etkisi`
+        # satışlarda komisyonu kendi varlığından düştüğü için toplam etki
+        # doğru şekilde -(miktar + komisyon) olur.
+        "fee_asset": varlik,
+        "fee_qty": komisyon,
+        "trade_at": _iso(zaman_ms),
+        "trade_ts": zaman_ms / 1000.0,
+        "raw_json": _json_dump(satir),
+        "_operate_time": int(zaman_ms),
     }
 
 
@@ -501,12 +685,16 @@ class TradeSyncService:
                 archive.set_sync_cursor(konum, sembol, error=e)
                 logger.debug("Sembol taranamadı (%s/%s): %s", konum, sembol, e)
 
-        toz_sonuc = self._tozu_cek(konum, profil)
-        olaylar.extend(toz_sonuc["events"])
-        if toz_sonuc.get("error"):
-            hatalar.append({"scope": TOZ_KAPSAMI, "error": toz_sonuc["error"]})
-        if toz_sonuc.get("baseline"):
-            temel_kurulan.append(TOZ_KAPSAMI)
+        # Hesap düzeyindeki akışlar. Hiçbiri spot işlem değil ama hepsi
+        # bakiyeyi değiştiriyor; okunmazlarsa her biri sonsuza kadar
+        # "açıklanamayan değişim" üretir.
+        for kapsam in HESAP_KAPSAMLARI:
+            sonuc = self._akisi_cek(konum, profil, kapsam)
+            olaylar.extend(sonuc["events"])
+            if sonuc.get("error"):
+                hatalar.append({"scope": kapsam, "error": sonuc["error"]})
+            if sonuc.get("baseline"):
+                temel_kurulan.append(kapsam)
 
         # Açıklanamayan değişimler yalnızca ELDE ÖNCEKİ FOTOĞRAF VARSA
         # anlamlıdır. İlk taramada her varlık "değişmiş" görünür ve hepsini
@@ -581,7 +769,7 @@ class TradeSyncService:
 
         birlesik, gorulen = [], set()
         for o in list(olaylar or []) + archive.events_since(
-                konum, fotograf_ts, kinds=(TRADE, DUST)):
+                konum, fotograf_ts, kinds=ACIKLAYICI_TURLER):
             uid = str(o.get("event_uid") or "")
             if uid and uid in gorulen:
                 continue
@@ -611,8 +799,9 @@ class TradeSyncService:
         yazilacak = dict(simdiki)
         for h in (hatalar or []):
             kapsam = str(h.get("scope") or "")
-            if kapsam == TOZ_KAPSAMI:
-                # Toz akışı hangi varlığı etkilediğini bilmiyoruz; fotoğrafın
+            if kapsam in HESAP_KAPSAMLARI:
+                # Hesap düzeyindeki akışlar (toz, Earn, para giriş/çıkışı)
+                # hangi varlığı etkilediklerini önceden söylemez; fotoğrafın
                 # tamamı eski hâlinde bırakılır.
                 return dict(onceki)
             for varlik in (onceki.keys() | simdiki.keys()):
@@ -676,48 +865,109 @@ class TradeSyncService:
         archive.set_sync_cursor(konum, sembol, cursor=en_buyuk)
         return olaylar, temel_kurulmadi
 
-    def _tozu_cek(self, konum, profil):
-        """Toz dönüşümü akışı. Desteklenmiyorsa sessizce boş döner."""
+    def _akis_tanimi(self, kapsam):
+        """Bir hesap akışının hangi uçtan okunacağı ve nasıl çözüleceği.
+
+        Beş akış da AYNI iskelete sahip: yetenek var mı, imleci oku, çek,
+        satırları çevir, imleçten yenileri al, imleci ilerlet. Bu iskeleti
+        beş kez kopyalamak, toz akışında bulunan türden bir hatanın diğer
+        dördünde fark edilmeden yaşamasına açık kapı bırakırdı. Farklılıklar
+        veri olarak buradadır; akıl `_akisi_cek` içinde tektir.
+        """
+        import exchanges
+
+        tanimlar = {
+            TOZ_KAPSAMI: {
+                "field": "dust_log_path",
+                "fetch": lambda p, since: exchanges.fetch_dust_log(p),
+                "parse": normalize_dust,
+                "label": "Toz dönüşümü",
+            },
+            EARN_ESNEK_KAPSAMI: {
+                "field": "earn_flexible_path",
+                "fetch": lambda p, since: exchanges.fetch_earn_rewards(
+                    p, locked=False, start_time_ms=since),
+                "parse": normalize_earn,
+                "label": "Earn (esnek) ödülleri",
+            },
+            EARN_VADELI_KAPSAMI: {
+                "field": "earn_locked_path",
+                "fetch": lambda p, since: exchanges.fetch_earn_rewards(
+                    p, locked=True, start_time_ms=since),
+                "parse": normalize_earn,
+                "label": "Earn (vadeli) ödülleri",
+            },
+            YATIRMA_KAPSAMI: {
+                "field": "deposit_path",
+                "fetch": lambda p, since: exchanges.fetch_deposits(
+                    p, start_time_ms=since),
+                "parse": normalize_deposit,
+                "label": "Para yatırma",
+            },
+            CEKME_KAPSAMI: {
+                "field": "withdraw_path",
+                "fetch": lambda p, since: exchanges.fetch_withdrawals(
+                    p, start_time_ms=since),
+                "parse": normalize_withdraw,
+                "label": "Para çekme",
+            },
+        }
+        return tanimlar.get(kapsam)
+
+    def _akisi_cek(self, konum, profil, kapsam):
+        """Hesap düzeyindeki bir akış. Desteklenmiyorsa sessizce boş döner.
+
+        SÜZME HER ZAMAN YERELDE YAPILIR. Uca bir aralık göndersek bile
+        (Earn ve para hareketlerinde gönderiyoruz, çünkü aksi hâlde 30-90
+        günü her turda yeniden çekerdik) dönen satırları imlece göre kendimiz
+        eleriz. Sunucu tarafı filtreye güvenmek toz akışında 22 saatlik
+        sessiz bir ölüme yol açmıştı; o dersi burada tekrarlamıyoruz.
+        """
         import archive
         import exchanges
 
-        if not exchanges.supports(profil, "dust_log_path"):
+        tanim = self._akis_tanimi(kapsam)
+        if not tanim or not exchanges.supports(profil, tanim["field"]):
             return {"events": [], "supported": False}
 
-        durum = archive.get_sync_cursor(konum, TOZ_KAPSAMI) or {}
+        durum = archive.get_sync_cursor(konum, kapsam) or {}
         ham_imlec = durum.get("cursor")
         temel_kurulmadi = ham_imlec is None
         imlec_basi = int(_f(ham_imlec, 0.0)) if ham_imlec is not None else 0
         son_zaman = imlec_basi
 
-        # ARALIK GÖNDERMİYORUZ, YERELDE SÜZÜYORUZ. Uç zaten yalnızca son 100
-        # kaydı veriyor, ağırlığı 1 ve toz dönüşümü saatte en fazla bir kez
-        # yapılabiliyor; beş dakikada bir bakan bir tarama için sunucu tarafı
-        # aralık filtresinin kazandıracağı hiçbir şey yok. Buna karşılık
-        # `startTime`/`endTime` çiftini yanlış kurmak akışın tamamını
-        # susturuyordu — canlı hesapta böyle oldu. Süzmeyi kendimiz yapınca
-        # o kırılganlık ortadan kalkıyor.
         try:
-            satirlar = exchanges.fetch_dust_log(profil)
+            # İmleç milisaniye; ucun beklediği de o. Temel kurulmadıysa
+            # aralığı uca bırakırız (varsayılan pencere yeter, zaten hiçbir
+            # olay üretmeyeceğiz).
+            satirlar = tanim["fetch"](profil,
+                                      None if temel_kurulmadi else imlec_basi + 1)
         except Exception as e:
-            archive.set_sync_cursor(konum, TOZ_KAPSAMI, error=e)
-            logger.debug("Toz dönüşümü okunamadı (%s): %s", konum, e)
+            archive.set_sync_cursor(konum, kapsam, error=e)
+            logger.debug("%s okunamadı (%s): %s", tanim["label"], konum, e)
             return {"events": [], "supported": True, "error": str(e)[:200]}
 
         olaylar = []
         for satir in satirlar:
             try:
-                olay = normalize_dust(konum, satir)
+                olay = tanim["parse"](konum, satir)
             except Exception as e:
-                logger.debug("Toz satırı okunamadı: %s", e)
+                # Kapsam dışı satırlar (iade edilmiş çekme, bekleyen yatırma)
+                # da buraya düşer ve atlanmaları DOĞRUDUR.
+                logger.debug("%s satırı atlandı: %s", tanim["label"], e)
                 continue
             son_zaman = max(son_zaman, olay["_operate_time"])
             if not temel_kurulmadi and olay["_operate_time"] > imlec_basi:
                 olaylar.append(olay)
 
-        archive.set_sync_cursor(konum, TOZ_KAPSAMI, cursor=son_zaman)
+        archive.set_sync_cursor(konum, kapsam, cursor=son_zaman)
         return {"events": olaylar, "supported": True,
                 "baseline": temel_kurulmadi}
+
+    def _tozu_cek(self, konum, profil):
+        """Geriye dönük uyumluluk için bırakıldı; toz artık genel akış
+        yolundan geçiyor."""
+        return self._akisi_cek(konum, profil, TOZ_KAPSAMI)
 
     def _anomali_olayi(self, konum, anomali):
         """Açıklanamayan bakiye değişimini gelen kutusuna yazar.
@@ -774,9 +1024,37 @@ class TradeSyncService:
         if olay.get("kind") == UNEXPLAINED:
             return {"applicable": False,
                     "reason": ("Bu bir borsa işlemi değil, açıklanamayan bir "
-                               "bakiye değişimi. Para yatırma/çekme, Earn veya "
-                               "vadeli transferi olabilir; bu sürüm onları "
-                               "okumuyor. Deftere işlenemez.")}
+                               "bakiye değişimi. Vadeli hesap transferi veya "
+                               "bu sürümün okumadığı başka bir akış olabilir. "
+                               "Deftere işlenemez.")}
+
+        if olay.get("kind") == DEPOSIT:
+            return {"applicable": False,
+                    "reason": ("Para girişi deftere ALIM olarak yazılmaz: "
+                               "bu coin çoğu zaman başka bir konumdan gelen "
+                               "bir transferdir ve maliyeti zaten defterde "
+                               "duruyor. Girişi alım saymak, maliyeti "
+                               "bilinmeyen bir lot uydurmak olurdu. Konumlar "
+                               "arası taşıma için Transfer özelliğini "
+                               "kullanın.")}
+
+        if olay.get("kind") == WITHDRAW:
+            return {"applicable": False,
+                    "reason": ("Para çıkışı deftere SATIŞ olarak yazılmaz: "
+                               "coin satılmadı, yalnızca yer değiştirdi. "
+                               "Gerçekten elden çıktıysa Zarar Yaz, başka bir "
+                               "konuma gittiyse Transfer kullanın.")}
+
+        if olay.get("kind") == EARN:
+            ipucu = {"applicable": True, "action": "earn",
+                     "reason": ("Earn geliri, ALINDIĞI GÜNÜN piyasa fiyatıyla "
+                                "yeni bir açık lot olarak eklenir. Böylece "
+                                "sonraki satışta yalnızca aradaki fiyat farkı "
+                                "kâr sayılır.")}
+            benzer = self._benzer_defter_kaydi(defter, olay)
+            if benzer:
+                ipucu["possible_duplicate"] = benzer
+            return ipucu
 
         # Çift kayıt ipucu HER durumda hesaplanır ve en çok "işlenemez"
         # durumunda gerekir: satış zaten elle işlenmişse açık lot kalmaz ve
@@ -889,6 +1167,17 @@ class TradeSyncService:
             raise ValueError(
                 "Açıklanamayan bakiye değişimi deftere işlenemez. Bu bir borsa "
                 "işlem kaydı değil, bizim gözlemimizdir.")
+        if olay.get("kind") == DEPOSIT:
+            raise ValueError(
+                "Para girişi deftere alım olarak işlenemez: bu coin çoğu zaman "
+                "başka bir konumdan gelen bir transferdir ve maliyeti zaten "
+                "defterde durur. Konumlar arası taşıma için Transfer "
+                "özelliğini kullanın.")
+        if olay.get("kind") == WITHDRAW:
+            raise ValueError(
+                "Para çıkışı deftere satış olarak işlenemez: coin satılmadı, "
+                "yalnızca yer değiştirdi. Başka bir konuma gittiyse Transfer, "
+                "gerçekten elden çıktıysa Zarar Yaz kullanın.")
 
         konum = normalize_location(str(olay.get("exchange") or ""))
         taban = str(olay.get("base_asset") or "").upper()
@@ -898,7 +1187,19 @@ class TradeSyncService:
             raise ValueError("İşlem miktarı sıfır; deftere işlenecek bir şey yok.")
 
         tarih = str(olay.get("trade_at") or "")[:10] or None
-        birim = self._dolar_fiyati(olay, live_prices)
+        if olay.get("kind") == EARN:
+            # Earn ödülünün kendi fiyatı yoktur; karşılığında hiçbir şey
+            # verilmemiştir. Kullanıcının kararı gereği ALINDIĞI GÜNÜN piyasa
+            # fiyatı maliyet tabanı olur.
+            birim = self._odul_fiyati(taban, tarih, live_prices)
+            if birim is None:
+                raise ValueError(
+                    f"{taban} için {tarih} tarihli fiyat bulunamadı; Earn "
+                    "geliri uydurma bir fiyatla deftere yazılamaz. İnternet "
+                    "bağlantınızı kontrol edip tekrar deneyin ya da kaydı "
+                    "elle girin.")
+        else:
+            birim = self._dolar_fiyati(olay, live_prices)
         if birim is None:
             raise ValueError(
                 f"Bu işlemin dolar fiyatı hesaplanamadı: karşı varlık "
@@ -960,8 +1261,17 @@ class TradeSyncService:
             "qty": miktar,
             "cost": birim,
             "status": "Aktif",
-            "notes": (f"Borsadan yakalandı ({olay.get('trade_at')}) | "
-                      f"{olay.get('symbol')} @ {_f(olay.get('price')):g}"),
+            # Earn geliri ile alım aynı şey değil ve defterde de aynı
+            # görünmemeli: birinde para verildi, diğerinde verilmedi. Notun
+            # fiyatın NEREDEN geldiğini söylemesi şart, çünkü ödülün kendi
+            # fiyatı yoktur — o fiyat bizim koyduğumuz bir ölçümdür.
+            "notes": (
+                (f"Earn geliri ({olay.get('trade_at')}) | {miktar:g} "
+                 f"{olay.get('base_asset')} | alındığı günün fiyatı "
+                 f"${birim:,.6g}")
+                if olay.get("kind") == EARN else
+                (f"Borsadan yakalandı ({olay.get('trade_at')}) | "
+                 f"{olay.get('symbol')} @ {_f(olay.get('price')):g}")),
             "category": DEFAULT_CATEGORIES.get(sembol,
                                                DEFAULT_CATEGORIES.get(
                                                    str(olay.get("base_asset")),
@@ -975,6 +1285,43 @@ class TradeSyncService:
         defter["next_tx_id"] = next_id + 1
         save_portfolio(defter)
         return {"transaction": kayit}
+
+    def _odul_fiyati(self, varlik, tarih, live_prices=None):
+        """Earn ödülünün ALINDIĞI GÜNKÜ dolar fiyatı.
+
+        Ödül bugüne aitse canlı fiyat zaten o günün fiyatıdır ve ağa çıkmaya
+        gerek yok. Daha eskiyse (uygulama günlerce kapalı kaldıysa olur)
+        o günün günlük kapanışı çekilir.
+
+        NEDEN UYDURMUYORUZ: maliyet tabanı vergi sonucu doğuran bir sayıdır.
+        Bir haftalık ödülü bugünün fiyatıyla yazmak, o hafta içindeki her
+        fiyat hareketini sessizce kâr veya zarara çevirirdi. Fiyat
+        bulunamazsa işlem REDDEDİLİR — yanlış bir sayıyı doğru gibi deftere
+        yazmaktansa kullanıcıdan elle girmesini istemek dürüsttür.
+        """
+        varlik = str(varlik or "").upper().strip()
+        if not varlik:
+            return None
+        if varlik in NAKIT_VARLIKLAR:
+            return 1.0
+
+        bugun = datetime.now().strftime("%Y-%m-%d")
+        if not tarih or tarih == bugun:
+            # Bugünün ödülü için canlı fiyat ZATEN o günün fiyatıdır; ağa
+            # ikinci kez çıkmanın karşılığı yok. Anahtar biçimini
+            # (`APTUSDT` / `APT`) bilen tek yer `_varlik_dolari` olsun.
+            fiyat = self._varlik_dolari(varlik, live_prices)
+            if fiyat and fiyat > 0:
+                return fiyat
+
+        try:
+            import price_service
+            kapanis = price_service.price_service.gunluk_kapanis(varlik, tarih)
+            if kapanis and kapanis > 0:
+                return kapanis
+        except Exception as e:
+            logger.debug("Günlük kapanış alınamadı (%s/%s): %s", varlik, tarih, e)
+        return None
 
     def _dolar_fiyati(self, olay, live_prices=None):
         """Birim fiyatı dolara çevirir.

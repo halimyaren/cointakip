@@ -4576,6 +4576,30 @@ function portfolioApp() {
       }
     },
 
+    // Olay türü rozetleri. Etiket ve renk tek yerde durur; HTML içinde uzun
+    // bir üçlü operatör zinciri hem okunmaz hem de yeni bir tür eklendiğinde
+    // iki ayrı yerde güncellenmeyi bekler.
+    exchangeKindLabel(ev) {
+      return ({
+        DUST: 'TOZ DÖNÜŞÜMÜ',
+        UNEXPLAINED: 'AÇIKLANAMAYAN',
+        EARN: 'EARN GELİRİ',
+        DEPOSIT: 'PARA GİRİŞİ',
+        WITHDRAW: 'PARA ÇIKIŞI',
+      })[ev.kind] || (ev.side === 'BUY' ? 'ALIM' : 'SATIŞ');
+    },
+
+    exchangeKindClass(ev) {
+      return ({
+        DUST: 'bg-amber-500/15 text-amber-300',
+        UNEXPLAINED: 'bg-rose-500/15 text-rose-300',
+        EARN: 'bg-emerald-500/15 text-emerald-300',
+        DEPOSIT: 'bg-indigo-500/15 text-indigo-300',
+        WITHDRAW: 'bg-indigo-500/15 text-indigo-300',
+      })[ev.kind] || (ev.side === 'BUY' ? 'bg-emerald-500/15 text-emerald-300'
+                                        : 'bg-sky-500/15 text-sky-300');
+    },
+
     get exchangeInboxVisible() {
       if (this.exchangeInboxOpen === null) {
         // Kilitli kasa da kutuyu açar. Bekleyen işlem "yok" görünmesinin en
@@ -4630,6 +4654,19 @@ function portfolioApp() {
       return yok.join(', ') + ' küçük bakiye (toz) dönüşümü geçmişi için bir ' +
              'API ucu sunmuyor; orada yapılan dönüşümler yakalanamaz, ' +
              'yalnızca "açıklanamayan bakiye değişimi" olarak görünür.';
+    },
+
+    // FAZ F7b — Earn yeteneği olmayan borsalar. MEXC'in Simple Earn
+    // karşılığı bir ödül geçmişi ucu yok; orada staking gelirleri
+    // açıklanamayan olarak kalmaya devam eder ve bu SÖYLENİR.
+    get exchangeEarnGap() {
+      const yok = Object.entries(this.exchangeTrades.capabilities || {})
+        .filter(([, c]) => c && c.earn === false)
+        .map(([k]) => k);
+      if (!yok.length) return '';
+      return yok.join(', ') + ' Simple Earn ödül geçmişi için bir API ucu ' +
+             'sunmuyor; oradaki staking gelirleri yakalanamaz ve ' +
+             '"açıklanamayan bakiye değişimi" olarak görünür.';
     },
 
     // -------------------------------------------------------------

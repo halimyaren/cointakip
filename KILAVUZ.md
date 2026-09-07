@@ -469,15 +469,47 @@ görünecek, zarar da vergi dosyanıza hiç girmeyecekti.
 > Orada dönüşüm yaparsanız satır "AÇIKLANAMAYAN" olarak çıkar. Bu bir hata
 > değil, bilinen bir sınırdır ve arayüzde de yazar.
 
+#### Earn geliri ve para hareketleri
+
+Bakiyenizi değiştiren tek şey alım-satım değil. Uygulama şu akışları da okur:
+
+| Satır | Ne demek | Deftere işlenir mi? |
+|:---|:---|:---|
+| **EARN GELİRİ** | Simple Earn faizi (esnek veya vadeli) | ✅ Evet |
+| **PARA GİRİŞİ** | Hesabınıza gelen coin | ❌ Hayır |
+| **PARA ÇIKIŞI** | Hesabınızdan çıkan coin (ağ komisyonu dahil) | ❌ Hayır |
+
+**Earn geliri** deftere *alındığı günün piyasa fiyatıyla* yeni bir açık lot
+olarak eklenir. Böylece gelir, elde ettiğiniz andaki değeriyle maliyet tabanınıza
+girer ve o coini sonra sattığınızda yalnızca **aradaki fiyat farkı** kâr sayılır.
+Uygulama günlerce kapalı kaldıysa ödülün tarihi eski olabilir; o günün kapanış
+fiyatı ayrıca çekilir. Fiyat bulunamazsa işlem **reddedilir** — uydurma bir
+fiyatla maliyet tabanı yazmayız.
+
+**Para giriş/çıkışı deftere yazılamaz** ve bu bir eksiklik değil, bilinçli bir
+karardır. Hesabınıza gelen bir coin çoğu zaman başka bir konumdan gelen
+**transferdir** ve maliyeti zaten defterinizde durur. Onu "alım" diye yazmak,
+maliyeti bilinmeyen bir lot uydurup maliyet tabanınızı sessizce bozmak olurdu.
+Konumlar arası taşıma için **Transfer**, gerçekten elden çıkan varlık için
+**Zarar Yaz** özelliğini kullanın.
+
+> MEXC'in Simple Earn karşılığı bir API ucu yok; oradaki staking gelirleri
+> aşağıdaki "açıklanamayan" başlığı altında görünmeye devam eder. Bu kutuda
+> yazar.
+
 #### "Açıklanamayan" ne demek?
 
 Uygulama her taramada bakiyenizin fotoğrafını alır. Bir varlığın miktarı değişmiş
-ama bunu açıklayan bir işlem bulunamamışsa **susmaz**, size söyler.
+ama bunu açıklayan bir olay bulunamamışsa **susmaz**, size söyler.
 
-En yaygın sebepler: para yatırma/çekme, Earn abonelik veya bozdurma, vadeli
-hesaba transfer. **Bu sürüm bunları okumuyor** — ama okumadığımız şeyi görünmez
-yapmıyoruz. Bu satırlar deftere işlenemez, yalnızca bilgilendirir; okuduktan
-sonra **Yok say** ile kaldırabilirsiniz.
+Alım-satım, toz dönüşümü, Earn geliri ve para giriş/çıkışı artık okunduğuna göre
+geriye kalan başlıca sebep **vadeli/marj hesap transferleridir**. Okumadığımız
+şeyi görünmez yapmıyoruz. Bu satırlar deftere işlenemez, yalnızca bilgilendirir;
+okuduktan sonra **Yok say** ile kaldırabilirsiniz.
+
+> Bir uyarının değeri, ne kadar sık **haklı** olduğuyla ölçülür. Earn her gün
+> faiz ödediği için, o akış okunmasaydı bu uyarı birkaç gün içinde gürültüye
+> boğulur ve okunmaz hâle gelirdi.
 
 #### Sınır: "bundan sonrası" yakalanır
 
