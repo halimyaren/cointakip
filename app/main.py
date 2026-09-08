@@ -243,7 +243,14 @@ def fill_api_history():
             detail=("Anahtar kasası kilitli. Geçmişi doldurmak için önce "
                     "kasayı açın."))
 
-    olaylar, kaynaklar, uyarilar = api_history.topla(load_portfolio())
+    # Önce dosyaların nereye kadar geldiğini ölç. Doldurma yalnızca o
+    # noktadan sonrasını okur; dosyaların kapsadığı dönemi yeniden çekmek,
+    # sonradan atılacak satırlar için borsanın hız sınırını harcamak olurdu.
+    dosya_olaylari, _, _ = reconcile.load_all_events()
+    sinirlar = api_history.dosya_sinirlari(dosya_olaylari)
+
+    olaylar, kaynaklar, uyarilar = api_history.topla(
+        load_portfolio(), sinirlar=sinirlar)
     borsalar = {}
     for o in olaylar:
         borsalar.setdefault(str(o.get("exchange") or "").upper(), []).append(o)

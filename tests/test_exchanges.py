@@ -24,6 +24,7 @@ Testler ağa ÇIKMAZ: tüm HTTP çağrıları taklit edilir.
 """
 
 import hashlib
+import time
 import hmac
 import json
 
@@ -804,3 +805,153 @@ class TestAyarGuncellemeUcu:
 
     def test_patch_olmayan_profilde_400(self, client):
         assert client.patch("/api/exchanges/YOK", json={"label": "x"}).status_code == 400
+
+
+# =====================================================================
+# FAZ F7d — canlı hesapta bulunan iki uç hatası
+#
+# İkisi de aynı sınıftan: bir uç sessizce her çağrıda düşüyordu ve hata
+# üretildiği için o borsanın açıklanamayan-değişim tespiti tümden kapalı
+# kalıyordu. Toz akışında yaşanan 22 saatlik sessiz ölümün aynısı.
+# =====================================================================
+def _params_yakala(monkeypatch):
+    """`signed_get`e giden parametreleri toplar. Ağa çıkılmaz."""
+    kayit = []
+
+    def sahte(profil, yol, anahtar, gizli, params=None):
+        kayit.append({"path": yol, "params": dict(params or {})})
+        return []
+
+    monkeypatch.setattr(ex, "signed_get", sahte)
+    return kayit
+
+
+class TestEarnTipParametresi:
+    """Binance esnek Earn ucu `type`i ZORUNLU istiyor.
+
+    Dokümanda opsiyonel yazıyor ama canlı sunucu parametresiz çağrıyı
+    `-1102 Mandatory parameter 'type' was not sent` ile geri çeviriyor
+    (8 Eylül 2026, gerçek hesapta). Çelişkide sunucu esastır.
+    """
+
+    def test_esnek_earn_tip_gonderir(self, monkeypatch):
+        kayit = _params_yakala(monkeypatch)
+        ex.fetch_earn_rewards(BINANCE, locked=False,
+                              api_key="A", api_secret="S")
+        assert kayit, "hiç istek atılmadı"
+        assert kayit[0]["params"].get("type") == ex.EARN_TIP_TUMU
+
+    def test_vadeli_earn_de_tip_gonderir(self, monkeypatch):
+        """İki uç ayrı ama tek bir kod yolundan geçiyor; birinde olup
+        diğerinde olmaması ileride ayrışma demek olurdu."""
+        kayit = _params_yakala(monkeypatch)
+        ex.fetch_earn_rewards(BINANCE, locked=True,
+                              api_key="A", api_secret="S")
+        assert kayit[0]["params"].get("type") == ex.EARN_TIP_TUMU
+
+    def test_tip_degeri_tumunu_kapsar(self):
+        """Tek bir alt tür (BONUS / REALTIME / REWARDS) seçmek diğerlerinin
+        ödüllerini sessizce kaybettirirdi."""
+        assert ex.EARN_TIP_TUMU == "ALL"
+
+    def test_sayfa_boyu_hala_gonderiliyor(self, monkeypatch):
+        """`size` gönderilmezse uç 10 satır döner ve sistem "başka ödül yok"
+        sanar. Bu tuzak `type` düzeltmesiyle kaybolmamalı."""
+        kayit = _params_yakala(monkeypatch)
+        ex.fetch_earn_rewards(BINANCE, api_key="A", api_secret="S")
+        assert kayit[0]["params"]["size"] == ex.EARN_SAYFA_BOYU
+
+
+class TestPencereGenisligiBorsayaGore:
+    """MEXC'in aralık tavanı 7 gün, Binance'inki 90.
+
+    Tek bir sabit yazmak MEXC'te para hareketi akışının iki ucunu birden
+    öldürmüştü: `{"code":33333,"msg":"start time and end time diff cannot
+    exceed 7 days"}`.
+    """
+
+    def test_mexc_yedi_gun(self):
+        assert ex.pencere_gunu(MEXC, "capital_window_days",
+                               ex.CAPITAL_PENCERE_GUN) == 7
+
+    def test_binance_doksan_gun(self):
+        assert ex.pencere_gunu(BINANCE, "capital_window_days",
+                               ex.CAPITAL_PENCERE_GUN) == 90
+
+    def test_profil_kendi_degerini_ezer(self):
+        """Yeni bir borsa eklendiğinde kod değil profil değişmeli."""
+        ozel = dict(MEXC, capital_window_days=3)
+        assert ex.pencere_gunu(ozel, "capital_window_days", 90) == 3
+
+    def test_alan_yoksa_hazir_profile_dusulur(self):
+        """Bu alanlar eklenmeden ÖNCE kaydedilmiş profiller alanı taşımaz
+        ama borsanın tavanı değişmemiştir."""
+        eski = {k: v for k, v in MEXC.items() if k != "capital_window_days"}
+        assert ex.pencere_gunu(eski, "capital_window_days", 90) == 7
+
+    def test_bilinmeyen_borsada_varsayilan(self):
+        yabanci = {"location": "YOKBORSA"}
+        assert ex.pencere_gunu(yabanci, "capital_window_days", 90) == 90
+
+    def test_gecersiz_deger_varsayilana_duser(self):
+        """Uydurma bir tavanla istek atmak, düzeltilen hatanın kendisidir."""
+        for kotu in ("", "abc", 0, -5, None):
+            bozuk = dict(MEXC, capital_window_days=kotu)
+            assert ex.pencere_gunu(bozuk, "capital_window_days", 90) in (7, 90)
+
+    def test_mexc_istegi_yedi_gunu_asmaz(self, monkeypatch):
+        kayit = _params_yakala(monkeypatch)
+        ex.fetch_deposits(MEXC, api_key="A", api_secret="S")
+        p = kayit[0]["params"]
+        assert p["endTime"] - p["startTime"] <= 7 * ex.GUN_MS
+
+    def test_mexc_cekme_de_yedi_gunu_asmaz(self, monkeypatch):
+        kayit = _params_yakala(monkeypatch)
+        ex.fetch_withdrawals(MEXC, api_key="A", api_secret="S")
+        p = kayit[0]["params"]
+        assert p["endTime"] - p["startTime"] <= 7 * ex.GUN_MS
+
+    def test_genis_aralik_istense_de_kirpilir(self, monkeypatch):
+        """Çağıran taraf 90 gün istese bile tavan uygulanır; aksi hâlde
+        aynı hata ikinci bir kapıdan geri gelirdi."""
+        kayit = _params_yakala(monkeypatch)
+        simdi = int(time.time() * 1000)
+        ex.fetch_deposits(MEXC, start_time_ms=simdi - 90 * ex.GUN_MS,
+                          end_time_ms=simdi, api_key="A", api_secret="S")
+        p = kayit[0]["params"]
+        assert p["endTime"] - p["startTime"] <= 7 * ex.GUN_MS
+
+    def test_binance_genis_araligi_korur(self, monkeypatch):
+        """Kırpma her borsaya değil, tavanı dar olana uygulanmalı."""
+        kayit = _params_yakala(monkeypatch)
+        simdi = int(time.time() * 1000)
+        ex.fetch_deposits(BINANCE, start_time_ms=simdi - 60 * ex.GUN_MS,
+                          end_time_ms=simdi, api_key="A", api_secret="S")
+        p = kayit[0]["params"]
+        assert p["endTime"] - p["startTime"] == 60 * ex.GUN_MS
+
+
+class TestPencereAlaniProfilde:
+
+    def test_dogrulama_sayisal_tutar(self):
+        temiz, hata = ex.validate_profile(
+            dict(MEXC, capital_window_days="7", earn_window_days="0"))
+        assert hata is None
+        assert temiz["capital_window_days"] == 7
+        assert isinstance(temiz["capital_window_days"], int)
+
+    def test_bozuk_deger_sifira_duser(self):
+        temiz, hata = ex.validate_profile(dict(MEXC, capital_window_days="abc"))
+        assert hata is None and temiz["capital_window_days"] == 0
+
+    def test_pencere_alani_anahtarsiz_degistirilemez(self, client, monkeypatch):
+        """Diğer yetenek alanları gibi korunuyor: sessizce yok saymak,
+        kullanıcının kaydettiğini sandığı bir değişikliğin hiç olmaması
+        demekti."""
+        _kasa_ac()
+        _sahte_http(monkeypatch, {"/api/v3/account": _hesap_cevabi()})
+        monkeypatch.setattr(ex, "server_time_offset", lambda p, yenile=False: 0)
+        ex.save_credentials(dict(MEXC), "A", "S", acknowledge_unverified=True)
+
+        r = client.patch("/api/exchanges/MEXC", json={"capital_window_days": 90})
+        assert r.status_code == 400

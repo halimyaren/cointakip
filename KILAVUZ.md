@@ -354,8 +354,11 @@ Bilmeniz gerekenler:
 
 - **Anahtar kasanız açık olmalı.** Doldurma imzalı istek atar; kilitliyken reddedilir.
 - **Birkaç dakika sürebilir** — sembol başına ayrı çağrı yapılır.
-- **API sınırlıdır.** Binance yaklaşık 2 yıl geriye tutar, MEXC daha az. Bu yüzden
-  eski dosyalarınızı silmeyin; derin geçmişin tek kaynağı onlar.
+- **Yalnızca boşluk kadar okur.** Dosyalarınız 27 Ağustos'ta bitiyorsa doldurma
+  iki yıl geriye gitmez, o tarihten bugüne kadar iner. Dosyanız hiç yoksa
+  varsayılan olarak ~2 yıl geriye gider.
+- **API sınırlıdır.** Binance yaklaşık 2 yıl geriye tutar, MEXC para hareketlerinde
+  90 gün. Bu yüzden eski dosyalarınızı silmeyin; derin geçmişin tek kaynağı onlar.
 - **Deftere hiçbir şey yazmaz.** Bu işlem de yalnızca "borsa ne diyor" tarafını
   tazeler. Ne aktarılacağına siz karar verirsiniz.
 - Bir pencere okunamazsa **sessizce geçilmez**, uyarı olarak ekranda görünür:

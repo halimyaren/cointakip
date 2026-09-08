@@ -162,6 +162,12 @@ BUILTIN_PROFILES = {
         "earn_locked_path": "/sapi/v1/simple-earn/locked/history/rewardsRecord",
         "deposit_path": "/sapi/v1/capital/deposit/hisrec",
         "withdraw_path": "/sapi/v1/capital/withdraw/history",
+        # Aralık tavanları GÜN cinsinden ve BORSAYA GÖRE değişir; genel bir
+        # sabit yazmak MEXC'te her çağrıyı sessizce düşürmüştü (bkz. MEXC
+        # profilindeki not). Bu yüzden yetenek yolları gibi bunlar da
+        # yapılandırmadır.
+        "capital_window_days": 90,
+        "earn_window_days": 30,
         "key_header": "X-MBX-APIKEY",
         "balances_field": "balances",
         "asset_field": "asset",
@@ -184,13 +190,27 @@ BUILTIN_PROFILES = {
         "dust_log_path": "",
         # FAZ F7b — MEXC'in Simple Earn karşılığı bir ödül geçmişi ucu YOK;
         # boş bırakmak "bu yetenek burada yok" demektir. Para giriş/çıkış
-        # uçlarını ise Binance'ten klonluyor (ağırlık 1, en fazla 90 gün),
-        # o yüzden onlar tanımlı. MEXC varsayılanı son 7 gündür ama biz
-        # aralığı her zaman açıkça gönderdiğimiz için fark etmiyor.
+        # uçlarını ise Binance'ten klonluyor, o yüzden onlar tanımlı.
         "earn_flexible_path": "",
         "earn_locked_path": "",
         "deposit_path": "/api/v3/capital/deposit/hisrec",
         "withdraw_path": "/api/v3/capital/withdraw/history",
+        # MEXC'İN ARALIK TAVANI 7 GÜNDÜR, 90 DEĞİL.
+        #
+        # Burada önce "en fazla 90 gün, MEXC varsayılanı 7 ama biz aralığı
+        # açıkça gönderdiğimiz için fark etmez" yazıyordu. Yanlıştı ve tam
+        # tersi doğruydu: 7 gün varsayılan DEĞİL TAVANDIR. Aralığı açıkça
+        # göndermek sorunu çözmek şöyle dursun, tavanı aşan bir aralık
+        # göndererek her çağrıyı düşürüyordu (canlı hesapta doğrulandı,
+        # 8 Eylül 2026): `{"code":33333,"msg":"start time and end time diff
+        # cannot exceed 7 days"}`. Sonuç, para hareketi akışının iki ucunun
+        # da hiç çalışmaması ve — her taramada hata üretildiği için —
+        # MEXC'in açıklanamayan-değişim tespitinin tümden kapalı kalmasıydı.
+        #
+        # Veri 90 güne kadar TUTULUR; okunabilen tek seferlik aralık 7 gündür.
+        # Geriye gitmenin yolu pencereyi kaydırmaktır (bkz. `api_history`).
+        "capital_window_days": 7,
+        "earn_window_days": 0,          # Earn ucu yok
         # MEXC imzalamayı Binance'ten birebir klonlar AMA anahtarı kendi
         # başlığında bekler. `X-MBX-APIKEY` gönderilirse başlık okunmaz ve
         # borsa, hiç başlık yollanmamış gibi `400 api key required` döner.
@@ -258,6 +278,30 @@ def endpoint_path(profil: dict, alan: str) -> str:
 
 def supports(profil: dict, alan: str) -> bool:
     return bool(endpoint_path(profil, alan))
+
+
+def pencere_gunu(profil: dict, alan: str, varsayilan: int) -> int:
+    """
+    Bir akışın aralık tavanı, GÜN cinsinden. `endpoint_path` ile aynı üç adım.
+
+    Neden yapılandırma: bu tavan borsaya göre değişiyor ve tek bir sabit
+    yazmak MEXC'te para hareketi akışının iki ucunu birden sessizce
+    öldürmüştü (Binance 90 gün kabul ederken MEXC 7). Yeni bir borsa
+    eklendiğinde kod değil profil değişmeli.
+
+    Sıfır ya da geçersiz bir değer varsayılana düşer; uydurma bir tavanla
+    istek atmak, tam da düzeltilen hatanın kendisidir.
+    """
+    for kaynak in (profil or {},
+                   BUILTIN_PROFILES.get(
+                       str((profil or {}).get("location") or "").upper().strip(), {})):
+        try:
+            gun = int(float(kaynak.get(alan) or 0))
+        except (TypeError, ValueError):
+            continue
+        if gun > 0:
+            return gun
+    return int(varsayilan)
 
 
 def builtin_profiles() -> list:
@@ -330,6 +374,15 @@ def validate_profile(spec: dict) -> tuple:
                  "key_header", "key_expires_at"):
         deger = spec.get(alan)
         temiz[alan] = str(deger).strip() if deger is not None else ""
+
+    # Sayısal alanlar (aralık tavanları). Metin olarak saklamak `pencere_gunu`
+    # tarafında sessizce çalışırdı ama profil dosyasında "90" ile 90'ı
+    # karıştırmak, ileride bir karşılaştırmada fark üretir.
+    for alan in ("capital_window_days", "earn_window_days"):
+        try:
+            temiz[alan] = max(0, int(float(spec.get(alan) or 0)))
+        except (TypeError, ValueError):
+            temiz[alan] = 0
 
     temiz["location"] = temiz["location"].upper()
     for alan in REQUIRED_FIELDS:
@@ -435,7 +488,8 @@ def update_profile_fields(location: str, alanlar: dict) -> dict:
     for alan in ("location", "family", "base_url", "account_path",
                  "time_path", "restrictions_path", "my_trades_path",
                  "dust_log_path", "earn_flexible_path", "earn_locked_path",
-                 "deposit_path", "withdraw_path", "key_header"):
+                 "deposit_path", "withdraw_path", "key_header",
+                 "capital_window_days", "earn_window_days"):
         if alan not in istek:
             continue
         yeni = str(istek[alan] or "").strip()
@@ -1022,8 +1076,25 @@ EARN_WEIGHT = 150
 CAPITAL_WEIGHT = 1
 EARN_SAYFA_BOYU = 100          # uç varsayılanı 10; belirtmemek satır kaybettirir
 EARN_SAYFA_TAVANI = 3
-EARN_PENCERE_MS = 30 * 24 * 60 * 60 * 1000
-CAPITAL_PENCERE_MS = 90 * 24 * 60 * 60 * 1000
+GUN_MS = 24 * 60 * 60 * 1000
+
+# Varsayılan aralık tavanları. GERÇEK tavan borsaya göre değişir ve profilden
+# okunur (`pencere_gunu`); bunlar yalnızca profilde değer yoksa devreye girer.
+EARN_PENCERE_GUN = 30
+CAPITAL_PENCERE_GUN = 90
+EARN_PENCERE_MS = EARN_PENCERE_GUN * GUN_MS
+CAPITAL_PENCERE_MS = CAPITAL_PENCERE_GUN * GUN_MS
+
+# Esnek Earn ödül ucu `type`i ZORUNLU İSTİYOR.
+#
+# Dokümanda opsiyonel ve varsayılanı `ALL` yazıyor; canlı sunucu ise
+# parametresiz çağrıyı `-1102 Mandatory parameter 'type' was not sent` ile
+# geri çeviriyor (8 Eylül 2026, gerçek hesapta doğrulandı). Çelişkide sunucu
+# esastır. `ALL` gönderiyoruz çünkü dokümanın kendi varsayılanı budur ve tek
+# bir alt türü seçmek (BONUS / REALTIME / REWARDS) diğerlerinin ödüllerini
+# sessizce kaybettirirdi — bu akışın düzeltmeye çalıştığı hata sınıfının ta
+# kendisi.
+EARN_TIP_TUMU = "ALL"
 
 # Para yatırma durumları. Yalnızca bakiyeye GERÇEKTEN geçmiş olanlar sayılır;
 # bekleyen bir yatırma henüz bakiyede yoktur ve onu saymak, olmayan bir parayı
@@ -1099,13 +1170,15 @@ def fetch_earn_rewards(profil, locked=False, start_time_ms=None,
 
     konum = str(profil.get("location") or "").upper().strip()
     anahtar, gizli = _anahtarlar(konum, api_key, api_secret)
-    baslangic, bitis = _aralik(start_time_ms, end_time_ms, EARN_PENCERE_MS)
+    pencere = pencere_gunu(profil, "earn_window_days", EARN_PENCERE_GUN) * GUN_MS
+    baslangic, bitis = _aralik(start_time_ms, end_time_ms, pencere)
 
     satirlar = []
     for sayfa in range(1, EARN_SAYFA_TAVANI + 1):
         ham = signed_get(profil, yol, anahtar, gizli, {
             "startTime": baslangic, "endTime": bitis,
             "current": sayfa, "size": EARN_SAYFA_BOYU,
+            "type": EARN_TIP_TUMU,
         })
         parca = earn_rows(ham, locked=locked)
         satirlar.extend(parca)
@@ -1185,7 +1258,9 @@ def _capital_gecmisi(profil, alan, start_time_ms, end_time_ms,
 
     konum = str(profil.get("location") or "").upper().strip()
     anahtar, gizli = _anahtarlar(konum, api_key, api_secret)
-    baslangic, bitis = _aralik(start_time_ms, end_time_ms, CAPITAL_PENCERE_MS)
+    pencere = pencere_gunu(profil, "capital_window_days",
+                           CAPITAL_PENCERE_GUN) * GUN_MS
+    baslangic, bitis = _aralik(start_time_ms, end_time_ms, pencere)
 
     ham = signed_get(profil, yol, anahtar, gizli,
                      {"startTime": baslangic, "endTime": bitis, "limit": 1000})

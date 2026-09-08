@@ -38,13 +38,14 @@ karar verir.
 NEDEN ARŞİVE YAZILIYOR
 ----------------------
 Doldurma pahalıdır: sembol başına ayrı çağrı, Earn ucunda çağrı başına 150
-ağırlık, para hareketlerinde 90 günlük pencereler. Bunu her mutabakat
+ağırlık, para hareketlerinde borsaya göre değişen pencereler. Bunu her mutabakat
 raporunda yeniden yapmak hem yavaş hem de sınırları zorlayan bir israftır.
 Bu yüzden doldurma AÇIKÇA tetiklenen bir iştir ve sonucu arşivde durur;
 mutabakat ağa hiç çıkmadan onu okur.
 """
 
 import time
+from datetime import datetime
 
 from log_config import get_logger
 
@@ -56,16 +57,35 @@ logger = get_logger("api_history")
 # dönmesi bir hata değil felakettir.
 SAYFA_TAVANI = 40
 
-# Pencereli akışlarda geriye doğru kaç pencere taranır. Earn ucu 30, para
-# hareketleri 90 günlük pencere kabul ediyor. Binance ~2 yıl tutuyor;
-# tavanlar onu aşacak kadar geniş, sonsuza kadar gidecek kadar değil.
-EARN_PENCERE_SAYISI = 26          # 26 x 30 gün ≈ 25 ay
-CAPITAL_PENCERE_SAYISI = 9        # 9 x 90 gün ≈ 27 ay
+# NE KADAR GERİYE GİDİLİR
+# ----------------------
+# Sabit bir derinlik yazmıyoruz. Doldurmanın işi dosyaların BIRAKTIĞI
+# BOŞLUĞU kapatmak; dosya 27 Ağustos'ta bitiyorsa iki yıl geriye gitmenin
+# tek sonucu, sonradan zaten atılacak satırlar için yüzlerce istek atmaktır.
+# Derinlik bu yüzden sınırdan hesaplanır ve dosya yoksa varsayılana düşer.
+VARSAYILAN_GERIYE_GUN = 730       # dosya hiç yoksa ~2 yıl
+GUVENLIK_PAYI_GUN = 7             # sınırla bilinçli üst üste binme
 
-# Ardışık çağrılar arasında kısa bir nefes. Ağırlık sınırına yaklaşmıyoruz
-# ama doldurma tek seferde yüzlerce çağrı yapabiliyor; aralıksız bir seri
-# borsanın hız sınırlayıcısına gereksiz yere dokunur.
-CAGRI_ARASI_BEKLEME = 0.05
+# Tek bir akışta atılacak en fazla istek. Derinlik sınırdan hesaplandığı için
+# pratikte bu tavana çarpılmaz; tavan, beklenmedik bir sınır değerinin
+# (bozuk tarih, gelecekteki bir zaman damgası) binlerce isteğe dönüşmesini
+# engellemek için var.
+PENCERE_TAVANI = 60
+
+# HIZ SINIRINA SAYGI
+# ------------------
+# Uçların ağırlıkları çok farklı: `myTrades` 20, Earn ödülleri 150. Sabit bir
+# bekleme ikisine de yanlış gelir — biri gereksiz yavaşlar, diğeri sınırı
+# zorlar. Bekleme bu yüzden ağırlıktan hesaplanıyor. Bütçe Binance'in dakika
+# başına 6000'lik tavanının bir bölümü; kalanı düzenli taramaya ve fiyat
+# motoruna bırakılıyor, çünkü doldurma sürerken onlar da çalışıyor.
+AGIRLIK_BUTCESI_DK = 2400
+
+
+def _nefes(agirlik):
+    """Ağırlığa göre bekleme. Doldurma arka planda çalışan taramayı aç
+    bırakmamalı; bütçenin tamamını kendine ayırmıyor."""
+    time.sleep(max(0.0, float(agirlik)) / (AGIRLIK_BUTCESI_DK / 60.0))
 
 
 # =====================================================================
@@ -211,14 +231,43 @@ def _alim_satim_olaylari(borsa, zaman, tur, yon, taban, kot, miktar, tutar,
 def _pencereler(pencere_ms, adet):
     """En yeniden en eskiye doğru (başlangıç, bitiş) çiftleri.
 
-    Uçların hepsi bir pencere tavanı dayatıyor (Earn 30, para hareketleri 90
-    gün). Geçmişe inmenin tek yolu pencereyi kaydıra kaydıra yürümek.
+    Uçların hepsi bir pencere tavanı dayatıyor ve tavan borsaya göre değişir
+    (Binance para hareketlerinde 90 gün, MEXC'te 7). Geçmişe inmenin tek yolu
+    pencereyi kaydıra kaydıra yürümek.
     """
     bitis = int(time.time() * 1000)
     for _ in range(max(1, int(adet))):
         baslangic = bitis - pencere_ms
         yield baslangic, bitis
         bitis = baslangic - 1
+
+
+def _geriye_gun(sinir):
+    """Doldurmanın kaç gün geriye gideceği.
+
+    `sinir` o borsanın dosyalarının ulaştığı en son zaman. Boşsa dosya yok
+    demektir ve varsayılan derinliğe düşülür. Emniyet payı bilinçli: sınırın
+    hemen ötesindeki bir işlemi kaçırmaktansa üst üste binmek yeğdir, çünkü
+    çakışan satırlar zaten `sinirin_otesi` tarafından atılıyor.
+    """
+    if not sinir:
+        return VARSAYILAN_GERIYE_GUN
+    try:
+        an = datetime.strptime(str(sinir)[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        try:
+            an = datetime.strptime(str(sinir)[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return VARSAYILAN_GERIYE_GUN
+    gun = (datetime.now() - an).days + GUVENLIK_PAYI_GUN
+    return max(GUVENLIK_PAYI_GUN, min(gun, VARSAYILAN_GERIYE_GUN))
+
+
+def _pencere_adedi(geriye_gun, pencere_gun):
+    """Verilen derinliği kapatmak için kaç pencere gerekir."""
+    pencere_gun = max(1, int(pencere_gun))
+    adet = -(-int(geriye_gun) // pencere_gun)        # yukarı yuvarlama
+    return max(1, min(adet, PENCERE_TAVANI))
 
 
 def _sembol_islemleri(profil, konum, sembol):
@@ -243,11 +292,12 @@ def _sembol_islemleri(profil, konum, sembol):
         if len(satirlar) < exchanges.MY_TRADES_LIMIT:
             break
         from_id = en_buyuk + 1
-        time.sleep(CAGRI_ARASI_BEKLEME)
+        _nefes(exchanges.MY_TRADES_WEIGHT)
     return olaylar
 
 
-def _pencereli_akis(profil, konum, cek, cozumle, pencere_ms, adet, etiket):
+def _pencereli_akis(profil, konum, cek, cozumle, pencere_ms, adet, etiket,
+                    agirlik):
     """Pencere pencere geriye giden bir akış. Hata pencereyi atlatır, akışı
     değil: bir pencerenin düşmesi diğerlerini iptal etmemeli."""
     olaylar, uyarilar = [], []
@@ -265,18 +315,27 @@ def _pencereli_akis(profil, konum, cek, cozumle, pencere_ms, adet, etiket):
                 # Kapsam dışı satırlar (iade edilmiş çekme, bekleyen yatırma)
                 # da buraya düşer ve atlanmaları DOĞRUDUR.
                 logger.debug("%s satırı atlandı: %s", etiket, e)
-        time.sleep(CAGRI_ARASI_BEKLEME)
+        _nefes(agirlik)
     return olaylar, uyarilar
 
 
-def _borsa_akislari(profil, konum):
-    """Hesap düzeyindeki akışların tamamı. (olaylar, uyarilar)"""
+def _borsa_akislari(profil, konum, sinir=None):
+    """Hesap düzeyindeki akışların tamamı. (olaylar, uyarilar)
+
+    Pencere GENİŞLİĞİ borsadan, pencere SAYISI dosya sınırından gelir.
+    İkisini de sabit yazmak iki ayrı hataya yol açmıştı: MEXC'in 7 günlük
+    tavanına 90 günlük aralık göndermek her çağrıyı düşürüyordu, ve sabit
+    derinlik dosyaların zaten kapsadığı dönem için yüzlerce gereksiz istek
+    attırıyordu.
+    """
     import exchanges
     import trade_sync
 
     olaylar, uyarilar = [], []
+    geriye = _geriye_gun(sinir)
 
     if exchanges.supports(profil, "dust_log_path"):
+        # Toz ucu aralık almıyor: son 100 kayıt neyse odur.
         try:
             for satir in exchanges.dust_rows(exchanges.fetch_dust_log(profil)):
                 try:
@@ -290,39 +349,46 @@ def _borsa_akislari(profil, konum):
         ("earn_flexible_path", "Earn (esnek) ödülleri",
          lambda p, b, s: exchanges.fetch_earn_rewards(
              p, locked=False, start_time_ms=b, end_time_ms=s),
-         trade_sync.normalize_earn,
-         exchanges.EARN_PENCERE_MS, EARN_PENCERE_SAYISI),
+         trade_sync.normalize_earn, "earn_window_days",
+         exchanges.EARN_PENCERE_GUN, exchanges.EARN_WEIGHT),
         ("earn_locked_path", "Earn (vadeli) ödülleri",
          lambda p, b, s: exchanges.fetch_earn_rewards(
              p, locked=True, start_time_ms=b, end_time_ms=s),
-         trade_sync.normalize_earn,
-         exchanges.EARN_PENCERE_MS, EARN_PENCERE_SAYISI),
+         trade_sync.normalize_earn, "earn_window_days",
+         exchanges.EARN_PENCERE_GUN, exchanges.EARN_WEIGHT),
         ("deposit_path", "para yatırma",
          lambda p, b, s: exchanges.fetch_deposits(
              p, start_time_ms=b, end_time_ms=s),
-         trade_sync.normalize_deposit,
-         exchanges.CAPITAL_PENCERE_MS, CAPITAL_PENCERE_SAYISI),
+         trade_sync.normalize_deposit, "capital_window_days",
+         exchanges.CAPITAL_PENCERE_GUN, exchanges.CAPITAL_WEIGHT),
         ("withdraw_path", "para çekme",
          lambda p, b, s: exchanges.fetch_withdrawals(
              p, start_time_ms=b, end_time_ms=s),
-         trade_sync.normalize_withdraw,
-         exchanges.CAPITAL_PENCERE_MS, CAPITAL_PENCERE_SAYISI),
+         trade_sync.normalize_withdraw, "capital_window_days",
+         exchanges.CAPITAL_PENCERE_GUN, exchanges.CAPITAL_WEIGHT),
     ]
-    for alan, etiket, cek, cozumle, pencere_ms, adet in akislar:
+    for alan, etiket, cek, cozumle, pencere_alani, varsayilan, agirlik in akislar:
         if not exchanges.supports(profil, alan):
             continue
-        yeni, uy = _pencereli_akis(profil, konum, cek, cozumle,
-                                   pencere_ms, adet, etiket)
+        pencere_gun = exchanges.pencere_gunu(profil, pencere_alani, varsayilan)
+        yeni, uy = _pencereli_akis(
+            profil, konum, cek, cozumle, pencere_gun * exchanges.GUN_MS,
+            _pencere_adedi(geriye, pencere_gun), etiket, agirlik)
         olaylar.extend(yeni)
         uyarilar.extend(uy)
     return olaylar, uyarilar
 
 
-def topla(defter, profiller=None):
+def topla(defter, profiller=None, sinirlar=None):
     """Borsa API'sinden geçmişi toplar. (olaylar, kaynaklar, uyarilar)
 
     **Ağa çıkar ve yavaştır.** Çağıran taraf bunu açık bir kullanıcı
     eylemine bağlamalı; beş dakikada bir çalışan tarama bu yoldan geçmez.
+
+    `sinirlar` borsa başına dosyaların ulaştığı en son zamandır
+    (`dosya_sinirlari`). Verilirse doldurma yalnızca o noktadan bugüne kadar
+    iner — dosyaların zaten kapsadığı dönem için istek atmak, sonradan
+    atılacak satırlar uğruna borsanın hız sınırını harcamak olurdu.
     """
     import exchanges
     import keyvault
@@ -354,7 +420,8 @@ def topla(defter, profiller=None):
                 uyarilar.append(f"{konum} {sembol} işlem geçmişi okunamadı: {e}")
                 logger.debug("Sembol doldurulamadı (%s/%s): %s", konum, sembol, e)
 
-        akis_olaylari, akis_uyarilari = _borsa_akislari(profil, konum)
+        sinir = (sinirlar or {}).get(konum)
+        akis_olaylari, akis_uyarilari = _borsa_akislari(profil, konum, sinir)
         ham_olaylar.extend(akis_olaylari)
         uyarilar.extend(akis_uyarilari)
 

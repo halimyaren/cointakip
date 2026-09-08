@@ -257,7 +257,7 @@ class TestToplama:
                      "time": 1757000000000}]
 
         monkeypatch.setattr(exchanges, "fetch_my_trades", sahte)
-        monkeypatch.setattr(api_history, "CAGRI_ARASI_BEKLEME", 0)
+        monkeypatch.setattr(api_history, "_nefes", lambda agirlik: None)
         olaylar = api_history._sembol_islemleri(
             BINANCE_PROFIL, "BINANCE", "ARBUSDT")
         assert cagrilar == [0, exchanges.MY_TRADES_LIMIT + 1]
@@ -275,7 +275,7 @@ class TestToplama:
                     for i in range(1, exchanges.MY_TRADES_LIMIT + 1)]
 
         monkeypatch.setattr(exchanges, "fetch_my_trades", hep_dolu)
-        monkeypatch.setattr(api_history, "CAGRI_ARASI_BEKLEME", 0)
+        monkeypatch.setattr(api_history, "_nefes", lambda agirlik: None)
         monkeypatch.setattr(api_history, "SAYFA_TAVANI", 3)
         olaylar = api_history._sembol_islemleri(
             BINANCE_PROFIL, "BINANCE", "ARBUSDT")
@@ -291,7 +291,7 @@ class TestToplama:
 
     def test_bir_pencerenin_dusmesi_akisi_iptal_etmez(self, monkeypatch):
         """Bir pencere hata verdiğinde diğerleri yine de okunmalı."""
-        monkeypatch.setattr(api_history, "CAGRI_ARASI_BEKLEME", 0)
+        monkeypatch.setattr(api_history, "_nefes", lambda agirlik: None)
         cagri = {"n": 0}
 
         def cek(profil, baslangic, bitis):
@@ -302,7 +302,7 @@ class TestToplama:
 
         olaylar, uyarilar = api_history._pencereli_akis(
             BINANCE_PROFIL, "BINANCE", cek, trade_sync.normalize_earn,
-            1000, 3, "Earn")
+            1000, 3, "Earn", 150)
         assert len(olaylar) == 2
         assert len(uyarilar) == 1 and "418" in uyarilar[0]
 
@@ -311,6 +311,50 @@ class TestToplama:
         assert len(pencereler) == 3
         for once, sonra in zip(pencereler, pencereler[1:]):
             assert sonra[1] < once[0]      # bitiş, öncekinin başından eski
+
+
+# =====================================================================
+# FAZ F7d — canlı hesapta bulunan iki hata
+# =====================================================================
+class TestDerinlikSinirdanGelir:
+    """Doldurma, dosyaların zaten kapsadığı dönem için istek atmamalı."""
+
+    def test_dosya_yeniyse_az_pencere_gezilir(self):
+        import datetime as dt
+        dun = (dt.datetime.now() - dt.timedelta(days=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S")
+        assert api_history._geriye_gun(dun) <= api_history.GUVENLIK_PAYI_GUN + 1
+
+    def test_dosya_yoksa_varsayilan_derinlige_dusulur(self):
+        assert api_history._geriye_gun(None) == api_history.VARSAYILAN_GERIYE_GUN
+        assert api_history._geriye_gun("") == api_history.VARSAYILAN_GERIYE_GUN
+
+    def test_bozuk_tarih_varsayilana_duser(self):
+        """Bozuk bir sınır yüzünden binlerce istek atılmamalı."""
+        assert api_history._geriye_gun("olmayan-tarih") == \
+            api_history.VARSAYILAN_GERIYE_GUN
+
+    def test_emniyet_payi_kadar_ustuste_binilir(self):
+        """Sınırın hemen ötesindeki bir işlemi kaçırmaktansa üst üste binmek
+        yeğdir; çakışan satırlar zaten sınır süzgecinde atılıyor."""
+        import datetime as dt
+        bugun = dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        assert api_history._geriye_gun(bugun) >= api_history.GUVENLIK_PAYI_GUN
+
+    def test_pencere_adedi_yukari_yuvarlanir(self):
+        """12 günü 7'şer günlük pencerelerle kapatmak 2 pencere eder; aşağı
+        yuvarlamak son 5 günü sessizce dışarıda bırakırdı."""
+        assert api_history._pencere_adedi(12, 7) == 2
+        assert api_history._pencere_adedi(14, 7) == 2
+        assert api_history._pencere_adedi(1, 90) == 1
+
+    def test_pencere_adedinin_tavani_var(self):
+        assert api_history._pencere_adedi(100000, 1) == api_history.PENCERE_TAVANI
+
+    def test_dar_pencereli_borsada_daha_cok_cagri_gerekir(self):
+        """MEXC 7, Binance 90 günlük pencere kabul ediyor: aynı derinlik
+        MEXC'te daha çok çağrı demektir."""
+        assert api_history._pencere_adedi(90, 7) > api_history._pencere_adedi(90, 90)
 
 
 # =====================================================================
@@ -433,7 +477,7 @@ class TestUclar:
         # kendisini yamamak bu yüzden yeterli.
         monkeypatch.setattr(
             api_history, "topla",
-            lambda defter, profiller=None: (
+            lambda defter, profiller=None, sinirlar=None: (
                 [_api_olayi("BINANCE", "2026-09-05T10:00:00")],
                 [{"name": "Binance API", "exchange": "BINANCE", "kind": "api",
                   "rows": 1}],
