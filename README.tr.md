@@ -125,6 +125,15 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   alım-satımı değil **hesabın tam defteri** de okunur: airdrop, Launchpool,
   Convert, toz bakiyelerin BNB'ye eritilmesi ve cüzdanlar arası taşımalar işlem
   geçmişinde hiç görünmez, ve onlarsız kurulan bakiye yanlış çıkar.
+- **Geçmişin API'den doldurulması** — indirilen dosyalar hiçbir API'nin ulaşamadığı
+  derinliğe iner (Binance'inkiler 2023'e kadar), ama **eskirler**: ağustosta
+  indirilen dosya eylülü bilmez ve mutabakat o boşluğu "defteriniz yanlış" gibi
+  gösterir. Tek bir düğme borsanın API'sinden işlemleri, Earn ödüllerini ve para
+  hareketlerini okuyup **yalnızca dosyaların bittiği yerden sonrasını** doldurur;
+  böylece aynı işlem iki kez sayılmaz. Çakışan dönemde dosya esas kalır çünkü daha
+  zengindir — Convert, airdrop ve cüzdan taşımalarının API'de karşılığı yoktur.
+  Sonuç: dosyaları her ay değil, bir kez indirirsiniz. Bu işlem de deftere hiçbir
+  şey yazmaz ve okunamayan bir pencere sessizce atlanmaz, uyarı olarak bildirilir.
 - **Mutabakat düzeltmesi** — bu hareketler FIFO ile yürütülerek bugün elinizde
   kalması gereken lotlar **gerçek alım tarihleri ve gerçek fiyatlarıyla** yeniden
   kurulur. Hangi işlemi kaydetmeyi unuttuğunuzu hatırlamanız gerekmez; dosya
@@ -312,6 +321,8 @@ app/
 ├── price_service.py  Çok kademeli fiyat keşfi ve kaynak kayıt defteri
 ├── archive.py        SQLite net varlık / fiyat arşivi (kritik yolda değildir)
 ├── reconcile.py      Borsa dışa aktarımı ↔ defter mutabakatı ve düzeltme
+├── api_history.py    Mutabakatın boşluğunu borsa API'sinden doldurur; yalnızca
+│                     indirilen dosyaların kapsamadığı dönem için
 │                     önerileri (salt okunur; yazma data_manager'dan geçer)
 ├── connections.py    Bağlantı kayıt defteri + zincir okuyucuları (EVM, Solana)
 ├── exchanges.py      Borsa API profilleri + salt-okunur bakiye, işlem, toz

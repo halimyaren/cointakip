@@ -126,6 +126,15 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   full account ledger is read too, not just spot trades: airdrops, Launchpool,
   Convert, dust-to-BNB conversions and wallet transfers never appear in a trade
   history, and a balance rebuilt without them is wrong.
+- **API backfill** — export files go deeper than any API reaches (Binance's go back
+  to 2023), but they age: a file downloaded in August knows nothing about September,
+  and reconciliation reports that gap as if your ledger were wrong. One button reads
+  trades, Earn rewards, deposits and withdrawals from the exchange API and fills in
+  **only the period after the files end**, so the same trade is never counted twice.
+  Files stay authoritative where they reach, because they are richer — Convert,
+  airdrops and wallet transfers have no API equivalent. This means downloading files
+  once instead of every month. It writes nothing to the ledger either, and a window
+  that cannot be read is reported rather than silently skipped.
 - **Reconciliation repair** — replays those events through FIFO and rebuilds the
   lots you should be holding today, **with their real purchase dates and real
   prices**. You do not have to remember which trade you forgot to record; the file
@@ -318,6 +327,8 @@ app/
 ├── price_service.py  Multi-tier price discovery and source registry
 ├── archive.py        SQLite net-worth / price archive (never on the critical path)
 ├── reconcile.py      Exchange export ↔ ledger reconciliation and repair
+├── api_history.py    Fills reconciliation's gap from the exchange API, only
+│                     for the period the downloaded files do not cover
 │                     proposals (read-only; writes go through data_manager)
 ├── connections.py    Connection registry + on-chain readers (EVM, Solana)
 ├── exchanges.py      Exchange API profiles + read-only balance, trade and

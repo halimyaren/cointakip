@@ -232,6 +232,12 @@ function portfolioApp() {
     reconcileBusy: false,
     reconcileFilter: 'all',
 
+    // Faz F7c: Geçmişin API'den doldurulması. Doldurma ayrı ve açık bir
+    // işlemdir; mutabakat raporu onu arşivden okur, ağa çıkmaz.
+    apiHistoryBusy: false,
+    apiHistoryFilled: [],
+    apiHistoryWarnings: [],
+
     // Faz F5: Mutabakat düzeltmesi (öneri salt okunur, uygulama onaylı)
     rebuildPlan: null,
     rebuildBusy: false,
@@ -831,6 +837,55 @@ function portfolioApp() {
         this.notify(e.message || 'Mutabakat çalıştırılamadı.', 'error', 5000);
       } finally {
         this.reconcileBusy = false;
+      }
+    },
+
+    // -------------------------------------------------------------
+    // FAZ F7c: GEÇMİŞİN API'DEN DOLDURULMASI
+    // -------------------------------------------------------------
+    // Doldurma yüzlerce imzalı istek atar ve dakikalar sürebilir. Bu yüzden
+    // düzenli taramanın değil, kullanıcının açık eyleminin işidir. Deftere
+    // hiçbir şey yazmaz; sonuç arşivde durur ve mutabakat onu okur.
+    async fetchApiHistoryStatus() {
+      try {
+        const resp = await fetch('/api/reconcile/api-history');
+        if (!resp.ok) return;
+        const veri = await resp.json();
+        this.apiHistoryFilled = veri.filled || [];
+      } catch (e) { /* durum bilgisi kritik değil, sessiz geç */ }
+    },
+
+    async fillApiHistory() {
+      if (this.apiHistoryBusy) return;
+
+      const onay = await this.askConfirm({
+        title: 'Geçmiş borsadan doldurulsun mu?',
+        message: 'Borsanın API\'sinden işlem, ödül ve para hareketi geçmişi okunacak.',
+        detail: 'Birkaç dakika sürebilir ve yüzlerce istek atar. '
+              + 'Defterinize hiçbir şey yazılmaz — yalnızca karşılaştırma '
+              + 'için kullanılan borsa tarafı tazelenir.',
+        confirmText: 'Doldur',
+        tone: 'normal'
+      });
+      if (!onay) return;
+
+      this.apiHistoryBusy = true;
+      this.apiHistoryWarnings = [];
+      try {
+        const resp = await fetch('/api/reconcile/api-history', { method: 'POST' });
+        const veri = await resp.json();
+        if (!resp.ok) throw new Error(veri.detail || 'Geçmiş doldurulamadı.');
+        this.apiHistoryFilled = veri.filled || [];
+        this.apiHistoryWarnings = veri.warnings || [];
+        this.notify(`${veri.events} kayıt borsadan okundu.`, 'success', 4000);
+        // Doldurulan geçmiş mutabakatı DEĞİŞTİRİR; eski raporu ekranda
+        // bırakmak kullanıcıya güncel olmayan bir fark tablosu gösterirdi.
+        await this.runReconcile();
+        await this.fetchRebuildPlan();
+      } catch (e) {
+        this.notify(e.message || 'Geçmiş doldurulamadı.', 'error', 6000);
+      } finally {
+        this.apiHistoryBusy = false;
       }
     },
 

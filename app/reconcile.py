@@ -530,8 +530,15 @@ def _hesap_defteri_atlanacaklar(dosyalar):
     return atla
 
 
-def load_all_events(root=None):
-    """(olaylar, kaynak_bilgisi, uyarilar)"""
+def load_all_events(root=None, api=False):
+    """(olaylar, kaynak_bilgisi, uyarilar)
+
+    `api=True` verilirse, ARŞİVE DAHA ÖNCE DOLDURULMUŞ borsa geçmişi de
+    katılır. Bu yol ağa çıkmaz: doldurma ayrı ve açık bir işlemdir
+    (`api_history.topla`), burada yalnızca sonucu okunur. Mutabakat raporunun
+    her açılışında yüzlerce imzalı istek atmak, uçların hız sınırını
+    zorlamaktan başka bir işe yaramazdı.
+    """
     olaylar, kaynaklar, uyarilar = [], [], []
     dosyalar = discover_export_files(root)
     atlanacak = _hesap_defteri_atlanacaklar(dosyalar)
@@ -554,7 +561,44 @@ def load_all_events(root=None):
             "first": tarihler[0][:10] if tarihler else None,
             "last": tarihler[-1][:10] if tarihler else None,
         })
+
+    if api:
+        olaylar, kaynaklar, uyarilar = _api_ekle(olaylar, kaynaklar, uyarilar)
     return olaylar, kaynaklar, uyarilar
+
+
+def _api_ekle(olaylar, kaynaklar, uyarilar):
+    """Doldurulmuş API geçmişini dosyaların BİTTİĞİ YERDEN sonrasına ekler.
+
+    Sınır dosyalardan yana çizilir. Aynı işlem iki kaynakta da bulunur ve
+    ikisini birden almak her işlemi iki kez saydırırdı — mutabakatın bütün
+    değeri doğru sayabilmesinde olduğu için bu ölümcül bir hatadır. Dosya
+    tercih edilir çünkü daha zengindir: çevrimler, airdrop dağıtımları ve
+    cüzdanlar arası taşımalar hesap defteri dosyasında görünür.
+    """
+    import api_history
+    import archive
+
+    ham = archive.load_api_history()
+    if not ham:
+        return olaylar, kaynaklar, uyarilar
+
+    sinirlar = api_history.dosya_sinirlari(olaylar)
+    eklenen = api_history.sinirin_otesi(ham, sinirlar)
+
+    borsalar = {}
+    for o in eklenen:
+        borsalar.setdefault(str(o.get("exchange") or "").upper(), []).append(o)
+    for borsa, alt in sorted(borsalar.items()):
+        tarihler = sorted(o["time"] for o in alt if o.get("time"))
+        kaynaklar.append({
+            "name": api_history._kaynak_adi(borsa), "exchange": borsa,
+            "kind": "api", "rows": len(alt),
+            "first": tarihler[0][:10] if tarihler else None,
+            "last": tarihler[-1][:10] if tarihler else None,
+            "after_files": sinirlar.get(borsa),
+        })
+    return olaylar + eklenen, kaynaklar, uyarilar
 
 
 def coverage_windows(olaylar):
@@ -673,11 +717,11 @@ def _yakin(a, b):
     return olcek > 0 and (fark / olcek * 100.0) <= QTY_TOLERANCE_PCT
 
 
-def reconcile(data, root=None):
+def reconcile(data, root=None, api=False):
     """
     Borsa dosyalarıyla defteri karşılaştırır. **Deftere hiçbir şey yazmaz.**
     """
-    olaylar, kaynaklar, uyarilar = load_all_events(root)
+    olaylar, kaynaklar, uyarilar = load_all_events(root, api=api)
     pencere = coverage_windows(olaylar)
     borsa = build_asset_summary(olaylar)
     defter = ledger_summary(data)
@@ -1137,11 +1181,11 @@ def evaluate_verified_qty(satir, verified_qty):
                         "kilitli bakiye, kapsam dışı bir borsa). Düzeltme uygulanmadı.")}
 
 
-def build_rebuild_plan(data, root=None):
+def build_rebuild_plan(data, root=None, api=False):
     """
     Her (varlık, borsa) çifti için düzeltme önerisi üretir. **Yazma yok.**
     """
-    olaylar, kaynaklar, uyarilar = load_all_events(root)
+    olaylar, kaynaklar, uyarilar = load_all_events(root, api=api)
     pencere = coverage_windows(olaylar)
     defter = ledger_positions(data)
 

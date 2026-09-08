@@ -218,7 +218,41 @@ def run_reconcile():
     **SALT OKUNURDUR — deftere hiçbir şey yazmaz.** Maliyet tabanı kullanıcının
     elle girdiği hâliyle kalır; bu uç yalnızca farkları raporlar.
     """
-    return reconcile.reconcile(load_portfolio())
+    return reconcile.reconcile(load_portfolio(), api=True)
+
+
+@app.get("/api/reconcile/api-history")
+def get_api_history_status():
+    """API'den doldurulmuş geçmişin özeti. **Ağa çıkmaz**, arşivi okur."""
+    return {"filled": archive.api_history_status()}
+
+
+@app.post("/api/reconcile/api-history")
+def fill_api_history():
+    """
+    Borsa geçmişini API'den doldurur ve arşive yazar. **Deftere yazmaz.**
+
+    Yavaştır ve yüzlerce imzalı istek atar; bu yüzden düzenli taramanın
+    değil, kullanıcının açık bir eyleminin ucudur.
+    """
+    import api_history
+
+    if not keyvault.is_unlocked():
+        raise HTTPException(
+            status_code=400,
+            detail=("Anahtar kasası kilitli. Geçmişi doldurmak için önce "
+                    "kasayı açın."))
+
+    olaylar, kaynaklar, uyarilar = api_history.topla(load_portfolio())
+    borsalar = {}
+    for o in olaylar:
+        borsalar.setdefault(str(o.get("exchange") or "").upper(), []).append(o)
+    for borsa, alt in borsalar.items():
+        if archive.save_api_history(borsa, alt) is None:
+            uyarilar.append(f"{borsa} geçmişi arşive yazılamadı.")
+
+    return {"success": True, "sources": kaynaklar, "warnings": uyarilar,
+            "events": len(olaylar), "filled": archive.api_history_status()}
 
 
 # -------------------------------------------------------------

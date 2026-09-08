@@ -1500,7 +1500,7 @@
             <span>🗄️ Arşiv & Net Varlık</span>
           </button>
           <!-- FAZ F3 — Borsa mutabakatı. SALT OKUNUR: deftere hiçbir şey yazmaz. -->
-          <button @click="tvSubTab = 'reconcile'; if (!reconcileReport) { runReconcile(); fetchRebuildPlan(); fetchLedgerHistory(); }" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'reconcile' ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
+          <button @click="tvSubTab = 'reconcile'; if (!reconcileReport) { runReconcile(); fetchRebuildPlan(); fetchLedgerHistory(); fetchApiHistoryStatus(); }" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5" :class="tvSubTab === 'reconcile' ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-md' : 'bg-slate-800 text-slate-400 hover:text-white'">
             <i data-lucide="git-compare" class="w-4 h-4"></i>
             <span>🔍 Borsa Mutabakatı</span>
           </button>
@@ -1990,6 +1990,56 @@
                   class="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:bg-slate-800 disabled:text-slate-600 text-white text-xs font-bold transition">
             <span x-text="reconcileBusy ? 'Karşılaştırılıyor…' : '↻ Yeniden Çalıştır'"></span>
           </button>
+        </div>
+
+        <!-- FAZ F7c — Geçmişin API'den doldurulması.
+             Dosyalar derin arşivdir ve bir kez indirilir; API onların
+             bittiği yerden sonrasını kapatır. Böylece her ay yeniden dosya
+             indirme zahmeti ortadan kalkar. -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3.5 space-y-3 font-sans">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="text-[11.5px] text-slate-300 leading-relaxed max-w-2xl">
+              <div class="font-bold text-white mb-1">🔄 Geçmişi Borsadan Doldur</div>
+              İndirdiğiniz dosyalar <b>derin arşivdir</b> — bir kez indirilir, değişmez.
+              Bu düğme borsanın API'sinden <b>dosyaların bittiği yerden sonrasını</b> okur,
+              böylece her ay yeniden dosya indirmeniz gerekmez.
+              <span class="block mt-1 text-slate-500">
+                Aynı işlem iki kez sayılmaz: çakışan dönemde dosya esas alınır.
+                <b class="text-slate-400">Bu işlem de deftere hiçbir şey yazmaz.</b>
+              </span>
+            </div>
+            <button @click="fillApiHistory()" :disabled="apiHistoryBusy"
+                    class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-600 text-white text-xs font-bold transition whitespace-nowrap">
+              <span x-text="apiHistoryBusy ? 'Doldruluyor… (birkaç dakika)' : '⬇ Geçmişi Doldur'"></span>
+            </button>
+          </div>
+
+          <div x-show="apiHistoryFilled.length > 0" style="display:none;"
+               class="flex flex-wrap items-center gap-2">
+            <template x-for="f in apiHistoryFilled" :key="f.exchange">
+              <span class="px-2 py-1 rounded-lg bg-emerald-950/50 border border-emerald-800/50 text-emerald-200 text-[11px] font-mono-nums">
+                <b x-text="f.exchange"></b>:
+                <span x-text="f.rows + ' kayıt'"></span>
+                <span class="opacity-70" x-text="' · ' + (f.first || '?').slice(0, 10) + ' … ' + (f.last || '?').slice(0, 10)"></span>
+                <span class="opacity-50" x-text="' · ' + (f.filled_at || '').replace('T', ' ').slice(0, 16)"></span>
+              </span>
+            </template>
+          </div>
+
+          <div x-show="apiHistoryFilled.length === 0 && !apiHistoryBusy" style="display:none;"
+               class="text-[11px] text-slate-500">
+            Henüz doldurma yapılmadı. Mutabakat şu an yalnızca dosyalara bakıyor.
+          </div>
+
+          <!-- Uyarılar SESSİZCE yutulmaz: bir pencerenin okunamaması, kapsamın
+               sandığınızdan dar olduğu anlamına gelir ve bunu bilmelisiniz. -->
+          <div x-show="apiHistoryWarnings.length > 0" style="display:none;"
+               class="px-3 py-2 rounded-lg bg-amber-950/40 border border-amber-800/50 text-[11px] text-amber-200 leading-relaxed">
+            <b x-text="apiHistoryWarnings.length + ' uyarı:'"></b>
+            <template x-for="w in apiHistoryWarnings.slice(0, 4)" :key="w">
+              <div class="opacity-90" x-text="'• ' + w"></div>
+            </template>
+          </div>
         </div>
 
         <!-- Durum filtreleri -->
@@ -6232,6 +6282,6 @@
   </div>
 
   <!-- App Frontend Script -->
-  <script src="/static/app.js?v=3.1"></script>
+  <script src="/static/app.js?v=3.2"></script>
 </body>
 </html>

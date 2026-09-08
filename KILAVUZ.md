@@ -331,6 +331,36 @@ açabilirsiniz; **dosya adlarını değiştirmeyin** (sistem adlarından tanıyo
 
 Bu klasör `.gitignore` kapsamındadır — işlem geçmişiniz asla yayınlanmaz.
 
+### Adım 2b — Geçmişi borsadan doldurun (her ay dosya indirmeyin)
+
+Dosyaları bir kez indirdikten sonra sorun şu: **eskiyorlar.** Ağustosta indirdiğiniz
+dosya eylülde yaptığınız işlemleri bilmez ve mutabakat o farkı "defteriniz yanlış"
+gibi gösterir. Oysa yanlış olan defter değil, dosyanın tarihi.
+
+Bunun için **⬇ Geçmişi Doldur** düğmesi var. Borsanın API'sinden işlem, Earn ödülü,
+para yatırma ve çekme geçmişini okur ve **dosyalarınızın bittiği yerden sonrasını**
+doldurur. İş bölümü şudur:
+
+| Dönem | Kaynak | Ne sıklıkla |
+|:---|:---|:---|
+| Derin geçmiş (~2023'ten dosyanın tarihine) | İndirdiğiniz dosyalar | Bir kez |
+| Dosyadan bugüne | Borsa API'si | Doldur düğmesine bastıkça |
+
+**Aynı işlem iki kez sayılmaz.** Çakışan dönemde dosya esas alınır, çünkü dosya
+daha zengindir: Convert işlemleri, airdrop dağıtımları ve cüzdanlar arası taşımalar
+hesap defteri dosyasında görünür, API'de bir kısmının karşılığı yoktur.
+
+Bilmeniz gerekenler:
+
+- **Anahtar kasanız açık olmalı.** Doldurma imzalı istek atar; kilitliyken reddedilir.
+- **Birkaç dakika sürebilir** — sembol başına ayrı çağrı yapılır.
+- **API sınırlıdır.** Binance yaklaşık 2 yıl geriye tutar, MEXC daha az. Bu yüzden
+  eski dosyalarınızı silmeyin; derin geçmişin tek kaynağı onlar.
+- **Deftere hiçbir şey yazmaz.** Bu işlem de yalnızca "borsa ne diyor" tarafını
+  tazeler. Ne aktarılacağına siz karar verirsiniz.
+- Bir pencere okunamazsa **sessizce geçilmez**, uyarı olarak ekranda görünür:
+  kapsamın sandığınızdan dar olduğunu bilmelisiniz.
+
 ### Adım 3 — Karşılaştırmayı okuyun
 
 Üstteki tablo borsanın kaydı ile defterinizi yan yana koyar. **Bu tablo deftere

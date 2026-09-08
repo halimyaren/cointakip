@@ -66,7 +66,9 @@ SNAPSHOT_REFRESH_TTL = 3600.0
 # 3 — `market_snapshots` tablosu eklendi (FAZ M1). Aynı yöntem.
 # 4 — `exchange_events`, `exchange_sync_state`, `exchange_balance_state`
 #     eklendi (FAZ F7 — borsa işlemlerinin yakalanması). Aynı yöntem.
-SCHEMA_VERSION = 4
+# 5 — `api_history_events` eklendi (FAZ F7c — geçmişin API'den doldurulması).
+#     Aynı yöntem.
+SCHEMA_VERSION = 5
 
 
 def archive_path():
@@ -279,6 +281,27 @@ def init_archive():
                     seen_at  TEXT,
                     seen_ts  REAL,
                     PRIMARY KEY (exchange, asset)
+                );
+
+                -- Borsa API'sinden doldurulmuş geçmiş (FAZ F7c). Buradaki
+                -- satırlar MUTABAKAT içindir; `exchange_events`teki gelen
+                -- işlemlerle karıştırılmamalı. İkisi ayrı tablodur çünkü
+                -- amaçları ayrı: orada kullanıcının karar vereceği birkaç
+                -- satır durur, burada binlerce satırlık ham geçmiş.
+                --
+                -- Doldurma borsa BAZINDA tam yenilemedir: o borsanın
+                -- satırları silinip yeniden yazılır. Uç, kendi penceresi
+                -- için tek doğrudur; birleştirmeye çalışmak eski ve yeni
+                -- okumaları çakıştırıp mükerrer üretirdi.
+                CREATE TABLE IF NOT EXISTS api_history_events (
+                    exchange  TEXT NOT NULL,
+                    row_no    INTEGER NOT NULL,
+                    time      TEXT,
+                    kind      TEXT,
+                    asset     TEXT,
+                    payload   TEXT NOT NULL,      -- olayın tamamı (JSON)
+                    filled_at TEXT,
+                    PRIMARY KEY (exchange, row_no)
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_exevents_status
@@ -1242,3 +1265,84 @@ def set_balance_state(exchange, balances):
     except Exception as e:
         logger.warning("Bakiye durumu yazılamadı: %s", e)
         return False
+
+
+# ---------------------------------------------------------------------
+# FAZ F7c — API'den doldurulmuş geçmiş
+# ---------------------------------------------------------------------
+def save_api_history(exchange, events):
+    """Bir borsanın API geçmişini TAM YENİLEME olarak yazar.
+
+    Yazılan satır sayısını döndürür; yazamazsa None. Borsa bazında silip
+    yeniden yazmak bilinçli: uç kendi penceresi için tek doğrudur ve eski
+    okumayla birleştirmeye çalışmak mükerrer satır üretirdi.
+    """
+    try:
+        if not init_archive():
+            return None
+        borsa = str(exchange or "").upper().strip()
+        if not borsa:
+            return None
+        iso = datetime.now().isoformat(timespec="seconds")
+        satirlar = [
+            (borsa, i, str(o.get("time") or ""), str(o.get("kind") or ""),
+             str(o.get("asset") or ""), json.dumps(o, ensure_ascii=False,
+                                                   default=str), iso)
+            for i, o in enumerate(events or [])
+        ]
+        with _connect() as conn:
+            conn.execute("DELETE FROM api_history_events WHERE exchange = ?",
+                         (borsa,))
+            conn.executemany("""
+                INSERT INTO api_history_events
+                    (exchange, row_no, time, kind, asset, payload, filled_at)
+                VALUES (?,?,?,?,?,?,?)
+            """, satirlar)
+        return len(satirlar)
+    except Exception as e:
+        logger.warning("API geçmişi arşive yazılamadı (%s): %s", exchange, e)
+        return None
+
+
+def load_api_history(exchange=None):
+    """Doldurulmuş geçmiş olayları. Arşiv yoksa BOŞ döner, patlamaz."""
+    try:
+        if not os.path.exists(archive_path()):
+            return []
+        sorgu = "SELECT payload FROM api_history_events"
+        params = []
+        if exchange:
+            sorgu += " WHERE exchange = ?"
+            params.append(str(exchange).upper())
+        sorgu += " ORDER BY exchange, row_no"
+        out = []
+        with _connect() as conn:
+            for satir in conn.execute(sorgu, params).fetchall():
+                try:
+                    out.append(json.loads(satir["payload"]))
+                except Exception:
+                    continue
+        return out
+    except Exception as e:
+        logger.debug("API geçmişi okunamadı: %s", e)
+        return []
+
+
+def api_history_status():
+    """Borsa başına doldurma özeti: kaç satır, ne zaman, hangi aralık."""
+    try:
+        if not os.path.exists(archive_path()):
+            return []
+        with _connect() as conn:
+            return [dict(r) for r in conn.execute("""
+                SELECT exchange, COUNT(*) AS rows,
+                       MIN(NULLIF(time, '')) AS first,
+                       MAX(NULLIF(time, '')) AS last,
+                       MAX(filled_at) AS filled_at
+                FROM api_history_events
+                GROUP BY exchange
+                ORDER BY exchange
+            """).fetchall()]
+    except Exception as e:
+        logger.debug("API geçmişi durumu okunamadı: %s", e)
+        return []

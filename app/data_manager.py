@@ -2100,16 +2100,21 @@ def _canli_bakiye(asset: str, location: str):
         return None
 
 
-def get_rebuild_plan(data=None, root=None):
-    """Düzeltme önerilerini döndürür. Salt okunur."""
+def get_rebuild_plan(data=None, root=None, api=True):
+    """Düzeltme önerilerini döndürür. Salt okunur.
+
+    `api` varsayılan olarak açık: doldurulmuş geçmiş varsa öneri onu da
+    hesaba katmalı. Doldurma yapılmamışsa arşiv boş döner ve davranış
+    dosya tabanlı hâliyle birebir aynı kalır.
+    """
     import reconcile
     if data is None:
         data = load_portfolio()
-    return reconcile.build_rebuild_plan(data, root)
+    return reconcile.build_rebuild_plan(data, root, api=api)
 
 
 def apply_rebuild(pos_key: str, signature: str = None, note: str = "", root=None,
-                  verified_qty=None):
+                  verified_qty=None, api=True):
     """
     Bir pozisyonun lotlarını borsa kayıtlarından kurulmuş hâliyle değiştirir.
 
@@ -2123,7 +2128,10 @@ def apply_rebuild(pos_key: str, signature: str = None, note: str = "", root=None
     """
     import reconcile
     data = load_portfolio()
-    plan = reconcile.build_rebuild_plan(data, root)
+    # Plan ile uygulama AYNI kaynak kümesinden hesaplanmalı: biri API
+    # geçmişini katıp diğeri katmazsa imza tutmaz ve kullanıcı, hiçbir şey
+    # değişmediği hâlde "öneri değişmiş" hatasına takılır.
+    plan = reconcile.build_rebuild_plan(data, root, api=api)
     satir = next((r for r in plan["rows"] if r["pos_key"] == pos_key), None)
     if satir is None:
         raise ValueError(f"Bu pozisyon için düzeltme önerisi yok: {pos_key}")
