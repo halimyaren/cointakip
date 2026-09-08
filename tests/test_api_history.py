@@ -358,6 +358,120 @@ class TestDerinlikSinirdanGelir:
 
 
 # =====================================================================
+# FAZ F7e — doldurmadaki iki kusur
+# =====================================================================
+class TestTozDoldurmayaGirer:
+    """`fetch_dust_log` iç içe cevabı ZATEN açıyor.
+
+    Bir kez daha `dust_rows` uygulamak listeye sözlük muamelesi yapıp
+    "yanıt beklenen biçimde değil" hatası veriyordu; sonuç, doldurmada hiç
+    toz kaydı olmamasıydı. Düzenli tarama bu hatayı yapmıyordu — iki yolun
+    ayrışması tam da bu tür sessiz kayıpları üretiyor.
+    """
+
+    def _profil(self):
+        return dict(BINANCE_PROFIL)
+
+    def _duz_satir(self):
+        return {"from_asset": "MAV", "target_asset": "BNB", "amount": "12",
+                "transfered_amount": "0.02", "service_charge_amount": "0.001",
+                "operate_time": 1757000000000, "trans_id": 7}
+
+    def test_duz_satirlar_olaya_donusur(self, monkeypatch):
+        import exchanges
+        monkeypatch.setattr(exchanges, "fetch_dust_log",
+                            lambda p, **k: [self._duz_satir()])
+        monkeypatch.setattr(exchanges, "supports",
+                            lambda p, alan: alan == "dust_log_path")
+        olaylar, uyarilar = api_history._borsa_akislari(self._profil(), "BINANCE")
+        assert uyarilar == []
+        assert [o["kind"] for o in olaylar] == [trade_sync.DUST]
+
+    def test_toz_bir_daha_acilmaz(self, monkeypatch):
+        """`dust_rows` ikinci kez çağrılırsa bu test düşer."""
+        import exchanges
+        cagri = {"n": 0}
+
+        def sayan(ham):
+            cagri["n"] += 1
+            return ham
+
+        monkeypatch.setattr(exchanges, "fetch_dust_log",
+                            lambda p, **k: [self._duz_satir()])
+        monkeypatch.setattr(exchanges, "dust_rows", sayan)
+        monkeypatch.setattr(exchanges, "supports",
+                            lambda p, alan: alan == "dust_log_path")
+        api_history._borsa_akislari(self._profil(), "BINANCE")
+        assert cagri["n"] == 0
+
+    def test_toz_ucu_dusetse_uyari_verilir(self, monkeypatch):
+        import exchanges
+        monkeypatch.setattr(exchanges, "supports",
+                            lambda p, alan: alan == "dust_log_path")
+
+        def patla(p, **k):
+            raise RuntimeError("HTTP 418")
+
+        monkeypatch.setattr(exchanges, "fetch_dust_log", patla)
+        olaylar, uyarilar = api_history._borsa_akislari(self._profil(), "BINANCE")
+        assert olaylar == [] and len(uyarilar) == 1 and "418" in uyarilar[0]
+
+
+class TestOluSembolDoldurmada:
+    """Borsanın tanımadığı sembol doldurmada da elenmeli.
+
+    Düzenli tarama `XAUTUSDT`'yi atlıyordu, doldurma atlamıyordu; aynı bilgi
+    iki yerde farklı davranıyordu ve her doldurmada uyarı üretiyordu.
+    """
+
+    def test_gecersiz_sembol_atlanir(self):
+        archive.set_sync_cursor(
+            "MEXC", "XAUTUSDT",
+            error='HTTP 400: {"msg":"Invalid symbol.","code":-1121}')
+        assert api_history._sembol_atlanir_mi("MEXC", "XAUTUSDT") is True
+
+    def test_bir_kez_calismis_sembol_atlanmaz(self):
+        """İmleci varsa hata geçiciydi; kalıcı bir yokluk değil."""
+        archive.set_sync_cursor("MEXC", "TIAUSDT", cursor=42)
+        archive.set_sync_cursor("MEXC", "TIAUSDT", error="HTTP 500")
+        assert api_history._sembol_atlanir_mi("MEXC", "TIAUSDT") is False
+
+    def test_gecici_hata_atlanmaz(self):
+        archive.set_sync_cursor("MEXC", "GOATUSDT", error="HTTP 418 teapot")
+        assert api_history._sembol_atlanir_mi("MEXC", "GOATUSDT") is False
+
+    def test_hic_taranmamis_sembol_atlanmaz(self):
+        assert api_history._sembol_atlanir_mi("MEXC", "YENIUSDT") is False
+
+    def test_topla_atlanan_sembole_istek_atmaz(self, monkeypatch):
+        import exchanges
+        import keyvault
+
+        archive.set_sync_cursor(
+            "BINANCE", "OLUUSDT",
+            error='HTTP 400: {"msg":"Invalid symbol.","code":-1121}')
+        monkeypatch.setattr(keyvault, "is_unlocked", lambda: True)
+        monkeypatch.setattr(exchanges, "list_profiles",
+                            lambda: {"BINANCE": dict(BINANCE_PROFIL)})
+        monkeypatch.setattr(exchanges, "read_exchange",
+                            lambda konum, profil: {"balances": []})
+        monkeypatch.setattr(exchanges, "supports", lambda p, alan: False)
+        monkeypatch.setattr(trade_sync, "aday_semboller",
+                            lambda konum, defter, bakiyeler, degisen=None:
+                            ["OLUUSDT", "ARBUSDT"])
+
+        istenen = []
+
+        def sahte(profil, konum, sembol):
+            istenen.append(sembol)
+            return []
+
+        monkeypatch.setattr(api_history, "_sembol_islemleri", sahte)
+        api_history.topla({"transactions": []})
+        assert istenen == ["ARBUSDT"]
+
+
+# =====================================================================
 # Arşive yazma ve okuma
 # =====================================================================
 class TestArsiv:

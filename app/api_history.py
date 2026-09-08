@@ -270,6 +270,23 @@ def _pencere_adedi(geriye_gun, pencere_gun):
     return max(1, min(adet, PENCERE_TAVANI))
 
 
+def _sembol_atlanir_mi(konum, sembol):
+    """Borsanın "böyle bir sembol yok" dediği çiftler doldurmada da atlanır.
+
+    Düzenli tarama bu elemeyi yapıyordu, doldurma yapmıyordu; sonuç, borsanın
+    artık tanımadığı bir sembolün (MEXC'te `XAUTUSDT`, doğrusu
+    `GOLD(XAUT)USDT`) her doldurmada uyarı üretmesiydi. Aynı bilgi iki yerde
+    farklı davranmamalı.
+    """
+    import archive
+    import trade_sync
+
+    durum = archive.get_sync_cursor(konum, sembol) or {}
+    if durum.get("cursor"):
+        return False              # bir kez çalışmış, hata geçiciydi
+    return trade_sync.gecersiz_sembol_hatasi_mi(durum.get("last_error"))
+
+
 def _sembol_islemleri(profil, konum, sembol):
     """Bir sembolün TÜM işlem geçmişi. `fromId=0`'dan başlar."""
     import exchanges
@@ -336,8 +353,14 @@ def _borsa_akislari(profil, konum, sinir=None):
 
     if exchanges.supports(profil, "dust_log_path"):
         # Toz ucu aralık almıyor: son 100 kayıt neyse odur.
+        #
+        # `fetch_dust_log` iç içe cevabı ZATEN açıyor (`return dust_rows(ham)`).
+        # Burada bir kez daha `dust_rows` uygulamak, listeye sözlük muamelesi
+        # yapıp "yanıt beklenen biçimde değil" hatası veriyordu ve doldurmada
+        # hiç toz kaydı olmuyordu. Düzenli tarama bu hatayı yapmıyordu çünkü
+        # o, `fetch_dust_log`un çıktısını doğrudan `normalize_dust`a veriyor.
         try:
-            for satir in exchanges.dust_rows(exchanges.fetch_dust_log(profil)):
+            for satir in exchanges.fetch_dust_log(profil):
                 try:
                     olaylar.append(trade_sync.normalize_dust(konum, satir))
                 except Exception as e:
@@ -412,7 +435,8 @@ def topla(defter, profiller=None, sinirlar=None):
             continue
 
         bakiyeler = okuma.get("balances") or []
-        semboller = trade_sync.aday_semboller(konum, defter, bakiyeler)
+        semboller = [s for s in trade_sync.aday_semboller(konum, defter, bakiyeler)
+                     if not _sembol_atlanir_mi(konum, s)]
         for sembol in semboller:
             try:
                 ham_olaylar.extend(_sembol_islemleri(profil, konum, sembol))
