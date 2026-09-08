@@ -59,6 +59,7 @@ def _akislari_sustur(monkeypatch, **ustler):
     akış değiştirilir.
     """
     for ad in ("fetch_dust_log", "fetch_earn_rewards",
+               "fetch_soft_staking_rewards",
                "fetch_deposits", "fetch_withdrawals"):
         monkeypatch.setattr(exchanges, ad, ustler.get(ad, lambda *a, **k: []))
 
@@ -1373,3 +1374,86 @@ class TestKasaErisimi:
         for anahtar in durum:
             assert anahtar in ("available", "pin_enabled", "sealed",
                                "unlocked", "entry_count")
+
+
+# =====================================================================
+# FAZ F7f — Soft Staking akışı
+# =====================================================================
+class TestSoftStakingAkisi:
+    """Simple Earn'ün ödül uçları Soft Staking'i göstermiyor.
+
+    Gerçek hesapta ikisi de hatasız çalışıp sıfır satır döndürürken bir APT
+    ödülü bakiyeye geçmişti; sistem onu yalnızca "açıklanamayan artış" olarak
+    görebiliyordu. Yakalamak ile ADINI KOYMAK farklı şeyler: adı konmayan bir
+    gelir deftere işlenemez.
+    """
+
+    def _satir(self, **ustler):
+        satir = {"asset": "APT", "amount": 0.00040177, "time": 1757200000000,
+                 "product": "soft", "ref": "APT", "staked_asset": "APT"}
+        satir.update(ustler)
+        return satir
+
+    def test_odul_earn_olayina_donusur(self):
+        olay = trade_sync.normalize_earn("BINANCE", self._satir())
+        assert olay["kind"] == trade_sync.EARN
+        assert olay["base_asset"] == "APT"
+        assert olay["qty"] == pytest.approx(0.00040177)
+
+    def test_kimlik_uc_urunu_ayirir(self):
+        """Aynı varlık ve aynı milisaniye: ürün ayrımı olmasaydı üç ayrı
+        ödül tek olay sanılır, ikisi sessizce kaybolurdu."""
+        ortak = {"asset": "APT", "amount": 1.0, "time": 1757200000000}
+        kimlikler = {
+            trade_sync.normalize_earn("BINANCE", dict(ortak, product="soft"))["event_uid"],
+            trade_sync.normalize_earn("BINANCE", dict(ortak, product="flex"))["event_uid"],
+            trade_sync.normalize_earn("BINANCE", dict(ortak, locked=True))["event_uid"],
+        }
+        assert len(kimlikler) == 3
+
+    def test_eski_locked_bayragi_hala_calisir(self):
+        """Kimlik biçimi değişirse daha önce işlenmiş bir ödül ikinci kez
+        "yeni" görünürdü."""
+        eski = trade_sync.normalize_earn(
+            "BINANCE", {"asset": "APT", "amount": 1.0,
+                        "time": 1757200000000, "locked": True})
+        assert ":locked:" in eski["event_uid"]
+
+    def test_kapsam_hesap_akislarinda(self):
+        assert trade_sync.SOFT_STAKING_KAPSAMI in trade_sync.HESAP_KAPSAMLARI
+
+    def test_akis_taramada_okunur(self, monkeypatch, kayitli_portfoy):
+        _akislari_sustur(
+            monkeypatch,
+            fetch_soft_staking_rewards=lambda *a, **k: [self._satir()])
+        monkeypatch.setattr(exchanges, "fetch_my_trades", lambda *a, **k: [])
+        monkeypatch.setattr(
+            exchanges, "read_exchange",
+            lambda konum, profil: {"balances": [{"asset": "APT", "qty": 12.0}]})
+
+        servis = trade_sync.TradeSyncService()
+        archive.set_sync_cursor("BINANCE", trade_sync.SOFT_STAKING_KAPSAMI,
+                                cursor=1)
+        sonuc = servis._akisi_cek("BINANCE", dict(BINANCE_PROFIL),
+                                  trade_sync.SOFT_STAKING_KAPSAMI)
+        assert sonuc["supported"] is True
+        assert [o["base_asset"] for o in sonuc["events"]] == ["APT"]
+
+    def test_ilk_tarama_yalnizca_temel_kurar(self, monkeypatch, kayitli_portfoy):
+        """Geçmiş ödülleri gelen kutusuna boca etmek uyarıyı değersizleştirir."""
+        _akislari_sustur(
+            monkeypatch,
+            fetch_soft_staking_rewards=lambda *a, **k: [self._satir()])
+        servis = trade_sync.TradeSyncService()
+        sonuc = servis._akisi_cek("BINANCE", dict(BINANCE_PROFIL),
+                                  trade_sync.SOFT_STAKING_KAPSAMI)
+        assert sonuc["events"] == [] and sonuc["baseline"] is True
+
+    def test_desteklenmeyen_borsada_sessizce_atlanir(self, monkeypatch,
+                                                     kayitli_portfoy):
+        _akislari_sustur(monkeypatch)
+        servis = trade_sync.TradeSyncService()
+        mexc = dict(exchanges.BUILTIN_PROFILES["MEXC"])
+        sonuc = servis._akisi_cek("MEXC", mexc,
+                                  trade_sync.SOFT_STAKING_KAPSAMI)
+        assert sonuc["supported"] is False and sonuc["events"] == []

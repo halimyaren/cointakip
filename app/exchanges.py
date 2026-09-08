@@ -162,12 +162,26 @@ BUILTIN_PROFILES = {
         "earn_locked_path": "/sapi/v1/simple-earn/locked/history/rewardsRecord",
         "deposit_path": "/sapi/v1/capital/deposit/hisrec",
         "withdraw_path": "/sapi/v1/capital/withdraw/history",
+        # FAZ F7f — Soft Staking, Simple Earn'ün bir parçası DEĞİLDİR.
+        #
+        # Varlık Spot hesapta kalır, abonelik yoktur, ödül günlük düşer. Bu
+        # yüzden Simple Earn'ün esnek ve vadeli ödül uçlarında hiç görünmez:
+        # gerçek hesapta iki uç da hatasız çalışıp sıfır satır döndürürken
+        # bir APT ödülü bakiyeye geçmişti ve sistem onu yalnızca
+        # "açıklanamayan bakiye artışı" olarak görebiliyordu.
+        #
+        # AYNI AİLEDEKİ `/sapi/v1/soft-staking/set` UCUNA ASLA DOKUNULMAZ.
+        # Metodu GET'tir ama işi YAZMADIR: soft staking'i açıp kapatır. Bu
+        # modülün sözü "yalnızca GET" değil YALNIZCA OKUMA'dır; ikisi aynı
+        # şey değil ve bu uç tam olarak farkın kanıtıdır.
+        "soft_staking_path": "/sapi/v1/soft-staking/history/rewardsRecord",
         # Aralık tavanları GÜN cinsinden ve BORSAYA GÖRE değişir; genel bir
         # sabit yazmak MEXC'te her çağrıyı sessizce düşürmüştü (bkz. MEXC
         # profilindeki not). Bu yüzden yetenek yolları gibi bunlar da
         # yapılandırmadır.
         "capital_window_days": 90,
         "earn_window_days": 30,
+        "soft_staking_window_days": 90,     # uç 3 ay kabul ediyor
         "key_header": "X-MBX-APIKEY",
         "balances_field": "balances",
         "asset_field": "asset",
@@ -209,8 +223,10 @@ BUILTIN_PROFILES = {
         #
         # Veri 90 güne kadar TUTULUR; okunabilen tek seferlik aralık 7 gündür.
         # Geriye gitmenin yolu pencereyi kaydırmaktır (bkz. `api_history`).
+        "soft_staking_path": "",        # MEXC'te karşılığı yok
         "capital_window_days": 7,
         "earn_window_days": 0,          # Earn ucu yok
+        "soft_staking_window_days": 0,
         # MEXC imzalamayı Binance'ten birebir klonlar AMA anahtarı kendi
         # başlığında bekler. `X-MBX-APIKEY` gönderilirse başlık okunmaz ve
         # borsa, hiç başlık yollanmamış gibi `400 api key required` döner.
@@ -369,7 +385,8 @@ def validate_profile(spec: dict) -> tuple:
     for alan in ("location", "name", "family", "base_url", "account_path",
                  "time_path", "restrictions_path", "my_trades_path",
                  "dust_log_path", "earn_flexible_path", "earn_locked_path",
-                 "deposit_path", "withdraw_path", "balances_field",
+                 "deposit_path", "withdraw_path", "soft_staking_path",
+                 "balances_field",
                  "asset_field", "free_field", "locked_field", "label",
                  "key_header", "key_expires_at"):
         deger = spec.get(alan)
@@ -378,7 +395,8 @@ def validate_profile(spec: dict) -> tuple:
     # Sayısal alanlar (aralık tavanları). Metin olarak saklamak `pencere_gunu`
     # tarafında sessizce çalışırdı ama profil dosyasında "90" ile 90'ı
     # karıştırmak, ileride bir karşılaştırmada fark üretir.
-    for alan in ("capital_window_days", "earn_window_days"):
+    for alan in ("capital_window_days", "earn_window_days",
+                 "soft_staking_window_days"):
         try:
             temiz[alan] = max(0, int(float(spec.get(alan) or 0)))
         except (TypeError, ValueError):
@@ -403,7 +421,8 @@ def validate_profile(spec: dict) -> tuple:
 
     for alan in ("account_path", "time_path", "restrictions_path",
                  "my_trades_path", "dust_log_path", "earn_flexible_path",
-                 "earn_locked_path", "deposit_path", "withdraw_path"):
+                 "earn_locked_path", "deposit_path", "withdraw_path",
+                 "soft_staking_path"):
         if temiz[alan] and not temiz[alan].startswith("/"):
             temiz[alan] = "/" + temiz[alan]
 
@@ -488,8 +507,9 @@ def update_profile_fields(location: str, alanlar: dict) -> dict:
     for alan in ("location", "family", "base_url", "account_path",
                  "time_path", "restrictions_path", "my_trades_path",
                  "dust_log_path", "earn_flexible_path", "earn_locked_path",
-                 "deposit_path", "withdraw_path", "key_header",
-                 "capital_window_days", "earn_window_days"):
+                 "deposit_path", "withdraw_path", "soft_staking_path",
+                 "key_header", "capital_window_days", "earn_window_days",
+                 "soft_staking_window_days"):
         if alan not in istek:
             continue
         yeni = str(istek[alan] or "").strip()
@@ -1082,6 +1102,8 @@ GUN_MS = 24 * 60 * 60 * 1000
 # okunur (`pencere_gunu`); bunlar yalnızca profilde değer yoksa devreye girer.
 EARN_PENCERE_GUN = 30
 CAPITAL_PENCERE_GUN = 90
+SOFT_STAKING_PENCERE_GUN = 90       # uç 3 ay kabul ediyor
+SOFT_STAKING_WEIGHT = 50
 EARN_PENCERE_MS = EARN_PENCERE_GUN * GUN_MS
 CAPITAL_PENCERE_MS = CAPITAL_PENCERE_GUN * GUN_MS
 
@@ -1230,6 +1252,85 @@ def earn_rows(ham, locked=False):
     return out
 
 
+def fetch_soft_staking_rewards(profil, start_time_ms=None, end_time_ms=None,
+                               api_key=None, api_secret=None):
+    """Soft Staking ödül geçmişi. **Salt okuma (GET), ağırlık 50.**
+
+    Soft Staking, Simple Earn'ün bir çeşidi DEĞİL ayrı bir üründür: varlık
+    Spot hesapta durur, abonelik yoktur ve ödül günlük düşer. Simple Earn'ün
+    ödül uçları onu hiç göstermez.
+
+    Sayfalama `current`/`size` ile; `size` burada da açıkça gönderiliyor
+    çünkü aynı ailedeki Earn ucunda belirtmemek satır kaybettiriyordu.
+    """
+    yol = endpoint_path(profil, "soft_staking_path")
+    if not yol:
+        raise ExchangeError(
+            f"{profil.get('name') or profil.get('location')} Soft Staking ödül "
+            "geçmişi için bir uç sunmuyor.")
+
+    konum = str(profil.get("location") or "").upper().strip()
+    anahtar, gizli = _anahtarlar(konum, api_key, api_secret)
+    pencere = pencere_gunu(profil, "soft_staking_window_days",
+                           SOFT_STAKING_PENCERE_GUN) * GUN_MS
+    baslangic, bitis = _aralik(start_time_ms, end_time_ms, pencere)
+
+    satirlar = []
+    for sayfa in range(1, EARN_SAYFA_TAVANI + 1):
+        ham = signed_get(profil, yol, anahtar, gizli, {
+            "startTime": baslangic, "endTime": bitis,
+            "current": sayfa, "size": EARN_SAYFA_BOYU,
+        })
+        parca = soft_staking_rows(ham)
+        satirlar.extend(parca)
+        if len(parca) < EARN_SAYFA_BOYU:
+            break
+    return satirlar
+
+
+def soft_staking_rows(ham):
+    """Soft Staking cevabını düz satırlara açar. **Ağa çıkmaz.**
+
+    ÖDÜL, STAKE EDİLEN VARLIKTAN FARKLI BİR COİN OLABİLİR. Cevapta `asset`
+    stake edilen varlık, `rewardAsset` ise ödemenin yapıldığı varlıktır.
+    Bakiyeyi artıran ikincisidir; miktarı `asset` üzerine yazmak, hesapta hiç
+    bulunmayan bir pozisyon uydurmak olurdu.
+    """
+    if isinstance(ham, list):
+        rows = ham
+    elif isinstance(ham, dict):
+        rows = ham.get("rows")
+        if rows is None and isinstance(ham.get("data"), dict):
+            rows = ham["data"].get("rows")
+    else:
+        raise ExchangeError("Soft Staking ödül yanıtı beklenen biçimde değil.")
+    if not isinstance(rows, list):
+        return []
+
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        stake_edilen = str(r.get("asset") or "").upper().strip()
+        odenen = str(r.get("rewardAsset") or "").upper().strip() or stake_edilen
+        zaman = _zaman_ms(r.get("time"))
+        if not odenen or zaman <= 0:
+            continue
+        out.append({
+            "asset": odenen,
+            "amount": float(r.get("rewards") or 0.0),
+            "time": zaman,
+            "product": "soft",
+            # Aynı varlığa aynı milisaniyede iki ödül pratikte olmuyor; yine
+            # de stake edilen varlık kimliği ayırt ediciliği artırıyor.
+            "ref": stake_edilen,
+            "staked_asset": stake_edilen,
+            "avg_amount": str(r.get("avgAmount") or ""),
+            "reward_type": "SOFT_STAKING",
+        })
+    return out
+
+
 def fetch_deposits(profil, start_time_ms=None, end_time_ms=None,
                    api_key=None, api_secret=None):
     """Para yatırma geçmişi. **Salt okuma (GET), ağırlık 1.**"""
@@ -1359,6 +1460,10 @@ def status() -> dict:
                              "dust": supports(p, "dust_log_path"),
                              "earn": (supports(p, "earn_flexible_path")
                                       or supports(p, "earn_locked_path")),
+                             # Ayrı bir yetenek: Simple Earn olmadan da
+                             # bulunabilir, Simple Earn varken de yokluğu
+                             # kullanıcının görmesi gereken bir boşluktur.
+                             "soft_staking": supports(p, "soft_staking_path"),
                              "transfers": (supports(p, "deposit_path")
                                            or supports(p, "withdraw_path"))}
                          for k, p in profiller.items()},

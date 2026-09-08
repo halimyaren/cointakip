@@ -656,3 +656,36 @@ class TestArayuz:
         nerede = js.index("async fillApiHistory()")
         blok = js[nerede:nerede + 1600]
         assert "runReconcile()" in blok
+
+
+class TestSoftStakingDoldurmada:
+    """Doldurma da altıncı akışı okumalı; yoksa geçmiş Soft Staking geliri
+    dosyalarda da API'de de bulunmayan bir boşluk olarak kalırdı."""
+
+    def test_akis_listesinde(self, monkeypatch):
+        import exchanges
+        gorulen = []
+
+        monkeypatch.setattr(api_history, "_nefes", lambda agirlik: None)
+        monkeypatch.setattr(exchanges, "supports",
+                            lambda p, alan: alan == "soft_staking_path")
+        monkeypatch.setattr(
+            exchanges, "fetch_soft_staking_rewards",
+            lambda p, start_time_ms=None, end_time_ms=None: gorulen.append(1) or [
+                {"asset": "APT", "amount": 0.0004, "time": 1757200000000,
+                 "product": "soft", "ref": "APT"}])
+
+        olaylar, uyarilar = api_history._borsa_akislari(
+            dict(BINANCE_PROFIL), "BINANCE", "2026-09-01T00:00:00")
+        assert gorulen, "Soft Staking ucu hiç çağrılmadı"
+        assert uyarilar == []
+        assert [o["kind"] for o in olaylar] == [trade_sync.EARN] * len(olaylar)
+
+    def test_odul_bedelsiz_giris_olarak_yazilir(self):
+        olay = trade_sync.normalize_earn("BINANCE", {
+            "asset": "BNSOL", "amount": 0.031, "time": 1757300000000,
+            "product": "soft", "ref": "SOL"})
+        satir = api_history.defter_olaylari(olay)[0]
+        assert satir["kind"] == "REWARD"
+        assert satir["asset"] == "BNSOL"
+        assert satir["zero_cost"] is True

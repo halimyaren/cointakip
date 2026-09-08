@@ -104,8 +104,13 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   cost basis. MEXC exposes no such endpoint, and the app says so rather than
   pretending to cover it.
 - **Earn income and capital flows are read too** — trading is not the only thing
-  that moves a balance. Simple Earn rewards (flexible and locked), deposits and
-  withdrawals are read from their own endpoints. Earn income can be booked to the
+  that moves a balance. Simple Earn rewards (flexible and locked), **Soft
+  Staking** rewards, deposits and withdrawals are read from their own endpoints.
+  Soft Staking is a separate product, not a Simple Earn variant — the assets stay
+  in the spot account and never appear in Simple Earn's reward records, so a
+  daily reward landed in the balance while both Simple Earn endpoints returned
+  cleanly and empty. Its reward may also be paid in a *different* coin than the
+  one staked, and the coin that actually moves is the one booked. Earn income can be booked to the
   ledger as a new open lot **at the market price of the day it was received**, so
   the income enters your cost basis at its value when earned and a later sale
   counts only the difference as gain. Deposits and withdrawals **cannot** be

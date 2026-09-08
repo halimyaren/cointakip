@@ -955,3 +955,118 @@ class TestPencereAlaniProfilde:
 
         r = client.patch("/api/exchanges/MEXC", json={"capital_window_days": 90})
         assert r.status_code == 400
+
+
+# =====================================================================
+# FAZ F7f — Soft Staking
+#
+# Simple Earn'ün bir çeşidi DEĞİL ayrı bir ürün: varlık Spot hesapta kalır,
+# abonelik yoktur, ödül günlük düşer. Gerçek hesapta Simple Earn'ün iki ucu
+# da hatasız çalışıp sıfır satır döndürürken bir APT ödülü bakiyeye geçmişti
+# ve sistem onu yalnızca "açıklanamayan artış" olarak görebiliyordu.
+# =====================================================================
+SOFT_CEVABI = {
+    "total": 2,
+    "rows": [
+        # Ödül, stake edilen varlığın KENDİSİ olarak ödenmiş.
+        {"asset": "APT", "rewards": "0.00040177", "rewardAsset": "APT",
+         "avgAmount": "12.5", "time": 1757200000000},
+        # Ödül BAŞKA bir coin olarak ödenmiş — bakiyeyi artıran budur.
+        {"asset": "SOL", "rewards": "0.031", "rewardAsset": "BNSOL",
+         "avgAmount": "3.0", "time": 1757300000000},
+    ],
+}
+
+
+class TestSoftStakingSatirlari:
+
+    def test_satirlar_duzlestirilir(self):
+        satirlar = ex.soft_staking_rows(SOFT_CEVABI)
+        assert len(satirlar) == 2
+        assert satirlar[0]["amount"] == pytest.approx(0.00040177)
+        assert satirlar[0]["time"] == 1757200000000
+
+    def test_odul_varligi_esastir(self):
+        """`asset` stake edilen, `rewardAsset` ödenen varlıktır. Bakiyeyi
+        artıran ikincisidir; ilkine yazmak olmayan bir pozisyon uydururdu."""
+        satirlar = ex.soft_staking_rows(SOFT_CEVABI)
+        assert satirlar[1]["asset"] == "BNSOL"
+        assert satirlar[1]["staked_asset"] == "SOL"
+
+    def test_odul_varligi_yoksa_stake_edilene_dusulur(self):
+        satir = ex.soft_staking_rows(
+            {"rows": [{"asset": "APT", "rewards": "1", "time": 1757200000000}]})
+        assert satir[0]["asset"] == "APT"
+
+    def test_urun_etiketi_soft(self):
+        """Kimlik üç ürünü ayırmalı; aksi hâlde aynı milisaniyedeki iki ayrı
+        ürünün ödülü tek olay sanılırdı."""
+        assert ex.soft_staking_rows(SOFT_CEVABI)[0]["product"] == "soft"
+
+    def test_zamansiz_satir_atlanir(self):
+        assert ex.soft_staking_rows(
+            {"rows": [{"asset": "APT", "rewards": "1", "time": 0}]}) == []
+
+    def test_bozuk_yanit_hata_verir(self):
+        with pytest.raises(ex.ExchangeError):
+            ex.soft_staking_rows("olmadi")
+
+    def test_liste_gelirse_de_okunur(self):
+        assert len(ex.soft_staking_rows(SOFT_CEVABI["rows"])) == 2
+
+
+class TestSoftStakingUcu:
+
+    def test_sayfa_boyu_gonderilir(self, monkeypatch):
+        """`size` belirtilmezse aynı ailedeki Earn ucu 10 satır döndürüyordu."""
+        kayit = _params_yakala(monkeypatch)
+        ex.fetch_soft_staking_rewards(BINANCE, api_key="A", api_secret="S")
+        assert kayit[0]["params"]["size"] == ex.EARN_SAYFA_BOYU
+
+    def test_aralik_cift_gonderilir(self, monkeypatch):
+        """Binance aralık parametrelerini çift ister; tek taraflı istek
+        `-1102` ile döner ve akış sessizce ölür."""
+        kayit = _params_yakala(monkeypatch)
+        ex.fetch_soft_staking_rewards(BINANCE, api_key="A", api_secret="S")
+        assert "startTime" in kayit[0]["params"]
+        assert "endTime" in kayit[0]["params"]
+
+    def test_uc_ay_tavani_uygulanir(self, monkeypatch):
+        kayit = _params_yakala(monkeypatch)
+        simdi = int(time.time() * 1000)
+        ex.fetch_soft_staking_rewards(
+            BINANCE, start_time_ms=simdi - 400 * ex.GUN_MS, end_time_ms=simdi,
+            api_key="A", api_secret="S")
+        p = kayit[0]["params"]
+        assert p["endTime"] - p["startTime"] <= 90 * ex.GUN_MS
+
+    def test_dogru_yola_gidilir(self, monkeypatch):
+        kayit = _params_yakala(monkeypatch)
+        ex.fetch_soft_staking_rewards(BINANCE, api_key="A", api_secret="S")
+        assert kayit[0]["path"] == "/sapi/v1/soft-staking/history/rewardsRecord"
+
+    def test_desteklemeyen_borsada_hata(self):
+        with pytest.raises(ex.ExchangeError):
+            ex.fetch_soft_staking_rewards(MEXC, api_key="A", api_secret="S")
+
+    def test_yetenek_bildirilir(self):
+        assert ex.supports(BINANCE, "soft_staking_path") is True
+        assert ex.supports(MEXC, "soft_staking_path") is False
+
+
+class TestYazmaUcunaDokunulmaz:
+    """`/sapi/v1/soft-staking/set` metodu GET ama işi YAZMA: soft staking'i
+    açıp kapatır. Bu modülün sözü "yalnızca GET" değil YALNIZCA OKUMA."""
+
+    def test_set_ucu_hicbir_yerde_gecmiyor(self):
+        import os
+        kok = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for ad in ("exchanges.py", "trade_sync.py", "api_history.py"):
+            with open(os.path.join(kok, "app", ad), encoding="utf-8") as f:
+                icerik = f.read()
+            # Yorumda uyarı olarak geçebilir; yol dizesi olarak geçemez.
+            assert '"/sapi/v1/soft-staking/set"' not in icerik
+            assert "'/sapi/v1/soft-staking/set'" not in icerik
+
+    def test_profilde_yalnizca_okuma_yolu_var(self):
+        assert BINANCE["soft_staking_path"].endswith("/history/rewardsRecord")

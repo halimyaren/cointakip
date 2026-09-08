@@ -104,8 +104,13 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   için küçüktür, maliyet tabanı için değil. MEXC böyle bir uç sunmuyor ve
   uygulama bunu kapatıyormuş gibi yapmak yerine açıkça söylüyor.
 - **Earn geliri ve para hareketleri de okunur** — bakiyeyi değiştiren tek şey
-  alım-satım değil. Simple Earn faizi (esnek ve vadeli), para yatırma ve para
-  çekme ayrı uçlardan okunur. Earn geliri deftere **alındığı günün piyasa
+  alım-satım değil. Simple Earn faizi (esnek ve vadeli), **Soft Staking** ödülü,
+  para yatırma ve para çekme ayrı uçlardan okunur. Soft Staking, Simple Earn'ün
+  bir çeşidi değil ayrı bir üründür — varlık Spot hesapta kalır ve Simple Earn'ün
+  ödül kayıtlarında hiç görünmez; nitekim iki uç da hatasız çalışıp boş dönerken
+  günlük bir ödül bakiyeye geçmişti. Ödül, stake edilenden *farklı* bir coin
+  olarak da ödenebiliyor ve deftere giren, bakiyeyi gerçekten artıran coindir.
+  Earn geliri deftere **alındığı günün piyasa
   fiyatıyla** yeni bir açık lot olarak eklenir; böylece gelir elde edildiği
   andaki değeriyle maliyet tabanına girer ve sonraki satışta yalnızca aradaki
   fark kâr sayılır. Para giriş/çıkışı ise deftere **yazılamaz**: gelen coin çoğu

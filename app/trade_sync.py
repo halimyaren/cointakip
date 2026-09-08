@@ -115,11 +115,14 @@ EARN_ESNEK_KAPSAMI = "__earn_flex__"
 EARN_VADELI_KAPSAMI = "__earn_locked__"
 YATIRMA_KAPSAMI = "__deposit__"
 CEKME_KAPSAMI = "__withdraw__"
+# Soft Staking, Simple Earn'ün bir çeşidi değil ayrı bir üründür ve ayrı bir
+# uçtan okunur; Simple Earn'ün ödül uçlarında hiç görünmez.
+SOFT_STAKING_KAPSAMI = "__soft_staking__"
 
 # Hepsi hesap düzeyinde: hangi varlığı etkilediklerini önceden bilemeyiz, o
 # yüzden biri hata verdiğinde bakiye fotoğrafının TAMAMI eski hâlinde bırakılır.
 HESAP_KAPSAMLARI = (TOZ_KAPSAMI, EARN_ESNEK_KAPSAMI, EARN_VADELI_KAPSAMI,
-                    YATIRMA_KAPSAMI, CEKME_KAPSAMI)
+                    SOFT_STAKING_KAPSAMI, YATIRMA_KAPSAMI, CEKME_KAPSAMI)
 
 # Bakiye farkı eşleştirme toleransı. Borsa miktarları ondalık basamak
 # yuvarlamasıyla geliyor; birebir eşitlik aramak her turda sahte "açıklanamayan
@@ -294,7 +297,11 @@ def normalize_earn(exchange, satir):
     # satır kimliği vermiyor. Aynı varlığa aynı milisaniyede iki ayrı ödül
     # yazılması pratikte olmayan bir durum; `ref` de ayırt ediciliği artırır.
     ref = str(satir.get("ref") or "").strip()
-    tur = "locked" if satir.get("locked") else "flex"
+    # `product` üç ürünü de ayırır (flex / locked / soft). Eski `locked`
+    # bayrağı geriye dönük uyum için okunmaya devam ediyor: kimlik biçimi
+    # değişirse aynı ödül ikinci kez "yeni" görünürdü.
+    tur = (str(satir.get("product") or "").strip()
+           or ("locked" if satir.get("locked") else "flex"))
     return {
         "event_uid": f"{borsa}:earn:{tur}:{varlik}:{int(zaman_ms)}:{ref}",
         "exchange": borsa,
@@ -896,6 +903,13 @@ class TradeSyncService:
                     p, locked=True, start_time_ms=since),
                 "parse": normalize_earn,
                 "label": "Earn (vadeli) ödülleri",
+            },
+            SOFT_STAKING_KAPSAMI: {
+                "field": "soft_staking_path",
+                "fetch": lambda p, since: exchanges.fetch_soft_staking_rewards(
+                    p, start_time_ms=since),
+                "parse": normalize_earn,
+                "label": "Soft Staking ödülleri",
             },
             YATIRMA_KAPSAMI: {
                 "field": "deposit_path",

@@ -379,6 +379,11 @@ def _borsa_akislari(profil, konum, sinir=None):
              p, locked=True, start_time_ms=b, end_time_ms=s),
          trade_sync.normalize_earn, "earn_window_days",
          exchanges.EARN_PENCERE_GUN, exchanges.EARN_WEIGHT),
+        ("soft_staking_path", "Soft Staking ödülleri",
+         lambda p, b, s: exchanges.fetch_soft_staking_rewards(
+             p, start_time_ms=b, end_time_ms=s),
+         trade_sync.normalize_earn, "soft_staking_window_days",
+         exchanges.SOFT_STAKING_PENCERE_GUN, exchanges.SOFT_STAKING_WEIGHT),
         ("deposit_path", "para yatırma",
          lambda p, b, s: exchanges.fetch_deposits(
              p, start_time_ms=b, end_time_ms=s),

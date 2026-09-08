@@ -508,7 +508,7 @@ Bakiyenizi değiştiren tek şey alım-satım değil. Uygulama şu akışları d
 
 | Satır | Ne demek | Deftere işlenir mi? |
 |:---|:---|:---|
-| **EARN GELİRİ** | Simple Earn faizi (esnek veya vadeli) | ✅ Evet |
+| **EARN GELİRİ** | Simple Earn faizi (esnek veya vadeli) ve **Soft Staking** ödülü | ✅ Evet |
 | **PARA GİRİŞİ** | Hesabınıza gelen coin | ❌ Hayır |
 | **PARA ÇIKIŞI** | Hesabınızdan çıkan coin (ağ komisyonu dahil) | ❌ Hayır |
 
@@ -526,9 +526,19 @@ maliyeti bilinmeyen bir lot uydurup maliyet tabanınızı sessizce bozmak olurdu
 Konumlar arası taşıma için **Transfer**, gerçekten elden çıkan varlık için
 **Zarar Yaz** özelliğini kullanın.
 
-> MEXC'in Simple Earn karşılığı bir API ucu yok; oradaki staking gelirleri
-> aşağıdaki "açıklanamayan" başlığı altında görünmeye devam eder. Bu kutuda
-> yazar.
+> **Soft Staking ayrı bir üründür.** Binance'te varlığınız Spot hesapta kalır,
+> abonelik yoktur ve ödül her gün düşer. Simple Earn'ün ödül kayıtlarında
+> *hiç görünmez* — gerçek hesapta Simple Earn'ün iki ucu da hatasız çalışıp
+> boş dönerken bir APT ödülü bakiyeye geçmişti ve sistem onu yalnızca
+> "açıklanamayan artış" olarak görebiliyordu. Artık kendi ucundan okunuyor.
+>
+> Ödülün **stake ettiğinizden farklı bir coin** olarak ödenebildiğine dikkat
+> edin (örneğin SOL stake edip BNSOL almak). Deftere giren, bakiyenizi
+> gerçekten artıran coindir.
+
+> MEXC'in Simple Earn ya da Soft Staking karşılığı bir API ucu yok; oradaki
+> staking gelirleri aşağıdaki "açıklanamayan" başlığı altında görünmeye devam
+> eder. Bu kutuda yazar.
 
 #### "Açıklanamayan" ne demek?
 
