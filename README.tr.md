@@ -139,6 +139,15 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   zengindir — Convert, airdrop ve cüzdan taşımalarının API'de karşılığı yoktur.
   Sonuç: dosyaları her ay değil, bir kez indirirsiniz. Bu işlem de deftere hiçbir
   şey yazmaz ve okunamayan bir pencere sessizce atlanmaz, uyarı olarak bildirilir.
+- **Karşılıksız gelen varlık tek bir kuralla değerlenir** — Earn/staking faizi,
+  airdrop, Launchpool ve referans kazancı **alındığı günün piyasa değeriyle**
+  maliyet tabanına girer, sıfırla değil; böylece gelir kazanıldığı andaki
+  değeriyle yazılır ve satışta yalnızca aradaki fark kâr sayılır. Sıfır yazmak
+  geliri kazanıldığı yıldan satıldığı yıla taşırdı. Kural her iki yolda da
+  aynıdır — borsadan yakalanan ödüllerde de, dosyalardan yeniden kurulan
+  lotlarda da. O günün fiyatı bulunamazsa sıfır değil **"bilinmiyor"** yazılır;
+  bu, düzeltme önerisini engellemez ama uyarır (engelleyen tek şey maliyeti
+  gerçekten bilinemeyen dışarıdan yatırmalardır).
 - **Mutabakat düzeltmesi** — bu hareketler FIFO ile yürütülerek bugün elinizde
   kalması gereken lotlar **gerçek alım tarihleri ve gerçek fiyatlarıyla** yeniden
   kurulur. Hangi işlemi kaydetmeyi unuttuğunuzu hatırlamanız gerekmez; dosya

@@ -4644,6 +4644,25 @@ function portfolioApp() {
       })[ev.kind] || (ev.side === 'BUY' ? 'ALIM' : 'SATIŞ');
     },
 
+    // "Açıklanamayan" satırlarda tarih, olayın OLDUĞU an değil bizim FARK
+    // ETTİĞİMİZ andır — iki tarama arasında bakiye değişmiştir ve tam olarak
+    // ne zaman olduğunu bilmiyoruz. Diğer türlerde tarih borsanın kendi
+    // kaydından gelir ve gerçek işlem anıdır.
+    //
+    // Etiketsiz göstermek bilmediğimiz bir şeyi biliyormuş gibi sunmaktı:
+    // 8 Eylül'deki APT ödülü ekranda 23:51:09 diye duruyordu, oysa o saat
+    // yalnızca taramanın çalıştığı andı.
+    exchangeTimePrefix(ev) {
+      return ev.kind === 'UNEXPLAINED' ? 'görüldü: ' : '';
+    },
+
+    exchangeTimeTitle(ev) {
+      return ev.kind === 'UNEXPLAINED'
+        ? 'Bu, değişimin fark edildiği tarama anıdır; olayın gerçekleştiği '
+          + 'an bilinmiyor.'
+        : 'Borsanın kaydındaki işlem anı.';
+    },
+
     exchangeKindClass(ev) {
       return ({
         DUST: 'bg-amber-500/15 text-amber-300',

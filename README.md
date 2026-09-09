@@ -140,6 +140,16 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   airdrops and wallet transfers have no API equivalent. This means downloading files
   once instead of every month. It writes nothing to the ledger either, and a window
   that cannot be read is reported rather than silently skipped.
+- **Income received in kind is valued by one rule** — Earn/staking interest,
+  airdrops, Launchpool and referral rewards enter the cost basis **at the market
+  price of the day they were received**, not at zero, so income is recorded at
+  what it was worth when earned and a later sale counts only the difference as
+  gain. Booking it at zero would shift the income from the year it was earned to
+  the year it was sold. The rule is identical on both paths — rewards captured
+  from the exchange and lots rebuilt from files. When that day's price cannot be
+  fetched, the cost is recorded as **unknown**, never as zero; that warns but
+  does not block a repair suggestion, since the amount is bounded by the income
+  itself. Only deposits, whose cost is genuinely unknowable, block.
 - **Reconciliation repair** — replays those events through FIFO and rebuilds the
   lots you should be holding today, **with their real purchase dates and real
   prices**. You do not have to remember which trade you forgot to record; the file

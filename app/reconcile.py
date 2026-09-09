@@ -369,9 +369,15 @@ def load_binance_transaction_history(path, skip_ops=frozenset()):
             zaman = str(satir.get("Time") or "")[:19]
 
             if op in TH_REWARD_OPS:
-                # Bedelsiz geldi: maliyet sıfır ve bu bilinen bir sıfır.
+                # Karşılıksız geldi. Maliyeti SIFIR DEĞİL, alındığı günün
+                # piyasa değeridir (8 Eylül 2026 kararı) — ama o değer
+                # burada bilinmiyor: bu okuyucu ağa çıkmaz. Fiyatı
+                # `odul_fiyatlarini_doldur` yazar; o çalışana kadar maliyet
+                # "bilinmiyor"dur. Eskiden burada "bilinen sıfır" deniyordu
+                # ve bu, geliri kazanıldığı yıldan satıldığı yıla taşıyan
+                # yanlış bir iddiaydı.
                 olaylar.append(_olay("BINANCE", zaman, "REWARD", varlik, degisim,
-                                     usd_value=0.0, usd_known=True, zero_cost=True,
+                                     usd_value=0.0, usd_known=False, zero_cost=False,
                                      operation=ham_op, source=kaynak))
             elif op == TH_FEE_OP:
                 olaylar.append(_olay("BINANCE", zaman, "FEE", varlik, -abs(degisim),
@@ -932,6 +938,85 @@ def ledger_positions(data):
     return ozet
 
 
+def odul_fiyatlarini_doldur(olaylar, fiyat_fn=None):
+    """REWARD olaylarına ALINDIKLARI GÜNÜN piyasa değerini yazar.
+
+    NEDEN GEREKLİ
+    -------------
+    Bu modül bedelsiz girişleri "maliyeti sıfır, üstelik BİLİNEN bir sıfır"
+    diye işaretliyordu. Kullanıcının 8 Eylül 2026'da verdiği karar bunu
+    olgusal olarak yanlış hâle getirdi: karşılıksız gelen bir varlık
+    (Earn/staking faizi, airdrop, Launchpool, referans kazancı) deftere
+    **elde edildiği andaki piyasa değeriyle** girer. Gelen kutusundan
+    işlenen ödüller zaten böyle yazılıyordu; mutabakat düzeltmesi ise sıfır
+    yazıyordu ve aynı olay hangi yoldan geçtiğine göre farklı maliyet
+    tabanı üretiyordu.
+
+    Sıfır yazmak geliri kazanıldığı yıldan satıldığı yıla taşır ve net
+    kâr/zarar tablosunu bozar.
+
+    NEDEN BURADA, YÜKLEME SIRASINDA DEĞİL
+    -------------------------------------
+    Bu işlev AĞA ÇIKAR. `load_all_events` tamamen dosya tabanlı ve hızlı;
+    her mutabakat raporu açılışında yüzlerce fiyat isteği attırmak onu
+    bozardı. Maliyet tabanı yalnızca düzeltme önerisi hesaplanırken anlamlı,
+    fiyatlama da oraya ait.
+
+    FİYAT BULUNAMAZSA SIFIR DEĞİL "BİLİNMİYOR"
+    ------------------------------------------
+    Projede bu ikisi ayrı kavramdır (bkz. `_birim_maliyet`). Uydurulmuş bir
+    sıfır, yanlış bir sayıyı doğru gibi gösterir; dürüst boşluk ise mevcut
+    "maliyeti bilinmiyor" makinesini çalıştırır ve kullanıcı uyarılır.
+    """
+    if fiyat_fn is None:
+        from price_service import price_service as _motor
+        fiyat_fn = _motor.gunluk_kapanis
+
+    oduller = [o for o in (olaylar or []) if o.get("kind") == "REWARD"]
+    onbellek, fiyatlanan, bulunamayan = {}, 0, set()
+
+    for o in oduller:
+        varlik = o.get("asset")
+        gun = str(o.get("time") or "")[:10]
+        if not varlik or not gun:
+            o["usd_known"], o["zero_cost"] = False, False
+            continue
+
+        anahtar = (varlik, gun)
+        if anahtar not in onbellek:
+            if varlik in STABLE_QUOTES:
+                onbellek[anahtar] = 1.0
+            else:
+                try:
+                    onbellek[anahtar] = fiyat_fn(varlik, gun)
+                except Exception as e:
+                    logger.debug("Ödül fiyatı alınamadı (%s %s): %s",
+                                 varlik, gun, e)
+                    onbellek[anahtar] = None
+
+        fiyat = onbellek[anahtar]
+        # Bedelsiz gelmiş olması maliyetinin sıfır olduğu anlamına gelmiyor;
+        # bu satır o eski iddiayı her hâlükârda geri alıyor.
+        o["zero_cost"] = False
+        if fiyat and fiyat > 0:
+            o["usd_value"] = float(o.get("qty") or 0.0) * float(fiyat)
+            o["usd_known"] = True
+            o["price"] = float(fiyat)
+            fiyatlanan += 1
+        else:
+            o["usd_value"] = 0.0
+            o["usd_known"] = False
+            bulunamayan.add(anahtar)
+
+    return {
+        "reward_events": len(oduller),
+        "priced": fiyatlanan,
+        "unpriced": len(oduller) - fiyatlanan,
+        "lookups": len(onbellek),
+        "missing_pairs": sorted(f"{v} {g}" for v, g in bulunamayan)[:20],
+    }
+
+
 def _birim_maliyet(olay):
     """
     Bir alım olayının birim maliyeti.
@@ -1059,6 +1144,22 @@ def fifo_rebuild(olaylar):
         "reward_qty": odul_qty,
         "deposited_qty": yatirilan,
         "unknown_cost_qty": sum(l["qty"] for l in lotlar if not l["cost_known"]),
+        # "Maliyeti bilinmiyor"un İKİ AYRI sebebi var ve aynı şey değiller:
+        #
+        #   * Dışarıdan gelen bir YATIRMA — ne kadara alındığı bilinemez,
+        #     tutarı da sınırsız olabilir. Öneriyi ENGELLER.
+        #   * Fiyatı çekilemeyen bir ÖDÜL — ne olduğunu ve ne kadar olduğunu
+        #     tam biliyoruz, yalnızca o günün fiyatına ulaşamadık. Miktarı
+        #     gelirle sınırlı. Öneriyi engellemez, UYARIR.
+        #
+        # İkisini tek kovada toplamak, airdrop alan her pozisyonu ağ erişimi
+        # yok diye boş yere bloke ederdi.
+        "unknown_deposit_qty": sum(l["qty"] for l in lotlar
+                                   if not l["cost_known"]
+                                   and l.get("kind") == "DEPOSIT"),
+        "unpriced_reward_qty": sum(l["qty"] for l in lotlar
+                                   if not l["cost_known"]
+                                   and l.get("kind") == "REWARD"),
         "zero_cost_qty": sum(l["qty"] for l in lotlar
                              if l["cost_known"] and l["cost"] <= 0),
         "event_count": len(sirali),
@@ -1186,6 +1287,15 @@ def build_rebuild_plan(data, root=None, api=False):
     Her (varlık, borsa) çifti için düzeltme önerisi üretir. **Yazma yok.**
     """
     olaylar, kaynaklar, uyarilar = load_all_events(root, api=api)
+    # Ödüller alındıkları günün değeriyle fiyatlanır. Yalnızca BURADA
+    # yapılıyor: rapor yolu ağsız kalsın ve maliyet tabanı yalnızca anlamlı
+    # olduğu yerde hesaplansın.
+    fiyatlama = odul_fiyatlarini_doldur(olaylar)
+    if fiyatlama["unpriced"]:
+        uyarilar.append(
+            f"{fiyatlama['unpriced']} ödül kaydının alındığı günkü fiyatı "
+            "bulunamadı; bu lotların maliyeti SIFIR değil BİLİNMİYOR sayıldı."
+        )
     pencere = coverage_windows(olaylar)
     defter = ledger_positions(data)
 
@@ -1227,9 +1337,9 @@ def build_rebuild_plan(data, root=None, api=False):
                 f"alım dosyanın başlangıcından ({kapsam_basi}) önce yapılmış. "
                 "Dosya bu varlığın geçmişini tam kapsamıyor."
             )
-        if tani["unknown_cost_qty"] > 1e-9:
+        if tani.get("unknown_deposit_qty", 0.0) > 1e-9:
             engeller.append(
-                f"Kalan lotların {tani['unknown_cost_qty']:,.8f} adedi dışarıdan gelen bir "
+                f"Kalan lotların {tani['unknown_deposit_qty']:,.8f} adedi dışarıdan gelen bir "
                 "yatırma; borsa dosyası bunun maliyetini bilmiyor. Sıfır maliyet yazmak "
                 "sahte kâr üretirdi."
             )
@@ -1279,11 +1389,27 @@ def build_rebuild_plan(data, root=None, api=False):
                 f"alınmış ve hiç satılmamış bir bakiye dosyada görünmez ve bu hesaba "
                 f"girmez. Uygulamadan önce borsadaki gerçek {varlik} bakiyesine bakın."
             )
+        if tani.get("unpriced_reward_qty", 0.0) > 1e-9:
+            # Engel DEĞİL uyarı: miktar gelirle sınırlı ve ne olduğu belli.
+            # Engel saymak, ağ erişimi olmayan bir anda airdrop almış her
+            # pozisyonu boş yere bloke ederdi.
+            ikazlar.append(
+                f"{tani['unpriced_reward_qty']:,.8f} adet ödülün alındığı günkü "
+                "fiyatı çekilemedi; o kadarının maliyeti bilinmiyor sayıldı. "
+                "Ağ erişimi olan bir anda listeyi yenilerseniz fiyatlanır."
+            )
+        if tani.get("reward_qty", 0.0) > 1e-9:
+            etkiler.append(
+                f"{tani['reward_qty']:,.8f} adedi karşılıksız gelmiş "
+                "(Earn/staking faizi, airdrop, Launchpool). Maliyeti sıfır "
+                "değil, ALINDIĞI GÜNÜN piyasa değeri yazılır; böylece gelir "
+                "kazanıldığı andaki değeriyle maliyet tabanına girer ve "
+                "satışta yalnızca aradaki fark kâr sayılır."
+            )
         if tani.get("zero_cost_qty", 0.0) > 1e-9:
             ikazlar.append(
-                f"Kalan lotların {tani['zero_cost_qty']:,.8f} adedi bedelsiz geldi "
-                "(airdrop, Launchpool, kupon). Maliyeti sıfır yazılacak — bu doğrudur, "
-                "ama satıldığında tutarın tamamı kâr sayılır."
+                f"Kalan lotların {tani['zero_cost_qty']:,.8f} adedi sıfır "
+                "maliyetle yazılacak. Satıldığında tutarın tamamı kâr sayılır."
             )
         if tani.get("fee_qty", 0.0) > 1e-9:
             etkiler.append(
@@ -1400,6 +1526,7 @@ def build_rebuild_plan(data, root=None, api=False):
         "rows": satirlar,
         "status_counts": sayim,
         "warnings": uyarilar[:50],
+        "reward_pricing": fiyatlama,
         # Plan üretimi de salt okunurdur; yazma ancak açık onayla olur.
         "read_only": True,
     }

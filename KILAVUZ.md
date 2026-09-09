@@ -554,6 +554,29 @@ okuduktan sonra **Yok say** ile kaldırabilirsiniz.
 > faiz ödediği için, o akış okunmasaydı bu uyarı birkaç gün içinde gürültüye
 > boğulur ve okunmaz hâle gelirdi.
 
+**Bu satırlardaki tarihe dikkat.** Başında **"görüldü:"** yazar ve bu bilinçlidir:
+o tarih olayın *olduğu* an değil, bizim *fark ettiğimiz* andır. Bakiyenin iki
+tarama arasında değiştiğini biliyoruz, tam olarak ne zaman değiştiğini
+bilmiyoruz. Diğer satırlarda (alım, satış, Earn geliri, para hareketi) tarih
+borsanın kendi kaydından gelir ve gerçek işlem anıdır — orada etiket yoktur.
+
+#### Karşılıksız gelen varlığın maliyeti
+
+Earn/staking faizi, airdrop, Launchpool ve referans kazancı deftere **alındığı
+günün piyasa değeriyle** girer — sıfır maliyetle değil. Böylece gelir
+kazanıldığı andaki değeriyle maliyet tabanınıza girer ve o coini sonra
+sattığınızda yalnızca **aradaki fiyat farkı** kâr sayılır. Sıfır yazmak, geliri
+kazanıldığı yıldan satıldığı yıla taşır ve net kâr/zarar tablonuzu bozar.
+
+Bu kural iki yolda da aynı işler: gelen kutusundan işlediğiniz ödüller de,
+mutabakat düzeltmesiyle yeniden kurulan lotlar da aynı ölçüyü kullanır.
+
+O günün fiyatı bulunamazsa **sıfır yazılmaz, "bilinmiyor" denir.** İkisi farklı
+şeydir: uydurulmuş bir sıfır yanlış bir sayıyı doğru gibi gösterir. Düzeltme
+önerisinde bu durum sizi *uyarır* ama öneriyi engellemez — miktar gelirle
+sınırlıdır ve ne olduğu bellidir. Engelleyen tek şey, maliyeti gerçekten
+bilinemeyen **dışarıdan gelen yatırmalardır.**
+
 #### Sınır: "bundan sonrası" yakalanır
 
 Bir sembol **ilk kez** tarandığında hiçbir işlem listeye düşmez; yalnızca

@@ -1020,7 +1020,18 @@
                           x-text="exchangeKindLabel(ev)"></span>
                     <span class="text-[13px] font-semibold text-slate-100" x-text="ev.symbol"></span>
                     <span class="text-[11px] text-slate-500" x-text="ev.exchange"></span>
-                    <span class="text-[11px] text-slate-500 font-mono-nums" x-text="(ev.trade_at || '').replace('T',' ')"></span>
+                    <!-- "Açıklanamayan" satırlarda bu tarih olayın OLDUĞU an
+                         değil, bizim FARK ETTİĞİMİZ andır: iki tarama
+                         arasında bakiye değişmiştir, ne zaman olduğunu
+                         bilmiyoruz. İşlem tarihiyle aynı yerde etiketsiz
+                         göstermek, bilmediğimiz bir şeyi biliyormuş gibi
+                         sunmaktı. -->
+                    <span class="text-[11px] text-slate-500 font-mono-nums"
+                          :title="exchangeTimeTitle(ev)">
+                      <span x-show="exchangeTimePrefix(ev)" style="display:none;"
+                            class="text-slate-600" x-text="exchangeTimePrefix(ev)"></span><span
+                            x-text="(ev.trade_at || '').replace('T',' ')"></span>
+                    </span>
                   </div>
                   <!-- Karşı varlığı OLAN olaylar: alım, satış, toz dönüşümü.
                        Earn geliri ve para hareketlerinde karşılık yoktur;
@@ -6282,6 +6293,6 @@
   </div>
 
   <!-- App Frontend Script -->
-  <script src="/static/app.js?v=3.2"></script>
+  <script src="/static/app.js?v=3.3"></script>
 </body>
 </html>

@@ -689,3 +689,45 @@ class TestSoftStakingDoldurmada:
         assert satir["kind"] == "REWARD"
         assert satir["asset"] == "BNSOL"
         assert satir["zero_cost"] is True
+
+
+class TestAciklanamayanTarihEtiketi:
+    """"Açıklanamayan" satırdaki tarih, olayın olduğu an DEĞİL bizim fark
+    ettiğimiz andır (`_anomali_olayi` onu `datetime.now()` ile yazar).
+    Ekranda işlem tarihiyle aynı yerde etiketsiz durması, bilmediğimiz bir
+    şeyi biliyormuş gibi sunmaktı."""
+
+    def _oku(self, ad):
+        import os
+        kok = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(kok, "app", "static", ad), encoding="utf-8") as f:
+            return f.read()
+
+    def test_yardimcilar_tanimli(self):
+        js = self._oku("app.js")
+        assert "exchangeTimePrefix" in js
+        assert "exchangeTimeTitle" in js
+
+    def test_yalnizca_aciklanamayanda_etiket_var(self):
+        """Borsanın kendi kaydından gelen tarihler gerçek işlem anıdır ve
+        onlara "görüldü" demek yanlış olurdu."""
+        js = self._oku("app.js")
+        nerede = js.index("exchangeTimePrefix(ev)")
+        blok = js[nerede:nerede + 200]
+        assert "UNEXPLAINED" in blok
+        assert "görüldü" in blok
+
+    def test_ekranda_kullaniliyor(self):
+        html = self._oku("index.html")
+        assert "exchangeTimePrefix(ev)" in html
+        assert "exchangeTimeTitle(ev)" in html
+
+    def test_anomali_olayi_gozlem_anini_yaziyor(self):
+        """Etiketin doğru olmasının şartı: tarih gerçekten gözlem anı."""
+        import os
+        kok = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(kok, "app", "trade_sync.py"), encoding="utf-8") as f:
+            kaynak = f.read()
+        nerede = kaynak.index("def _anomali_olayi")
+        blok = kaynak[nerede:nerede + 1400]
+        assert 'datetime.now().isoformat' in blok

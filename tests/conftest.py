@@ -180,6 +180,12 @@ def izole_veri(tmp_path, monkeypatch):
     # test bunu tekrar monkeypatch ederek ezer; ezmeyen bir test yanlışlıkla
     # DexScreener'a çıkamaz.
     monkeypatch.setattr(motor, "fetch_dex_screener", lambda query: None)
+    # Geçmiş günün kapanışı da ağa çıkar. Mutabakat düzeltmesi ödülleri
+    # alındıkları günün fiyatıyla değerlediği için bu uç, 300'den fazla
+    # ödül kaydı olan bir defterde tek bir testte yüzlerce isteğe dönüşür.
+    # Varsayılan "fiyat bulunamadı": fiyatlamayı SINAYAN testler kendi
+    # `fiyat_fn`ini geçiriyor, geçirmeyen hiçbir test ağa çıkamıyor.
+    monkeypatch.setattr(motor, "gunluk_kapanis", lambda symbol, tarih: None)
     # Kaynak yapılandırması testler arasında sızmasın (10 sn'lik önbellek var).
     motor._config_cache = None
     motor._config_ts = 0.0

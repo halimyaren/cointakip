@@ -596,10 +596,15 @@ F5'in kapsam kanıtı tek yönlüydü ve gerçek veride 21 önerinin 10'unu yanl
 
 class TestHesapDefteriAyristirici:
 
-    def test_airdrop_bakiyeyi_artirir_ve_maliyeti_sifirdir(self, dizin):
+    def test_airdrop_bakiyeyi_artirir(self, dizin):
         """
         Kullanıcının APT'si tam olarak böyle eksik çıkmıştı: Earn airdrop'ları
         alım-satım dosyasında yok, bu yüzden 44.4345 yerine 44.1400 görünüyordu.
+
+        Maliyet burada HENÜZ BİLİNMİYOR: bu okuyucu ağa çıkmaz ve ödülün
+        alındığı günkü fiyatını bilemez. Eskiden burada "bilinen sıfır"
+        deniyordu; kullanıcının 8 Eylül 2026 kararından sonra bu yanlış bir
+        iddia — karşılıksız gelen varlık alındığı günün değeriyle girer.
         """
         _hesap_defteri(dizin, [
             ["2025-10-22 06:22:04", "Spot", "Earn - Airdrop Distribution", "ABC", "0.30"],
@@ -610,13 +615,61 @@ class TestHesapDefteriAyristirici:
         assert len(olaylar) == 1
         assert olaylar[0]["kind"] == "REWARD"
         assert olaylar[0]["qty"] == pytest.approx(0.30)
-        # Bedelsiz gelen bir coinin maliyeti SIFIRDIR ve bu bilinen bir sıfırdır.
-        assert rc._birim_maliyet(olaylar[0]) == (0.0, True)
+        assert olaylar[0]["zero_cost"] is False
+        assert rc._birim_maliyet(olaylar[0]) == (0.0, False)
 
-    def test_bedelsiz_lot_oneriyi_engellemez(self, dizin):
+    def test_odul_alindigi_gunun_fiyatiyla_degerlenir(self, dizin):
+        """Fiyat bulunduğunda ödül, o günün piyasa değeriyle maliyet
+        tabanına girer; satışta yalnızca aradaki fark kâr sayılır."""
+        _hesap_defteri(dizin, [
+            ["2025-10-22 06:22:04", "Spot", "Earn - Airdrop Distribution", "ABC", "2"],
+        ])
+        olaylar, _ = rc.load_binance_transaction_history(
+            os.path.join(dizin, "Binance-Transaction-History-test-part1-of1.csv"))
+        ozet = rc.odul_fiyatlarini_doldur(olaylar, fiyat_fn=lambda v, g: 3.0)
+        assert ozet["priced"] == 1 and ozet["unpriced"] == 0
+        assert rc._birim_maliyet(olaylar[0]) == (3.0, True)
+
+    def test_fiyat_bulunamazsa_sifir_degil_bilinmiyor(self, dizin):
+        """Uydurulmuş bir sıfır, yanlış sayıyı doğru gibi gösterirdi."""
+        _hesap_defteri(dizin, [
+            ["2025-10-22 06:22:04", "Spot", "Earn - Airdrop Distribution", "ABC", "2"],
+        ])
+        olaylar, _ = rc.load_binance_transaction_history(
+            os.path.join(dizin, "Binance-Transaction-History-test-part1-of1.csv"))
+        ozet = rc.odul_fiyatlarini_doldur(olaylar, fiyat_fn=lambda v, g: None)
+        assert ozet["unpriced"] == 1
+        assert olaylar[0]["zero_cost"] is False
+        assert rc._birim_maliyet(olaylar[0]) == (0.0, False)
+
+    def test_ayni_gun_ayni_varlik_bir_kez_sorulur(self, dizin):
+        """326 ödül kaydı için 326 istek atmak gereksiz; fiyat (varlık, gün)
+        başına bir kez sorulur."""
+        _hesap_defteri(dizin, [
+            ["2025-10-22 06:22:04", "Spot", "Earn - Airdrop Distribution", "ABC", "1"],
+            ["2025-10-22 18:00:00", "Spot", "Simple Earn Flexible Interest", "ABC", "1"],
+            ["2025-10-23 06:00:00", "Spot", "Simple Earn Flexible Interest", "ABC", "1"],
+        ])
+        olaylar, _ = rc.load_binance_transaction_history(
+            os.path.join(dizin, "Binance-Transaction-History-test-part1-of1.csv"))
+        cagrilar = []
+
+        def sahte(varlik, gun):
+            cagrilar.append((varlik, gun))
+            return 2.0
+
+        ozet = rc.odul_fiyatlarini_doldur(olaylar, fiyat_fn=sahte)
+        assert ozet["reward_events"] == 3
+        assert len(cagrilar) == 2          # iki ayrı gün
+        assert ozet["lookups"] == 2
+
+    def test_fiyatlanmamis_odul_oneriyi_ENGELLEMEZ(self, dizin):
         """
-        'Maliyeti sıfır' ile 'maliyeti bilinmiyor' farklı şeylerdir. İkisi
-        karıştırılırsa airdrop alan her pozisyon boş yere bloke olur.
+        'Maliyeti bilinmiyor'un iki sebebi var ve aynı şey değiller: dışarıdan
+        gelen bir yatırmanın tutarı sınırsızdır ve engeller; fiyatı çekilemeyen
+        bir ödülün miktarı gelirle sınırlıdır ve yalnızca uyarır. İkisini tek
+        kovada toplamak, ağ erişimi olmayan bir anda airdrop almış her
+        pozisyonu boş yere bloke ederdi.
         """
         _trades(dizin, [["2024-01-01 10:00:00", "ABCUSDT", "BUY", "1.0", "100ABC", "100USDT", "0USDT"]])
         _hesap_defteri(dizin, [
@@ -626,8 +679,7 @@ class TestHesapDefteriAyristirici:
         r = _satir(plan, "ABCUSDT@BINANCE")
         assert r["status"] != "blocked"
         assert r["proposed_qty"] == pytest.approx(110.0)
-        assert r["zero_cost_qty"] == pytest.approx(10.0)
-        assert any("bedelsiz" in w for w in r["warnings"])
+        assert any("fiyatı çekilemedi" in w for w in r["warnings"])
 
     def test_convert_iki_bacagi_eslestirilir(self, dizin):
         """BTC tam olarak böyle şişmişti: Convert ile giden 0.0046 görünmüyordu."""
