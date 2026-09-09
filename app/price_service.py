@@ -950,6 +950,19 @@ class SmartPriceDiscoveryEngine:
             if anahtar in self.gunluk_kapanis_cache:
                 return self.gunluk_kapanis_cache[anahtar]
 
+        # KALICI ÖNBELLEK. Bellek içi sözlük süreç ömrüyle sınırlı ve bu
+        # yetmiyor: mutabakat düzeltmesi 326 ayrı gün soruyor ve her yeniden
+        # başlatmadan sonra o ekran iki dakika bekliyordu.
+        try:
+            import archive
+            bulundu, kapanis = archive.get_daily_close(sym, gun)
+            if bulundu:
+                with self.lock:
+                    self.gunluk_kapanis_cache[anahtar] = kapanis
+                return kapanis
+        except Exception as e:
+            logger.debug("Kalici kapanis onbellegi okunamadi: %s", e)
+
         lookup = sym if sym.endswith("USDT") else f"{sym}USDT"
         try:
             baslangic = int(time.mktime(time.strptime(gun, "%Y-%m-%d")) * 1000)
@@ -970,10 +983,28 @@ class SmartPriceDiscoveryEngine:
                 if kapanis > 0:
                     with self.lock:
                         self.gunluk_kapanis_cache[anahtar] = kapanis
+                    self._kapanisi_sakla(sym, gun, kapanis)
                     return kapanis
+            # Uç CEVAP VERDİ ama o gün için mum yok: varlık o tarihte
+            # Binance'te işlem görmüyordu (Launchpool ödülleri token
+            # listelenmeden dağıtılır). Bu kalıcı bir cevaptır ve saklanır;
+            # aksi hâlde her seferinde yeniden sorulurdu.
+            with self.lock:
+                self.gunluk_kapanis_cache[anahtar] = None
+            self._kapanisi_sakla(sym, gun, None)
+            return None
         except Exception as e:
+            # AĞ HATASI SAKLANMAZ. Geçici bir arızayı kalıcı bir yokluk gibi
+            # kaydetmek, o günün fiyatını sonsuza kadar bilinmez yapardı.
             logger.debug("Gunluk kapanis alinamadi (%s/%s): %s", lookup, gun, e)
         return None
+
+    def _kapanisi_sakla(self, sym, gun, kapanis):
+        try:
+            import archive
+            archive.set_daily_close(sym, gun, kapanis)
+        except Exception as e:
+            logger.debug("Kalici kapanis onbellegine yazilamadi: %s", e)
 
     def get_sparkline_7d(self, symbol, live_price=0.0, change_24h=0.0):
         """

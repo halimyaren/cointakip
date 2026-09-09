@@ -68,7 +68,9 @@ SNAPSHOT_REFRESH_TTL = 3600.0
 #     eklendi (FAZ F7 — borsa işlemlerinin yakalanması). Aynı yöntem.
 # 5 — `api_history_events` eklendi (FAZ F7c — geçmişin API'den doldurulması).
 #     Aynı yöntem.
-SCHEMA_VERSION = 5
+# 6 — `daily_closes` eklendi: geçmiş günlerin kapanış fiyatları için KALICI
+#     önbellek. Aynı yöntem.
+SCHEMA_VERSION = 6
 
 
 def archive_path():
@@ -302,6 +304,29 @@ def init_archive():
                     payload   TEXT NOT NULL,      -- olayın tamamı (JSON)
                     filled_at TEXT,
                     PRIMARY KEY (exchange, row_no)
+                );
+
+                -- Geçmiş bir günün kapanış fiyatı BİR DAHA DEĞİŞMEZ; yani
+                -- kalıcı önbelleğe alınabilecek ender veriden biri.
+                --
+                -- Bellek içi önbellek yetmedi: mutabakat düzeltmesi ödülleri
+                -- alındıkları günün fiyatıyla değerliyor ve bu, gerçek bir
+                -- defterde 326 ayrı istek demek. Süreç ömrüyle sınırlı bir
+                -- önbellek, her yeniden başlatmadan sonra o ekranı iki dakika
+                -- bekletiyordu.
+                --
+                -- `close` NULL ise "o gün bu varlığın piyasa fiyatı YOKTU"
+                -- demektir (Launchpool ödülleri token listelenmeden dağıtılır).
+                -- Bu da kalıcı bir cevaptır ve saklanır; aksi hâlde her
+                -- seferinde yeniden sorulurdu. Ağ hatası ise SAKLANMAZ —
+                -- geçici bir arızayı kalıcı bir yokluk gibi kaydetmek,
+                -- fiyatı sonsuza kadar bilinmez yapardı.
+                CREATE TABLE IF NOT EXISTS daily_closes (
+                    symbol     TEXT NOT NULL,
+                    date       TEXT NOT NULL,      -- YYYY-MM-DD
+                    close      REAL,               -- NULL = o gün fiyat yok
+                    fetched_at TEXT,
+                    PRIMARY KEY (symbol, date)
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_exevents_status
@@ -1326,6 +1351,58 @@ def load_api_history(exchange=None):
     except Exception as e:
         logger.debug("API geçmişi okunamadı: %s", e)
         return []
+
+
+def get_daily_close(symbol, date):
+    """(bulundu_mu, kapanis). `kapanis` None ise o gün fiyat YOKTU.
+
+    İki durumu ayırmak şart: "hiç sorulmamış" ile "sorulmuş ve o gün fiyatı
+    yokmuş" farklı şeyler. İkincisi kalıcı bir cevaptır ve tekrar sorulmaz.
+    """
+    try:
+        if not os.path.exists(archive_path()):
+            return False, None
+        with _connect() as conn:
+            satir = conn.execute(
+                "SELECT close FROM daily_closes WHERE symbol = ? AND date = ?",
+                (str(symbol).upper(), str(date)[:10])).fetchone()
+        if satir is None:
+            return False, None
+        return True, (float(satir["close"]) if satir["close"] is not None else None)
+    except Exception as e:
+        logger.debug("Günlük kapanış okunamadı: %s", e)
+        return False, None
+
+
+def set_daily_close(symbol, date, close):
+    """Kapanışı kalıcı olarak saklar. `close=None` = o gün fiyat yoktu."""
+    try:
+        if not init_archive():
+            return False
+        with _connect() as conn:
+            conn.execute("""
+                INSERT INTO daily_closes (symbol, date, close, fetched_at)
+                VALUES (?,?,?,?)
+                ON CONFLICT(symbol, date) DO UPDATE SET
+                    close = excluded.close,
+                    fetched_at = excluded.fetched_at
+            """, (str(symbol).upper(), str(date)[:10],
+                  float(close) if close is not None else None,
+                  datetime.now().isoformat(timespec="seconds")))
+        return True
+    except Exception as e:
+        logger.debug("Günlük kapanış yazılamadı: %s", e)
+        return False
+
+
+def daily_close_count():
+    try:
+        if not os.path.exists(archive_path()):
+            return 0
+        with _connect() as conn:
+            return conn.execute("SELECT COUNT(*) c FROM daily_closes").fetchone()["c"]
+    except Exception:
+        return 0
 
 
 def api_history_status():

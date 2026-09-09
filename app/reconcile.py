@@ -973,7 +973,17 @@ def odul_fiyatlarini_doldur(olaylar, fiyat_fn=None):
         fiyat_fn = _motor.gunluk_kapanis
 
     oduller = [o for o in (olaylar or []) if o.get("kind") == "REWARD"]
-    onbellek, fiyatlanan, bulunamayan = {}, 0, set()
+
+    # Benzersiz (varlık, gün) çiftleri ÖNCE toplanır, sonra hepsi birden
+    # sorulur. Tek tek sormak 326 ardışık HTTPS gidiş-dönüşü demekti ve
+    # ekranı iki dakika bekletiyordu.
+    ciftler = set()
+    for o in oduller:
+        varlik, gun = o.get("asset"), str(o.get("time") or "")[:10]
+        if varlik and len(gun) == 10 and varlik not in STABLE_QUOTES:
+            ciftler.add((varlik, gun))
+    onbellek = _fiyatlari_topluca_al(ciftler, fiyat_fn)
+    fiyatlanan, bulunamayan = 0, set()
 
     for o in oduller:
         varlik = o.get("asset")
@@ -983,18 +993,7 @@ def odul_fiyatlarini_doldur(olaylar, fiyat_fn=None):
             continue
 
         anahtar = (varlik, gun)
-        if anahtar not in onbellek:
-            if varlik in STABLE_QUOTES:
-                onbellek[anahtar] = 1.0
-            else:
-                try:
-                    onbellek[anahtar] = fiyat_fn(varlik, gun)
-                except Exception as e:
-                    logger.debug("Ödül fiyatı alınamadı (%s %s): %s",
-                                 varlik, gun, e)
-                    onbellek[anahtar] = None
-
-        fiyat = onbellek[anahtar]
+        fiyat = 1.0 if varlik in STABLE_QUOTES else onbellek.get(anahtar)
         # Bedelsiz gelmiş olması maliyetinin sıfır olduğu anlamına gelmiyor;
         # bu satır o eski iddiayı her hâlükârda geri alıyor.
         o["zero_cost"] = False
@@ -1012,9 +1011,45 @@ def odul_fiyatlarini_doldur(olaylar, fiyat_fn=None):
         "reward_events": len(oduller),
         "priced": fiyatlanan,
         "unpriced": len(oduller) - fiyatlanan,
-        "lookups": len(onbellek),
+        "lookups": len(ciftler),
         "missing_pairs": sorted(f"{v} {g}" for v, g in bulunamayan)[:20],
     }
+
+
+# Eşzamanlı fiyat isteği sayısı. Uç anahtarsız ve ağırlığı 1; asıl darboğaz
+# istek başına ~370 ms'lik gidiş-dönüş süresi, borsanın sınırı değil. Sekiz,
+# 326 isteği iki dakikadan ~15 saniyeye indiriyor ve hız sınırının yanından
+# bile geçmiyor.
+FIYAT_ES_ZAMANLI = 8
+
+
+def _fiyatlari_topluca_al(ciftler, fiyat_fn):
+    """{(varlık, gün): fiyat|None}. Her çift YALNIZCA BİR KEZ sorulur.
+
+    Sorgular `fiyat_fn` üzerinden gider — testlerin onu değiştirip ağa
+    çıkmadan çalışabilmesi buna bağlı.
+    """
+    ciftler = list(ciftler or [])
+    if not ciftler:
+        return {}
+
+    def sor(cift):
+        try:
+            return cift, fiyat_fn(cift[0], cift[1])
+        except Exception as e:
+            logger.debug("Ödül fiyatı alınamadı (%s %s): %s", cift[0], cift[1], e)
+            return cift, None
+
+    # Tek çift için havuz kurmanın maliyeti işin kendisinden büyük.
+    if len(ciftler) == 1:
+        cift, fiyat = sor(ciftler[0])
+        return {cift: fiyat}
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(FIYAT_ES_ZAMANLI,
+                                            len(ciftler))) as havuz:
+        return dict(havuz.map(sor, ciftler))
 
 
 def _birim_maliyet(olay):

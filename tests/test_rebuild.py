@@ -870,3 +870,87 @@ class TestDogrulanmisBakiye:
         r = client.post("/api/reconcile/rebuild/ABCUSDT@BINANCE", json={})
         # Öneri yoksa 404, varsa doğrulama eksikliğinden 400 — ikisi de "uygulanmadı".
         assert r.status_code in (400, 404)
+
+
+class TestOdulFiyatiKaliciOnbellek:
+    """Geçmiş bir günün kapanışı BİR DAHA DEĞİŞMEZ; bellek içi önbellek
+    süreç ömrüyle sınırlı olduğu için her yeniden başlatmada 326 istek
+    yeniden atılıyor ve ekran iki dakika bekliyordu."""
+
+    def test_yazilan_kapanis_geri_okunur(self):
+        import archive
+        assert archive.set_daily_close("APT", "2026-09-09", 0.645) is True
+        bulundu, kapanis = archive.get_daily_close("APT", "2026-09-09")
+        assert bulundu is True and kapanis == pytest.approx(0.645)
+
+    def test_fiyat_yoktu_cevabi_da_saklanir(self):
+        """Launchpool ödülleri token listelenmeden dağıtılır; o gün fiyat
+        gerçekten yoktur ve bu KALICI bir cevaptır."""
+        import archive
+        archive.set_daily_close("ALT", "2024-01-19", None)
+        bulundu, kapanis = archive.get_daily_close("ALT", "2024-01-19")
+        assert bulundu is True and kapanis is None
+
+    def test_hic_sorulmamis_gun_ayirt_edilir(self):
+        """'Hiç sorulmamış' ile 'sorulmuş, fiyatı yokmuş' farklı şeyler."""
+        import archive
+        bulundu, kapanis = archive.get_daily_close("ZZZ", "2024-01-19")
+        assert bulundu is False and kapanis is None
+
+    def test_uzerine_yazilabilir(self):
+        import archive
+        archive.set_daily_close("APT", "2026-09-09", 0.1)
+        archive.set_daily_close("APT", "2026-09-09", 0.645)
+        assert archive.get_daily_close("APT", "2026-09-09")[1] == pytest.approx(0.645)
+
+
+class TestOdulFiyatiTopluAlim:
+    """326 çifti tek tek sormak iki dakika sürüyordu; darboğaz borsanın
+    sınırı değil, istek başına gidiş-dönüş süresiydi."""
+
+    def test_ayni_cift_bir_kez_sorulur(self):
+        cagrilar = []
+
+        def sahte(varlik, gun):
+            cagrilar.append((varlik, gun))
+            return 2.0
+
+        sonuc = rc._fiyatlari_topluca_al(
+            [("ABC", "2024-01-01"), ("ABC", "2024-01-02")], sahte)
+        assert len(cagrilar) == 2
+        assert sonuc[("ABC", "2024-01-01")] == 2.0
+
+    def test_bos_kume_istek_atmaz(self):
+        cagrilar = []
+        rc._fiyatlari_topluca_al([], lambda v, g: cagrilar.append(1))
+        assert cagrilar == []
+
+    def test_tek_cift_havuz_kurmaz(self):
+        assert rc._fiyatlari_topluca_al(
+            [("ABC", "2024-01-01")], lambda v, g: 5.0) == {("ABC", "2024-01-01"): 5.0}
+
+    def test_bir_cift_patlarsa_digerleri_yasar(self):
+        """Bir günün fiyatının alınamaması diğerlerini iptal etmemeli."""
+        def sahte(varlik, gun):
+            if gun == "2024-01-01":
+                raise RuntimeError("ag hatasi")
+            return 3.0
+
+        sonuc = rc._fiyatlari_topluca_al(
+            [("ABC", "2024-01-01"), ("ABC", "2024-01-02")], sahte)
+        assert sonuc[("ABC", "2024-01-01")] is None
+        assert sonuc[("ABC", "2024-01-02")] == 3.0
+
+    def test_stabil_varlik_hic_sorulmaz(self, dizin):
+        """BUSD'nin dolar fiyatını borsaya sormanın anlamı yok."""
+        _hesap_defteri(dizin, [
+            ["2025-10-22 06:22:04", "Spot", "Earn - Airdrop Distribution", "BUSD", "5"],
+        ])
+        olaylar, _ = rc.load_binance_transaction_history(
+            os.path.join(dizin, "Binance-Transaction-History-test-part1-of1.csv"))
+        cagrilar = []
+        ozet = rc.odul_fiyatlarini_doldur(
+            olaylar, fiyat_fn=lambda v, g: cagrilar.append((v, g)))
+        assert cagrilar == []
+        assert ozet["priced"] == 1
+        assert rc._birim_maliyet(olaylar[0]) == (1.0, True)
