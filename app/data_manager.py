@@ -157,8 +157,35 @@ def load_portfolio():
         logger.error("Kullanılabilir yedek bulunamadı — BOŞ portföy ile devam ediliyor.")
         return _ensure_schema({"wallets": {"usdt_cash": 500.0}, "transactions": [], "next_tx_id": 1})
 
+def tx_id_sayacini_esitle(data):
+    """`next_tx_id`i defterdeki gerçekle eşitler. Geriye ASLA çekmez.
+
+    NEDEN VAR: 9 Eylül 2026'da defterde aynı numarayı taşıyan kayıtlar
+    bulundu. Sebep, numara üretmenin iki ayrı yoldan yapılmasıydı — bir yol
+    `max(numaralar)+1` hesaplıyor ama sayacı ilerletmiyordu, diğer yol
+    yalnızca sayacı okuyordu. Toplu ekleme yapan ilk yol numaraları 145'e
+    çıkarırken sayaç 74'te kaldı ve sonraki her yeni kayıt var olan bir
+    numarayı aldı.
+
+    Numaraya göre arama yapan uçlar listede İLK eşleşeni bulup durduğu için
+    bu, yanlış kaydın satılması ya da düzenlenmesi demekti.
+
+    Buranın kaydetme anında çalışması bilinçli: hangi kod yolunun kayıt
+    eklediğinden bağımsız olarak sayaç gerçeğe yakınsar. Sayacı ileri
+    taşımak serbest, geri çekmek yasak — geri çekmek yeniden çakışma üretir.
+    """
+    numaralar = [int(t.get("id", 0) or 0) for t in data.get("transactions", [])]
+    gereken = (max(numaralar) if numaralar else 0) + 1
+    mevcut = int(data.get("next_tx_id") or 0)
+    data["next_tx_id"] = max(gereken, mevcut)
+    return data["next_tx_id"]
+
+
 def save_portfolio(data):
     ensure_data_dir()
+    # Sayaç her kaydetmede gerçekle eşitlenir; böylece bir kod yolu onu
+    # ilerletmeyi unutsa bile bir sonraki kayıt çakışan numara almaz.
+    tx_id_sayacini_esitle(data)
     temp_file = DATA_FILE + ".tmp"
     with open(temp_file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1244,7 +1271,7 @@ def execute_target_sale(pos_key: str, sell_price: float = None, sell_qty: float 
             for tx in active_txs:
                 tx["qty"] = round(float(tx["qty"]) * ratio, 8)
 
-        new_id = max((t["id"] for t in data["transactions"]), default=0) + 1
+        new_id = _sonraki_tx_id(data)
         net_pnl = ((target_price - avg_cost) * qty_to_sell) - fee_val_usd
         fee_info_str = f" | Komisyon: {fee_amt} {fee_ast} (${fee_val_usd:,.2f})" if fee_amt > 0 else ""
 
@@ -1302,7 +1329,7 @@ def execute_target_sale(pos_key: str, sell_price: float = None, sell_qty: float 
                 portion = remaining_sell
                 tx["qty"] = tx_qty - portion
                 
-                new_id = max((t["id"] for t in data["transactions"]), default=0) + 1
+                new_id = _sonraki_tx_id(data)
                 lot_exit_value = portion * target_price
                 lot_fee = fee_val_usd * (lot_exit_value / total_proceeds) if total_proceeds > 0 else 0.0
                 net_pnl = ((target_price - tx_cost) * portion) - lot_fee
@@ -1506,7 +1533,36 @@ def _aktif_lotlar(data, pos_key):
 
 
 def _sonraki_tx_id(data):
-    return max((int(t.get("id", 0) or 0) for t in data.get("transactions", [])), default=0) + 1
+    """Bir sonraki işlem numarası. **Tek doğru kaynak budur.**
+
+    İKİ ÖLÇÜTÜN DE ÜSTÜNÜ ALIR: defterdeki en büyük numaranın bir fazlası
+    ile sayacın kendisi. Yalnızca birine bakmak yetmiyor —
+
+      * yalnızca `max(numaralar)+1`: sayacı ilerletmez, sayaca bakan öteki
+        yollar bayat bir değerle çakışan numara üretir (9 Eylül 2026'da
+        tam olarak bu oldu);
+      * yalnızca `next_tx_id`: toplu ekleme yapan yollar sayacı
+        güncellemediğinde geride kalır ve var olan bir numarayı verir.
+
+    Üstünü almak, iki yoldan hangisi çağrılırsa çağrılsın sonucun daima
+    boş bir numara olmasını garanti eder.
+    """
+    numaralar = [int(t.get("id", 0) or 0) for t in data.get("transactions", [])]
+    gereken = (max(numaralar) if numaralar else 0) + 1
+    return max(gereken, int(data.get("next_tx_id") or 0))
+
+
+def cakisan_tx_id_var_mi(data):
+    """Aynı numarayı taşıyan kayıtlar. Boş liste = defter sağlam.
+
+    Bu kusur 9 gün boyunca görünmedi çünkü hiçbir yer bakmıyordu. Sessiz
+    kalmak, yanlış kaydın satılmasına kadar giden bir yolun ilk adımıydı.
+    """
+    import collections
+
+    sayac = collections.Counter(
+        int(t.get("id", 0) or 0) for t in data.get("transactions", []))
+    return sorted(no for no, adet in sayac.items() if adet > 1)
 
 
 def _defter_artigi_mi(tx):

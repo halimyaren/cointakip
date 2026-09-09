@@ -27,7 +27,11 @@ from data_manager import (
     list_transfers, list_write_offs, WRITE_OFF_REASONS,
     get_rebuild_plan, apply_rebuild, undo_rebuild, list_rebuilds,
     known_locations, symbol_for_location, run_pending_migrations,
-    relocate_asset, list_settings_backups, restore_settings_backup
+    relocate_asset, list_settings_backups, restore_settings_backup,
+    # İşlem numarası üretmenin TEK doğru kaynağı. Doğrudan `next_tx_id`
+    # okumak, sayaç bayatladığında var olan bir numarayı verir; 9 Eylül
+    # 2026'da defterde çakışan kayıtlar tam olarak böyle oluştu.
+    _sonraki_tx_id, cakisan_tx_id_var_mi
 )
 from price_service import price_service
 from market_service import market_service
@@ -63,6 +67,33 @@ logger.info("CoinTakip başlatılıyor — log dosyası: %s", LOG_FILE)
 initialize_portfolio_if_missing()
 # Bir kez uygulanacak veri düzeltmeleri. Sessizce değil, loglayarak.
 run_pending_migrations()
+
+
+def _tx_id_butunlugunu_denetle():
+    """Açılışta çakışan işlem numarası var mı diye bakar.
+
+    9 Eylül 2026'da defterde aynı numarayı taşıyan kayıtlar bulundu ve bu
+    kusur DOKUZ GÜN görünmedi — çünkü hiçbir yer bakmıyordu. Numaraya göre
+    arama listede ilk eşleşeni bulup durduğu için, çakışma "yanlış pozisyonu
+    satmak"a kadar giden sessiz bir yoldu.
+
+    Numarayı burada kendiliğinden DEĞİŞTİRMİYORUZ: hangi kaydın taşınacağı,
+    ona kim işaret ediyor bilgisine bağlı ve o karar kullanıcınındır.
+    Görevimiz susmamak.
+    """
+    try:
+        cakisan = cakisan_tx_id_var_mi(load_portfolio())
+    except Exception as e:
+        logger.debug("İşlem numarası denetimi yapılamadı: %s", e)
+        return
+    if cakisan:
+        logger.error(
+            "DEFTER UYARISI: aynı işlem numarasını taşıyan kayıtlar var: %s. "
+            "Numaraya göre arama yanlış kaydı bulabilir; satış ve düzenleme "
+            "bu numaralarda güvenli değildir.", cakisan)
+
+
+_tx_id_butunlugunu_denetle()
 price_service.start_background_updater()
 # FAZ M1 — Piyasa verisi. Fiyat motorundan SONRA ve kendi temposuyla başlar;
 # ilk çekimi gecikmelidir, çünkü piyasa verisi hiçbir zaman acil değildir ve
@@ -788,7 +819,7 @@ def get_transactions():
 def create_transaction(tx_in: TransactionCreate):
     data = load_portfolio()
     tx_list = data.get("transactions", [])
-    next_id = data.get("next_tx_id", len(tx_list) + 1)
+    next_id = _sonraki_tx_id(data)
     
     clean_coin = tx_in.coin.strip()
     exchange = (tx_in.exchange or "BINANCE").upper().strip()
@@ -891,7 +922,7 @@ def sell_transaction(tx_id: int, req: SellRequest):
         target["notes"] = f"{existing_notes} | {sale_note}".strip(" |")
     else:
         target["qty"] = available_qty - sell_qty
-        next_id = data.get("next_tx_id", len(tx_list) + 1)
+        next_id = _sonraki_tx_id(data)
         data["next_tx_id"] = next_id + 1
         
         closed_record = {
@@ -1077,7 +1108,7 @@ class DcaBuyIn(BaseModel):
 def api_execute_dca(req: DcaBuyIn):
     data = load_portfolio()
     tx_list = data.get("transactions", [])
-    next_id = data.get("next_tx_id", len(tx_list) + 1)
+    next_id = _sonraki_tx_id(data)
 
     clean_coin = req.coin.strip()
     exchange = (req.exchange or "BINANCE").upper().strip()

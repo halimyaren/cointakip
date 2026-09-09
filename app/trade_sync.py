@@ -1264,8 +1264,13 @@ class TradeSyncService:
                     load_portfolio, save_portfolio, DEFAULT_CATEGORIES):
         defter = load_portfolio()
         tx_list = defter.setdefault("transactions", [])
-        next_id = defter.get("next_tx_id") or (
-            max((int(t.get("id") or 0) for t in tx_list), default=0) + 1)
+        # Numara üretmenin tek doğru kaynağı. Burada eskiden sayaç ÖNCE
+        # deneniyordu; sayaç bayatladığında (toplu ekleme yapan yollar onu
+        # ilerletmiyordu) var olan bir numara veriyordu ve 9 Eylül 2026'da
+        # borsadan yakalanan bir alım, kapanmış bir transfer kaydıyla aynı
+        # numarayı aldı.
+        import data_manager
+        next_id = data_manager._sonraki_tx_id(defter)
 
         kayit = {
             "id": next_id,
