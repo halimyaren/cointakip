@@ -1315,8 +1315,9 @@ Artık kısmen evet. Portföyünüzün yanında şu beş ölçüm de gidiyor: **
 (fiyat, 7/30/90 gün değişim, 50 ve 200 günlük ortalamalara uzaklık, zirveden geri
 çekilme, oynaklık), **ETH/BTC**, **piyasa genişliği** (likit çiftlerin yüzde kaçı
 artıda, kaçı BTC'yi geçiyor), **Korku & Açgözlülük endeksi** ve **BTC dominansı +
-toplam piyasa değeri**. Bunları Yapay Zekâ sekmesinin üstündeki **Piyasa Çerçevesi**
-şeridinde birebir görebilirsiniz — modele giden sayı ile ekranda gördüğünüz aynıdır.
+toplam piyasa değeri**. Bunları **Yapay Zeka Danışmanı** sekmesinin üst kısmındaki
+**PİYASA ÇERÇEVESİ** şeridinde birebir görebilirsiniz — modele giden sayı ile ekranda
+gördüğünüz aynıdır.
 
 Bunlara **kaldıraç ortamı** da eklendi: **fonlama oranları** ve **açık pozisyon**.
 İkisi birlikte, diğer beş metriğin cevaplayamadığı bir soruyu ölçülebilir kılıyor —
