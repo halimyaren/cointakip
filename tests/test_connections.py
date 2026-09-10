@@ -1690,3 +1690,124 @@ class TestArayuzKapisiCalistirilarak:
         assert self._calistir([
             self._satir(likely_spam=True, status="only_chain", chain_qty=999.0)
         ]) == [0]
+
+
+# =====================================================================
+# Zincirden deftere ekleme: MALİYET UYDURULMAZ
+#
+# Zincir MİKTARI bilir, MALİYETİ bilmez. Prefill maliyeti doldurursa ya da
+# sunucu boş maliyeti kabul ederse, deftere sıfır maliyetli bir lot girer ve
+# o lot satıldığında tutarın TAMAMI kâr sayılır — F5b'de düzeltilen sahte kâr
+# hatasının aynısı.
+#
+# Şu an bu korumanın sunucu ayağı bir güvenceden değil, `TransactionCreate`
+# içindeki `cost` alanının `Optional` OLMAMASINDAN geliyor. Biri onu
+# `Optional[float] = 0.0` yaparsa koruma sessizce kaybolur. Bu yüzden
+# davranış burada açıkça kilitleniyor.
+# =====================================================================
+class TestZincirdenEklemedeMaliyet:
+
+    def test_bos_maliyet_sunucuda_reddedilir(self, client):
+        yanit = client.post("/api/transactions", json={
+            "coin": "SOL", "exchange": "PHANTOM", "qty": 0.0067215,
+            "cost": None, "date": "2026-09-10", "category": "Altcoin"})
+        assert yanit.status_code == 422
+
+    def test_reddedilen_istek_deftere_hicbir_sey_yazmaz(self, client):
+        once = len(dm.load_portfolio()["transactions"])
+        client.post("/api/transactions", json={
+            "coin": "SOL", "exchange": "PHANTOM", "qty": 0.0067215,
+            "cost": None, "date": "2026-09-10", "category": "Altcoin"})
+        assert len(dm.load_portfolio()["transactions"]) == once
+
+    def test_bilincli_sifir_maliyet_hala_kabul_edilir(self, client):
+        """Koruma "sıfır yasak" değil "boş bırakılamaz"dır. Gerçekten bedelsiz
+        bir varlığı sıfırla yazmak kullanıcının hakkı."""
+        yanit = client.post("/api/transactions", json={
+            "coin": "ZZZ", "exchange": "PHANTOM", "qty": 1.0, "cost": 0.0,
+            "date": "2026-09-10", "category": "Altcoin"})
+        assert yanit.status_code == 200
+
+
+@pytest.mark.skipif(shutil.which("node") is None,
+                    reason="node yok; davranış testi atlandı")
+class TestZincirPrefillCalistirilarak:
+    """`addFromChain` gerçekten çalıştırılıp formun son hâli denetleniyor."""
+
+    def _formu_uret(self, satir):
+        js = _statik("app.js")
+        betik = textwrap.dedent("""
+            const api = {
+              %s,
+              %s,
+              // Gerçek `openAddModal` formu sıfırlar. Burada bilerek ÇÖP
+              // dolduruyoruz: `addFromChain` maliyeti ve tarihi temizlemezse
+              // bu çöp formda kalır ve test düşer.
+              openAddModal(_durum) {
+                this.txForm = { coin: 'COP', exchange: 'COP', qty: 'COP',
+                                date: '2020-01-01', cost: '999', notes: 'COP',
+                                status: 'Aktif' };
+                this.acildi = true;
+              },
+              notify() {},
+              txForm: {},
+              acildi: false,
+              chainAddPending: false,
+            };
+            api.addFromChain(%s);
+            console.log(JSON.stringify({form: api.txForm, acildi: api.acildi,
+                                        bekliyor: api.chainAddPending}));
+        """) % (_islev_kaynagi(js, "chainAddableQty"),
+                _islev_kaynagi(js, "addFromChain"),
+                json.dumps(satir))
+        cikti = subprocess.run(["node", "-e", betik], capture_output=True,
+                               text=True, timeout=30)
+        assert cikti.returncode == 0, cikti.stderr
+        return json.loads(cikti.stdout.strip())
+
+    def _satir(self, **ustler):
+        r = {"asset": "SOL", "location": "PHANTOM", "chain_qty": 0.0067215,
+             "diff_qty": 0.0067215, "status": "only_chain", "chains": ["solana"],
+             "likely_spam": False, "needs_review": False, "misplaced": False}
+        r.update(ustler)
+        return r
+
+    def test_maliyet_bos_birakilir(self):
+        """Asıl güvence: zincir maliyeti bilmez, uydurmaz."""
+        assert self._formu_uret(self._satir())["form"]["cost"] == ""
+
+    def test_tarih_bos_birakilir(self):
+        """Alım tarihi de zincirden okunamaz; bugünü yazmak yanlış olurdu."""
+        assert self._formu_uret(self._satir())["form"]["date"] == ""
+
+    def test_miktar_zincirden_dolar(self):
+        sonuc = self._formu_uret(self._satir())
+        assert sonuc["form"]["qty"] == pytest.approx(0.0067215)
+
+    def test_miktar_sekiz_haneye_yuvarlanir(self):
+        """Zincir bakiyeleri ondalıklı; daha aza yuvarlamak miktarı bozar."""
+        sonuc = self._formu_uret(self._satir(chain_qty=0.123456789012,
+                                             diff_qty=0.123456789012))
+        assert sonuc["form"]["qty"] == pytest.approx(0.12345679)
+
+    def test_coin_ve_konum_dolar(self):
+        form = self._formu_uret(self._satir())["form"]
+        assert form["coin"] == "SOL" and form["exchange"] == "PHANTOM"
+
+    def test_not_maliyetin_kullanicidan_geldigini_soyler(self):
+        """Kayda bakan biri altı ay sonra bu maliyetin nereden geldiğini
+        bilmeli; zincirden geldiğini sanmamalı."""
+        form = self._formu_uret(self._satir())["form"]
+        assert "Maliyeti zincir bilmiyor" in form["notes"]
+        assert "solana" in form["notes"]
+
+    def test_spam_satirinda_form_hic_acilmaz(self):
+        """Kapı yalnızca düğmeyi gizlemekle kalmamalı; işlev doğrudan
+        çağrılsa bile açılmamalı."""
+        sonuc = self._formu_uret(self._satir(likely_spam=True))
+        assert sonuc["acildi"] is False
+
+    def test_prefill_tazeleme_bayragini_kurar(self):
+        """Kayıttan sonra zincir tablosu tazelensin diye; yoksa satır
+        'Zincirde var' olarak kalır ve kullanıcı işin olmadığını sanır."""
+        assert self._formu_uret(self._satir())["bekliyor"] is True

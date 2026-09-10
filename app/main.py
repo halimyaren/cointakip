@@ -123,6 +123,13 @@ class TransactionCreate(BaseModel):
     coin: str
     exchange: Optional[str] = "BINANCE"
     qty: float
+    # `cost` BİLEREK zorunlu ve varsayılansız. Zincirden gelen "+ Deftere Ekle"
+    # formu maliyeti boş bırakır (zincir miktarı bilir, maliyeti bilmez) ve
+    # boş alan buraya `null` olarak ulaşır. Alan `Optional[float] = 0.0`
+    # yapılırsa o istek reddedilmek yerine SIFIR MALİYETLİ bir lot yazar;
+    # o lot satıldığında tutarın tamamı kâr sayılır — F5b'de düzeltilen sahte
+    # kâr hatasının aynısı. Davranış testle de kilitli
+    # (`TestZincirdenEklemedeMaliyet`).
     cost: float
     status: Optional[str] = "Aktif"
     notes: Optional[str] = ""
