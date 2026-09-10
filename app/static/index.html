@@ -527,25 +527,14 @@
         </button>
       </div>
 
-      <!-- FAZ F1 — Defter geçmişi girişi. Transfer ve yazım kayıtları
-           işlem defterinde görünmez (ikisi de alım-satım değildir), bu yüzden
-           kendi görünür yerleri olmalı; aksi halde geri alma yolu kalmaz. -->
-      <div x-show="transfers.length > 0 || writeOffs.length > 0"
-           class="flex items-center justify-between px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 font-sans">
-        <div class="flex items-center space-x-2.5 text-[11.5px] text-slate-400">
-          <span class="text-base">📒</span>
-          <span>
-            <b x-text="transfers.length"></b> transfer,
-            <b x-text="writeOffs.length"></b> zarar yazımı kayıtlı.
-          </span>
-        </div>
-        <button @click="showLedgerHistory = true; fetchLedgerHistory()"
-                class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold transition flex-shrink-0">
-          Defter Geçmişi
-        </button>
-      </div>
+      <!-- FAZ F1'de buraya bir "Defter Geçmişi" şeridi konmuştu; F1c aynı
+           girişi üst çubuğa taşıdı (her sekmeden erişilsin diye) ama şerit
+           kaldırılmadı ve Konsolide Portföy'de aynı pencereyi açan İKİ düğme
+           yan yana kaldı. Şerit kaldırıldı: üst çubuktaki düğme her sekmede
+           duruyor ve sayaç rozetini de taşıyor, yani bu şeridin verdiği
+           bilginin tamamını daha az yer kaplayarak veriyor. -->
 
-      
+
       <!-- Exchange & Sort Filter Bar -->
       <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-slate-900 p-3.5 rounded-xl border border-slate-800">
         <div class="flex flex-wrap items-center gap-2">
@@ -6293,6 +6282,6 @@
   </div>
 
   <!-- App Frontend Script -->
-  <script src="/static/app.js?v=3.3"></script>
+  <script src="/static/app.js?v=3.4"></script>
 </body>
 </html>

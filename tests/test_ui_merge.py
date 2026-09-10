@@ -325,3 +325,35 @@ class TestYapi:
     def test_app_js_surumu_yukseltildi(self):
         m = re.search(r"app\.js\?v=([\d.]+)", self._html())
         assert m and float(m.group(1)) >= 2.9
+
+
+class TestDefterGecmisiTekGiris:
+    """FAZ F1 şeridi ile F1c üst çubuk düğmesi aynı pencereyi açıyordu ve
+    Konsolide Portföy'de ikisi yan yana duruyordu. F1c'nin gerekçesi şeridin
+    yerini almaktı; şerit kaldırılmayı unutmuş."""
+
+    def _html(self):
+        import os
+        kok = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(kok, "app", "static", "index.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    def test_tek_bir_giris_var(self):
+        assert self._html().count("showLedgerHistory = true") == 1
+
+    def test_giris_ust_cubukta(self):
+        """Üst çubuktaki düğme HER sekmede görünür; şerit yalnızca Konsolide
+        Portföy'deydi ve başka sekmedeyken geri alma yolu bulunamıyordu."""
+        html = self._html()
+        nerede = html.index("showLedgerHistory = true")
+        # Üst çubuk arama kutusundan önce geliyor.
+        assert nerede < html.index('placeholder="Coin ara')
+
+    def test_sayac_rozeti_korundu(self):
+        """Kaldırılan şerit transfer/yazım sayısını gösteriyordu; o bilgi
+        kaybolmamalı."""
+        html = self._html()
+        nerede = html.index("showLedgerHistory = true")
+        blok = html[nerede:nerede + 700]
+        assert "transfers.length + writeOffs.length" in blok

@@ -34,6 +34,7 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 import archive                       # noqa: E402
+import data_manager                  # noqa: E402
 import exchanges                     # noqa: E402
 import trade_sync                    # noqa: E402
 from trade_sync import TradeSyncService  # noqa: E402
@@ -1457,3 +1458,121 @@ class TestSoftStakingAkisi:
         sonuc = servis._akisi_cek("MEXC", mexc,
                                   trade_sync.SOFT_STAKING_KAPSAMI)
         assert sonuc["supported"] is False and sonuc["events"] == []
+
+
+# =====================================================================
+# Yakalanan alımın nakit ayağı
+# =====================================================================
+class TestYakalananAlimNakdiDuser:
+    """Satışlar nakdi her zaman artırıyordu ama alımlar hiç azaltmıyordu.
+
+    Toplam kasa `pozisyon değeri + nakit` olarak hesaplandığı için bu, aynı
+    parayı İKİ KEZ saydırıyordu: alınan coin pozisyon olarak duruyor, onu
+    alan para da hâlâ nakit olarak duruyordu. 9 Eylül'deki tek bir ARB alımı
+    ekrandaki toplam varlığı 13.79 dolar şişirdi.
+    """
+
+    def _defter(self, nakit=1000.0):
+        defter = data_manager.load_portfolio()
+        defter["transactions"] = []
+        defter["wallets"] = {
+            "usdt_cash": nakit,
+            "exchange_cash": {"BINANCE": nakit, "MEXC": 0.0},
+            "futures_balance": 0.0, "margin_balance": 0.0,
+        }
+        data_manager.save_portfolio(defter)
+        return defter
+
+    def _alim(self, **ustler):
+        olay = {
+            "event_uid": "BINANCE:trade:ARBUSDT:1", "exchange": "BINANCE",
+            "kind": trade_sync.TRADE, "symbol": "ARBUSDT",
+            "base_asset": "ARB", "quote_asset": "USDT", "side": "BUY",
+            "qty": 91.3, "price": 0.151, "quote_qty": 13.7863,
+            "fee_asset": "BNB", "fee_qty": 1.399e-05,
+            "trade_at": "2026-09-09T19:53:19", "trade_ts": 1789000000.0,
+        }
+        olay.update(ustler)
+        return olay
+
+    def _isle(self, olay, konum="BINANCE", sembol="ARBUSDT", miktar=91.3,
+              birim=0.151):
+        servis = trade_sync.TradeSyncService()
+        return servis._alimi_isle(
+            olay, konum, sembol, miktar, birim, "2026-09-09",
+            data_manager.load_portfolio, data_manager.save_portfolio,
+            data_manager.DEFAULT_CATEGORIES)
+
+    def test_alim_nakdi_azaltir(self):
+        self._defter(1000.0)
+        self._isle(self._alim())
+        c = data_manager.load_portfolio()["wallets"]
+        assert c["exchange_cash"]["BINANCE"] == pytest.approx(1000.0 - 13.7863)
+
+    def test_toplam_nakit_de_guncellenir(self):
+        self._defter(1000.0)
+        self._isle(self._alim())
+        c = data_manager.load_portfolio()["wallets"]
+        assert c["usdt_cash"] == pytest.approx(sum(c["exchange_cash"].values()))
+
+    def test_ayni_varliktan_komisyon_da_dusulur(self):
+        """Komisyon USDT ile ödendiyse hesaptan o kadar daha çıkmıştır."""
+        self._defter(1000.0)
+        self._isle(self._alim(fee_asset="USDT", fee_qty=0.0138))
+        c = data_manager.load_portfolio()["wallets"]
+        assert c["exchange_cash"]["BINANCE"] == pytest.approx(
+            1000.0 - 13.7863 - 0.0138)
+
+    def test_bnb_komisyonu_nakde_dokunmaz(self):
+        """BNB ile ödenen komisyon USDT bakiyesini değiştirmez."""
+        self._defter(1000.0)
+        self._isle(self._alim())          # fee_asset BNB
+        c = data_manager.load_portfolio()["wallets"]
+        assert c["exchange_cash"]["BINANCE"] == pytest.approx(1000.0 - 13.7863)
+
+    def test_nakit_olmayan_kotasyonda_nakde_dokunulmaz(self):
+        """BTC ile alınan bir altcoinde çıkan şey nakit değil BTC'dir."""
+        self._defter(1000.0)
+        self._isle(self._alim(symbol="ARBBTC", quote_asset="BTC",
+                              quote_qty=0.0002))
+        c = data_manager.load_portfolio()["wallets"]
+        assert c["exchange_cash"]["BINANCE"] == pytest.approx(1000.0)
+
+    def test_earn_geliri_nakdi_azaltmaz(self):
+        """Karşılıksız gelen varlık için para verilmedi."""
+        self._defter(1000.0)
+        self._isle(self._alim(kind=trade_sync.EARN, quote_asset="",
+                              quote_qty=0.0, symbol="APT"),
+                   sembol="APTUSDT", miktar=0.0004, birim=0.649)
+        c = data_manager.load_portfolio()["wallets"]
+        assert c["exchange_cash"]["BINANCE"] == pytest.approx(1000.0)
+
+    def test_dogru_konumun_nakdi_azalir(self):
+        """Konum artık olduğu gibi kullanılır; MEXC alımını Binance'ten
+        düşmek nakit dağılımını sessizce bozardı."""
+        defter = self._defter(1000.0)
+        defter["wallets"]["exchange_cash"]["MEXC"] = 500.0
+        data_manager.save_portfolio(defter)
+        self._isle(self._alim(exchange="MEXC"), konum="MEXC")
+        c = data_manager.load_portfolio()["wallets"]["exchange_cash"]
+        assert c["MEXC"] == pytest.approx(500.0 - 13.7863)
+        assert c["BINANCE"] == pytest.approx(1000.0)
+
+    def test_nakit_yetmezse_sifira_kirpilir_ve_soylenir(self):
+        """Eksiye düşmek imkânsız; oraya varıyorsak defterdeki nakit ZATEN
+        yanlıştı. Sessiz kırpma bunu düzeltilmiş gibi gösterirdi."""
+        self._defter(5.0)
+        sonuc = self._isle(self._alim())
+        c = data_manager.load_portfolio()["wallets"]
+        assert c["exchange_cash"]["BINANCE"] == pytest.approx(0.0)
+        assert "UYARI" in sonuc["transaction"]["notes"]
+        assert "yetmedi" in sonuc["transaction"]["notes"]
+
+    def test_gercek_senaryo_defter_borsayla_ortusur(self):
+        """9 Eylül: defter 1220.31 + 27.60414 satış = 1247.91414 diyordu,
+        borsa ise alımı da düşerek 1234.150306 diyordu."""
+        self._defter(1247.91414)
+        self._isle(self._alim())
+        c = data_manager.load_portfolio()["wallets"]
+        assert c["exchange_cash"]["BINANCE"] == pytest.approx(
+            1247.91414 - 13.7863, abs=1e-6)

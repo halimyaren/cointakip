@@ -205,6 +205,26 @@ kendi nakit kutusu vardır.
 **Nakit cüzdanları yönet** düğmesiyle her konumdaki serbest USDT'nizi girersiniz.
 Toplam varlığınız = pozisyonların güncel değeri + tüm konumlardaki nakit.
 
+**Nakit ne zaman kendiliğinden değişir?**
+
+| Olay | Nakit |
+|:---|:---|
+| Satış (elle ya da borsadan yakalanan) | **Artar** — gelir kasaya geçer |
+| **Borsadan yakalanan alım** | **Azalır** — harcanan USDT düşülür |
+| Elle eklediğiniz alım (`+ Deftere Ekle`) | Değişmez |
+| Earn geliri, airdrop | Değişmez — karşılığında para verilmediniz |
+| Transfer, zarar yazımı | Değişmez |
+
+Borsadan yakalanan alımda düşülmesinin sebebi şu: o işlem az önce gerçekten
+oldu ve para gerçekten hesabınızdan çıktı. Elle eklediğiniz alımlarda ise
+çoğu zaman geçmişe dönük kayıt girersiniz; o paranın bugünkü bakiyenizle
+ilgisi yoktur ve sessizce bugünün nakdini azaltmak yanlış olurdu.
+
+> Bu ayrım önemli çünkü toplam varlık **pozisyon + nakit** olarak hesaplanıyor.
+> Alımda nakit düşülmezse aynı para iki kez sayılır: aldığınız coin pozisyon
+> olarak durur, onu alan para da hâlâ nakit görünür. Tek bir alım bile
+> ekrandaki toplamı şişirir ve her alımda bu fark büyür.
+
 Yeni konum eklemenin iki yolu var: cüzdan modalından doğrudan eklemek, ya da bir
 transferde hedef olarak yazmak. İkisi de aynı listeyi besler.
 

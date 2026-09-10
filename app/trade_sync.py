@@ -1302,8 +1302,73 @@ class TradeSyncService:
         }
         tx_list.append(kayit)
         defter["next_tx_id"] = next_id + 1
+        self._nakdi_dus(defter, olay, konum, kayit)
         save_portfolio(defter)
         return {"transaction": kayit}
+
+    def _nakdi_dus(self, defter, olay, konum, kayit):
+        """Yakalanan bir ALIMIN harcadığı nakdi defterden düşer.
+
+        NEDEN GEREKLİ
+        -------------
+        Satışlar nakdi her zaman artırıyordu ama alımlar hiç azaltmıyordu.
+        Toplam kasa `pozisyon değeri + nakit` olarak hesaplandığı için
+        (`data_manager`, `total_portfolio_equity`) bu, aynı parayı İKİ KEZ
+        saydırıyordu: alınan coin pozisyon olarak duruyor, onu alan para da
+        hâlâ nakit olarak duruyordu. 9 Eylül'deki tek bir ARB alımı ekrandaki
+        toplam varlığı 13.79 dolar şişirdi ve bu her alımda büyüyecekti.
+
+        NEDEN YALNIZCA YAKALANAN ALIMLAR
+        --------------------------------
+        Burada belirsizlik yok: işlem az önce gerçekten oldu ve para gerçekten
+        hesaptan çıktı. Elle eklenen alımlar bilinçli olarak kapsam dışı —
+        kullanıcı çoğu zaman geçmişe dönük kayıt giriyor ve o paranın bugünkü
+        bakiyeyle ilgisi yok; sessizce bugünün nakdini azaltmak yanlış olurdu.
+        O yol için zaten açık bir `deduct_cash` seçeneği var.
+        """
+        import data_manager
+
+        # Earn geliri karşılıksızdır: para verilmedi, düşülecek nakit yok.
+        if olay.get("kind") != TRADE or str(olay.get("side")) != "BUY":
+            return
+
+        kot = str(olay.get("quote_asset") or "").upper().strip()
+        if kot not in NAKIT_VARLIKLAR:
+            # BTC ile alınan bir altcoinde çıkan şey nakit değil BTC'dir;
+            # onu nakitten düşmek olmayan bir para hareketi uydurmak olurdu.
+            return
+
+        cikan = _f(olay.get("quote_qty"))
+        # Komisyon da AYNI nakit varlıktan alındıysa hesaptan o kadar daha
+        # çıkmıştır. Başka bir coinden (çoğunlukla BNB) alındıysa nakde
+        # dokunmaz — o coinin bakiyesi ayrı azalır.
+        if str(olay.get("fee_asset") or "").upper().strip() == kot:
+            cikan += _f(olay.get("fee_qty"))
+        if cikan <= 0:
+            return
+
+        cuzdan = defter.setdefault("wallets", {})
+        kasalar = cuzdan.setdefault("exchange_cash", {})
+        yer = data_manager.normalize_location(konum)
+        mevcut = _f(kasalar.get(yer))
+
+        # Eksiye düşmek fiziksel olarak imkânsız; oraya varıyorsak defterdeki
+        # nakit rakamı ZATEN yanlıştı. Sıfıra kırpıyoruz ama SESSİZCE değil:
+        # sessiz kırpma, yanlış bir nakit rakamını düzeltilmiş gibi gösterir.
+        if cikan > mevcut + 1e-9:
+            eksik = cikan - mevcut
+            logger.warning(
+                "Nakit yetmedi (%s): %.8f gerekiyordu, %.8f vardı. Defterdeki "
+                "nakit rakamı eksik görünüyor.", yer, cikan, mevcut)
+            kayit["notes"] += (f" | UYARI: nakit {eksik:,.8f} {kot} yetmedi, "
+                               "defterdeki nakit sıfıra çekildi")
+            kasalar[yer] = 0.0
+        else:
+            kasalar[yer] = mevcut - cikan
+
+        cuzdan["exchange_cash"] = kasalar
+        cuzdan["usdt_cash"] = sum(_f(v) for v in kasalar.values())
+        defter["wallets"] = cuzdan
 
     def _odul_fiyati(self, varlik, tarih, live_prices=None):
         """Earn ödülünün ALINDIĞI GÜNKÜ dolar fiyatı.
