@@ -139,6 +139,15 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   zengindir — Convert, airdrop ve cüzdan taşımalarının API'de karşılığı yoktur.
   Sonuç: dosyaları her ay değil, bir kez indirirsiniz. Bu işlem de deftere hiçbir
   şey yazmaz ve okunamayan bir pencere sessizce atlanmaz, uyarı olarak bildirilir.
+- **Defter kendi kendini denetler** — her açılışta ve `/api/integrity` ucundan:
+  numaralar benzersiz mi, toplam nakit konumların toplamına eşit mi, transfer ve
+  mutabakat bağları var olan kayıtlara mı bakıyor, işlenmiş borsa olaylarının
+  defter karşılığı duruyor mu. Her denetim gerçekte yaşanmış bir hatanın
+  genellemesi: 48 saat içinde birbirinden bağımsız üç sessiz doğruluk hatası
+  bulundu ve üçü de başka bir şey yapılırken tesadüfen ortaya çıktı — hiçbiri
+  hata vermiyordu. Denetim **hiçbir şeyi düzeltmez, yalnızca söyler**; hangi
+  kaydın değişeceği çoğu zaman ona kimin işaret ettiğine bağlıdır ve o karar
+  kullanıcınındır.
 - **Karşılıksız gelen varlık tek bir kuralla değerlenir** — Earn/staking faizi,
   airdrop, Launchpool ve referans kazancı **alındığı günün piyasa değeriyle**
   maliyet tabanına girer, sıfırla değil; böylece gelir kazanıldığı andaki
@@ -335,6 +344,7 @@ app/
 ├── price_service.py  Çok kademeli fiyat keşfi ve kaynak kayıt defteri
 ├── archive.py        SQLite net varlık / fiyat arşivi (kritik yolda değildir)
 ├── reconcile.py      Borsa dışa aktarımı ↔ defter mutabakatı ve düzeltme
+├── butunluk.py       Defter bütünlük denetimi — söyler, asla yazmaz
 ├── api_history.py    Mutabakatın boşluğunu borsa API'sinden doldurur; yalnızca
 │                     indirilen dosyaların kapsamadığı dönem için
 │                     önerileri (salt okunur; yazma data_manager'dan geçer)

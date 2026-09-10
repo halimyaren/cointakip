@@ -140,6 +140,15 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   airdrops and wallet transfers have no API equivalent. This means downloading files
   once instead of every month. It writes nothing to the ledger either, and a window
   that cannot be read is reported rather than silently skipped.
+- **The ledger audits itself** — at every startup and via `/api/integrity`: are
+  transaction ids unique, does total cash equal the sum of per-location cash, do
+  transfer and reconciliation links point at records that exist, do applied
+  exchange events still have their ledger counterpart. Each check generalises a
+  bug that actually happened: three independent silent correctness bugs were
+  found within 48 hours, each discovered by accident while doing something else,
+  none of which raised an error. The audit **fixes nothing and only reports**:
+  which record should change usually depends on what points at it, and that call
+  belongs to the user.
 - **Income received in kind is valued by one rule** — Earn/staking interest,
   airdrops, Launchpool and referral rewards enter the cost basis **at the market
   price of the day they were received**, not at zero, so income is recorded at
@@ -342,6 +351,7 @@ app/
 ├── price_service.py  Multi-tier price discovery and source registry
 ├── archive.py        SQLite net-worth / price archive (never on the critical path)
 ├── reconcile.py      Exchange export ↔ ledger reconciliation and repair
+├── butunluk.py       Ledger integrity audit — reports, never writes
 ├── api_history.py    Fills reconciliation's gap from the exchange API, only
 │                     for the period the downloaded files do not cover
 │                     proposals (read-only; writes go through data_manager)

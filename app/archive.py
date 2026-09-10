@@ -1395,6 +1395,29 @@ def set_daily_close(symbol, date, close):
         return False
 
 
+def applied_events_with_tx():
+    """Deftere işlenmiş ve bir işlem numarasına bağlanmış borsa olayları.
+
+    Bütünlük denetimi bu bağın gerçek bir kayda baktığını doğruluyor: bağ
+    koparsa olay "işlendi" görünür ama defterde karşılığı olmaz ve aynı
+    işlem bir daha yakalanmaz.
+    """
+    try:
+        if not os.path.exists(archive_path()):
+            return []
+        with _connect() as conn:
+            return [dict(r) for r in conn.execute("""
+                SELECT event_uid, kind, symbol, base_asset, qty, trade_at,
+                       applied_tx_id
+                FROM exchange_events
+                WHERE applied_tx_id IS NOT NULL
+                ORDER BY trade_ts
+            """).fetchall()]
+    except Exception as e:
+        logger.debug("İşlenmiş olay bağları okunamadı: %s", e)
+        return []
+
+
 def daily_close_count():
     try:
         if not os.path.exists(archive_path()):

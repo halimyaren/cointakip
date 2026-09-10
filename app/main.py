@@ -31,7 +31,7 @@ from data_manager import (
     # İşlem numarası üretmenin TEK doğru kaynağı. Doğrudan `next_tx_id`
     # okumak, sayaç bayatladığında var olan bir numarayı verir; 9 Eylül
     # 2026'da defterde çakışan kayıtlar tam olarak böyle oluştu.
-    _sonraki_tx_id, cakisan_tx_id_var_mi
+    _sonraki_tx_id
 )
 from price_service import price_service
 from market_service import market_service
@@ -70,27 +70,39 @@ run_pending_migrations()
 
 
 def _tx_id_butunlugunu_denetle():
-    """Açılışta çakışan işlem numarası var mı diye bakar.
+    """Açılışta defterin bütün değişmezlerini denetler ve SUSMAZ.
 
     9 Eylül 2026'da defterde aynı numarayı taşıyan kayıtlar bulundu ve bu
-    kusur DOKUZ GÜN görünmedi — çünkü hiçbir yer bakmıyordu. Numaraya göre
-    arama listede ilk eşleşeni bulup durduğu için, çakışma "yanlış pozisyonu
-    satmak"a kadar giden sessiz bir yoldu.
+    kusur DOKUZ GÜN görünmedi — çünkü hiçbir yer bakmıyordu. Ertesi gün aynı
+    sınıftan iki hata daha çıktı (alımda düşülmeyen nakit, aynı gelirin iki
+    farklı maliyetle girmesi) ve üçü de başka bir şey yapılırken tesadüfen
+    bulundu. Tek tek denetim eklemek yerine denetimin kendisi bir modüle
+    taşındı; buradaki iş yalnızca onu çalıştırmak ve sonucu loglamak.
 
-    Numarayı burada kendiliğinden DEĞİŞTİRMİYORUZ: hangi kaydın taşınacağı,
-    ona kim işaret ediyor bilgisine bağlı ve o karar kullanıcınındır.
-    Görevimiz susmamak.
+    Hiçbir şey DÜZELTİLMEZ: hangi kaydın değişeceği çoğu zaman ona kimin
+    işaret ettiğine bağlı ve o karar kullanıcınındır. Görevimiz susmamak.
     """
+    import butunluk
+
     try:
-        cakisan = cakisan_tx_id_var_mi(load_portfolio())
+        rapor = butunluk.denetle(load_portfolio())
     except Exception as e:
-        logger.debug("İşlem numarası denetimi yapılamadı: %s", e)
+        logger.debug("Bütünlük denetimi yapılamadı: %s", e)
         return
-    if cakisan:
-        logger.error(
-            "DEFTER UYARISI: aynı işlem numarasını taşıyan kayıtlar var: %s. "
-            "Numaraya göre arama yanlış kaydı bulabilir; satış ve düzenleme "
-            "bu numaralarda güvenli değildir.", cakisan)
+
+    for bulgu in rapor.get("findings", []):
+        ornek = "; ".join(str(o) for o in bulgu.get("items", [])[:5])
+        if bulgu.get("severity") == butunluk.HATA:
+            logger.error("DEFTER UYARISI: %s (%s adet) — %s | %s",
+                         bulgu.get("title"), bulgu.get("count"),
+                         bulgu.get("detail"), ornek)
+        else:
+            logger.warning("Defter notu: %s (%s adet) — %s",
+                           bulgu.get("title"), bulgu.get("count"), ornek)
+
+    if rapor.get("ok"):
+        logger.info("Defter bütünlük denetimi temiz (%s kontrol, %s kayıt).",
+                    rapor.get("checks_run"), rapor.get("transaction_count"))
 
 
 _tx_id_butunlugunu_denetle()
@@ -250,6 +262,21 @@ def run_reconcile():
     elle girdiği hâliyle kalır; bu uç yalnızca farkları raporlar.
     """
     return reconcile.reconcile(load_portfolio(), api=True)
+
+
+@app.get("/api/integrity")
+def check_integrity():
+    """
+    Defterin değişmezlerini denetler. **SALT OKUNURDUR — hiçbir şey yazmaz.**
+
+    Ne düzelttiği ne de düzelteceği vardır: hangi kaydın değişeceği çoğu
+    zaman ona kimin işaret ettiğine bağlıdır ve o karar kullanıcınındır.
+    Otomatik düzelten bir denetim, sessiz bir hatayı sessiz bir değişiklikle
+    takas ederdi.
+    """
+    import butunluk
+
+    return butunluk.denetle(load_portfolio())
 
 
 @app.get("/api/reconcile/api-history")

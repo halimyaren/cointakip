@@ -1151,6 +1151,40 @@ olduğu durumlarda kullanışlıdır.
 
 ---
 
+## 14b. Defter bütünlük denetimi
+
+Uygulama her açılışta defterinizin kendi içinde tutarlı olup olmadığına bakar
+ve bulduğunu **loga yazar** (`data/logs/cointakip.log`). Raporu dilediğiniz an
+`/api/integrity` adresinden de alabilirsiniz.
+
+Neden var: 48 saat içinde birbirinden bağımsız üç sessiz hata bulundu ve üçü
+de *başka bir şey yapılırken tesadüfen* ortaya çıktı. Hiçbiri hata vermiyor,
+hiçbiri ekranda kırmızı yanmıyordu — defter kendi kendini hiç denetlemiyordu.
+
+Şu anda bakılanlar:
+
+| Denetim | Neden |
+|:---|:---|
+| Numaralar benzersiz mi | Aynı numaralı iki kayıtta satış/düzenleme **yanlış kaydı** işleme alır |
+| Numara sayacı ileride mi | Geride kalırsa bir sonraki kayıt çakışır — çakışma oluşmadan uyarır |
+| Toplam nakit konumların toplamına eşit mi | İkisi farklıysa toplam varlık yanlış hesaplanır |
+| Negatif nakit / negatif açık lot var mı | İkisi de fiziksel olarak imkânsız |
+| Zorunlu alanlar dolu mu, durum tanınıyor mu | Tanınmayan durumdaki kayıt bazı ekranlarda hiç görünmez |
+| Kapalı lotların çıkış bilgisi var mı | Vergi dökümü bu alanlardan besleniyor |
+| Transfer ve mutabakat bağları var olan kayıtlara mı bakıyor | Kopuk bağ, **geri almanın sessizce eksik çalışması** demek |
+| İşlenmiş borsa olayları gerçek bir kayda mı bağlı | Bağ koparsa olay "işlendi" görünür, defterde karşılığı olmaz |
+
+> **Denetim hiçbir şeyi düzeltmez, yalnızca söyler.** Bu bilinçli: hangi
+> kaydın değişeceği çoğu zaman *ona kimin işaret ettiğine* bağlıdır ve o karar
+> sizindir. Kendiliğinden düzelten bir denetim, sessiz bir hatayı sessiz bir
+> değişiklikle takas ederdi.
+
+Bir bulgu çıkarsa panik yapmayın: **hata** işaretli olanlar bakılması
+gerekenler, **not** işaretli olanlar bilgilendirmedir. Ne yapacağınıza karar
+vermeden önce yedeğiniz olduğundan emin olun (bkz. bölüm 15).
+
+---
+
 ## 15. Yedekleme ve geri yükleme
 
 İki ayrı şey yedeklenir ve **farklı kurallarla**:
