@@ -1650,7 +1650,8 @@ class TestArayuzKapisiCalistirilarak:
             console.log(JSON.stringify(girdiler.map(r => api.chainAddableQty(r))));
         """) % (kaynak, json.dumps(satirlar))
         cikti = subprocess.run(["node", "-e", betik], capture_output=True,
-                               text=True, timeout=30)
+                               text=True, encoding="utf-8",
+                               timeout=30)
         assert cikti.returncode == 0, cikti.stderr
         return json.loads(cikti.stdout.strip())
 
@@ -1761,7 +1762,8 @@ class TestZincirPrefillCalistirilarak:
                 _islev_kaynagi(js, "addFromChain"),
                 json.dumps(satir))
         cikti = subprocess.run(["node", "-e", betik], capture_output=True,
-                               text=True, timeout=30)
+                               text=True, encoding="utf-8",
+                               timeout=30)
         assert cikti.returncode == 0, cikti.stderr
         return json.loads(cikti.stdout.strip())
 

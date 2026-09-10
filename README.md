@@ -75,6 +75,16 @@ Your BTC on Binance and your BTC on MEXC keep independent cost bases.
   labelled with their age; very old ones are dropped rather than passed off as current.
   Analysis never waits on market data — one source measured 7-22 seconds on a real
   connection, so everything is fetched in the background and read from cache.
+- **Leverage conditions** — funding rates and open interest make measurable a
+  question the other metrics cannot answer: is a move backed by spot buying or by
+  leverage? Funding for all 850+ perpetuals arrives in a single call, so the
+  market-wide distribution costs nothing extra. The app issues **no verdicts** here
+  either: it never writes "overleveraged", it gives the rate both per-8-hours and
+  annualised. Open-interest change is the live value against the daily snapshot from
+  N days ago, and **both timestamps** are recorded so it is never ambiguous what was
+  compared. Liquidation data is deliberately absent: Binance's public endpoint is
+  gone (measured, `404`) and the alternatives require paid keys — what we cannot
+  reach is not presented as if we had.
 - **Settings backups** — every distinct settings state is saved, both before and after
   each write, and restorable from the UI. This exists because on 5 September 2026 the
   settings file was overwritten with defaults and a user's API keys, wallet

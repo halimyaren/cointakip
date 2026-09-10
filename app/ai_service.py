@@ -206,7 +206,19 @@ class AIFinancialAdvisor:
                 "bilerek 'boga/ayi' gibi bir etiket uretmez; yorum senin isin. "
                 "Her alt blogun 'freshness' ve 'age_human' alani vardir; "
                 "'stale' isaretli bir degeri kullanacaksan yasini rapora yaz. "
-                "Piyasa verisi portfoy tavsiyesinin YERINE gecmez, cercevesidir."
+                "Piyasa verisi portfoy tavsiyesinin YERINE gecmez, cercevesidir. "
+                # FAZ M2 — fonlama ve acik pozisyon en cok "sinyal" sanilan
+                # iki olcum. Birimleri de yaniltici: 0.0001 gibi bir sayi 8
+                # SAATLIK orandir, yillik degil. Her iki blok kendi
+                # 'definition' alanini tasiyor; once onu oku.
+                "'funding' ve 'open_interest' bloklarinda once 'definition' "
+                "alanini oku: fonlama orani 8 SAATLIK'tir, 'annualized_pct' "
+                "ise basit carpimla yilliga cevrilmis halidir. Acik pozisyon "
+                "degisimleri CANLI degerin N gun onceki GUNLUK fotografa gore "
+                "farkidir ve karsilastirilan iki zaman damgasi 'live_at' ile "
+                "'baselines' icinde verilir. Bu sayilardan 'spot kaynakli', "
+                "'kaldirac kaynakli' ya da 'asiri kaldirac' gibi kesin hukumler "
+                "TURETME; gozlemi aktar, belirsizligi sakla."
             ),
         }
 

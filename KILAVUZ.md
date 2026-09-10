@@ -1318,6 +1318,35 @@ artıda, kaçı BTC'yi geçiyor), **Korku & Açgözlülük endeksi** ve **BTC do
 toplam piyasa değeri**. Bunları Yapay Zekâ sekmesinin üstündeki **Piyasa Çerçevesi**
 şeridinde birebir görebilirsiniz — modele giden sayı ile ekranda gördüğünüz aynıdır.
 
+Bunlara **kaldıraç ortamı** da eklendi: **fonlama oranları** ve **açık pozisyon**.
+İkisi birlikte, diğer beş metriğin cevaplayamadığı bir soruyu ölçülebilir kılıyor —
+*bir fiyat hareketinin arkasında spot alım mı var, kaldıraç mı?*
+
+| Kart | Ne gösterir |
+|:---|:---|
+| **Fonlama (BTC)** | Yıllıklandırılmış oran; alt satırda 8 saatlik ham oran ve ETH |
+| **Fonlama geneli** | USDT perpetual'ların yüzde kaçının oranı pozitif, medyan kaç |
+| **Açık Pozisyon (BTC)** | Dolar karşılığı, 1 ve 7 günlük değişimiyle |
+
+Üç ayrıntı:
+
+- **Fonlama oranı 8 SAATLİKTİR.** Ekranda yıllıklandırılmış hâli de var çünkü ham
+  sayı (%0.0075) okunabilir bir büyüklük değil. Yıllık = oran × 3 ödeme × 365 gün,
+  **basit çarpım** — bileşiklemek oranın sabit kalacağını varsaymak olurdu.
+- **Açık pozisyon değişimi, canlı değer ile N gün önceki GÜNLÜK fotoğraf arasındadır.**
+  İkisi aynı şey değil: ölçüldüğünde aralarında 2.203 BTC fark vardı. Karşılaştırılan
+  iki zaman damgası da kayda yazılır, böylece neyin neyle kıyaslandığı belirsiz kalmaz.
+- **Bunlar sizin pozisyonlarınız değil.** Vadeli piyasanın geneli okunuyor; uygulama
+  vadeli işlem takibi yapmaz. Veriler ayrı bir Binance sunucusundan (`fapi`) gelir ve
+  bazı ülkelerde erişilemeyebilir — o durumda kaynak "düştü" olarak işaretlenir,
+  sessizce boş geçilmez.
+
+> **Likidasyon ve stablecoin arzı bilerek yok.** Binance'in genel likidasyon ucu
+> kaldırılmış (ölçüldü: `404`) ve alternatifleri ücretli anahtar istiyor. Stablecoin
+> arzının en hafif ücretsiz kaynağı ise tek bir sayı için 15 saniye sürüyor. İkisi de
+> "var gibi" gösterilmiyor — ulaşamadığımız veriyi ulaşmış gibi sunmak bu projede en
+> pahalı hata türü sayılıyor.
+
 Üç sınır önemli:
 
 - **Uygulama bu sayılardan hüküm üretmez.** "Boğa piyasası", "ölüm kesişimi" gibi

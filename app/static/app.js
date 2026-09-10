@@ -4832,7 +4832,48 @@ function portfolioApp() {
         stale: eth.freshness === 'stale', age: eth.age_human,
       });
 
+      // FAZ M2 — kaldıraç ortamı. Burada da hüküm yok: "aşırı", "kalabalık"
+      // gibi bir kelime geçmiyor. Fonlama YILLIKLANDIRILMIŞ gösteriliyor
+      // çünkü ham hâli (%0.0075) okunabilir bir büyüklük değil; 8 saatlik
+      // oran alt satırda aynen duruyor ki hangi sayıya baktığın belli olsun.
+      const fon = this._marketBlok('funding');
+      if (fon && fon.btc) kartlar.push({
+        id: 'funding', label: 'Fonlama (BTC)',
+        value: this._yuzdeIsaretli(fon.btc.annualized_pct, 2) + ' yıllık',
+        sub: '8sa ' + this._yuzdeIsaretli(fon.btc.rate_8h_pct, 4)
+             + (fon.eth ? ' · ETH ' + this._yuzdeIsaretli(fon.eth.annualized_pct, 1) : ''),
+        stale: fon.freshness === 'stale', age: fon.age_human,
+      });
+
+      if (fon && typeof fon.positive_share_pct === 'number') kartlar.push({
+        id: 'funding_geneli', label: 'Fonlama geneli',
+        value: '%' + fon.positive_share_pct.toFixed(1) + ' pozitif',
+        sub: fon.sample_size + ' perpetual · medyan '
+             + this._yuzdeIsaretli(fon.median_annualized_pct, 1) + ' yıllık',
+        stale: fon.freshness === 'stale', age: fon.age_human,
+      });
+
+      const ap = this._marketBlok('open_interest');
+      const apBtc = ap && ap.symbols && ap.symbols.BTCUSDT;
+      if (apBtc) kartlar.push({
+        id: 'oi', label: 'Açık Pozisyon (BTC)',
+        value: apBtc.open_interest_usd
+          ? '$' + (apBtc.open_interest_usd / 1e9).toFixed(2) + 'B'
+          : Number(apBtc.open_interest).toLocaleString('tr-TR', { maximumFractionDigits: 0 }),
+        sub: '1g ' + this._yuzdeIsaretli(apBtc.change_1d_pct, 2)
+             + ' · 7g ' + this._yuzdeIsaretli(apBtc.change_7d_pct, 2),
+        stale: ap.freshness === 'stale', age: ap.age_human,
+      });
+
       return kartlar;
+    },
+
+    // Yokluğu sıfırdan ayırır: veri gelmediyse '—' yazar, '%0.00' değil.
+    // Bu ayrım bu projede tekrar tekrar bedel ödetti.
+    _yuzdeIsaretli(deger, hane) {
+      if (deger === null || deger === undefined || typeof deger !== 'number'
+          || !isFinite(deger)) return '—';
+      return (deger > 0 ? '+' : '') + deger.toFixed(hane) + '%';
     },
 
     async toggleAiHistory() {

@@ -87,7 +87,8 @@ logger = get_logger("market_service")
 # KAYNAK KAYIT DEFTERİ
 # =====================================================================
 # `price_sources` ile aynı desen: kaynak eklemek/kapatmak kod değil ayardır.
-MARKET_SOURCE_IDS = ("btc_trend", "ethbtc", "breadth", "fear_greed", "global")
+MARKET_SOURCE_IDS = ("btc_trend", "ethbtc", "breadth", "fear_greed", "global",
+                     "funding", "open_interest")
 
 MARKET_SOURCE_LABELS = {
     "btc_trend":   "BTC trendi (Binance)",
@@ -95,12 +96,25 @@ MARKET_SOURCE_LABELS = {
     "breadth":     "Piyasa genişliği (mevcut Binance verisi)",
     "fear_greed":  "Korku & Açgözlülük (alternative.me)",
     "global":      "Dominans & piyasa değeri (CoinGecko)",
+    "funding":     "Fonlama oranları (Binance vadeli)",
+    "open_interest": "Açık pozisyon (Binance vadeli)",
 }
 
 DEFAULT_MARKET_URLS = {
     "btc_klines":  "https://api.binance.com/api/v3/klines",
     "fear_greed":  "https://api.alternative.me/fng/",
     "coingecko_global": "https://api.coingecko.com/api/v3/global",
+    # FAZ M2 — vadeli piyasa uçları. AYRI SUNUCU (`fapi`), spot API'siyle
+    # aynı yerde değil; bazı ülkelerde erişilemeyebilir. Adres yapılandırma
+    # olduğu için engelli bir ortamda kaynak kapatılabilir, ve sağlık takibi
+    # düşen kaynağı sessizce değil açıkça bildirir.
+    #
+    # Bunlar KULLANICININ pozisyonları değil, piyasa çerçevesidir: uygulama
+    # vadeli işlem takibi yapmaz, yalnızca spot hareketin arkasında kaldıraç
+    # olup olmadığını ölçülebilir kılar.
+    "funding_premium": "https://fapi.binance.com/fapi/v1/premiumIndex",
+    "open_interest":   "https://fapi.binance.com/fapi/v1/openInterest",
+    "open_interest_hist": "https://fapi.binance.com/futures/data/openInterestHist",
 }
 
 # Kaynak başına yenileme aralığı (saniye). Metriklerin gerçek değişim
@@ -111,6 +125,12 @@ KAYNAK_TTL = {
     "ethbtc":     900.0,
     "fear_greed": 1800.0,   # 30 dk — endeks zaten günde bir güncelleniyor
     "global":     900.0,    # 15 dk — yavaş uç, sık çağırmanın anlamı yok
+    # Fonlama 8 saatte bir ödeniyor; aradaki "tahmini" oran dalgalanıyor ama
+    # 15 dakikadan sık bakmanın karar üzerinde karşılığı yok.
+    "funding":    900.0,
+    # Açık pozisyon sürekli değişiyor ama geçmişi GÜNLÜK fotoğraflarla
+    # tutuluyor; canlı değeri 15 dakikada bir tazelemek yeterli.
+    "open_interest": 900.0,
 }
 
 # Tazelik eşikleri (saniye): (bayat_sayilir, artik_verilmez).
@@ -124,7 +144,28 @@ TAZELIK_ESIKLERI = {
     "breadth":    (900.0, 7200.0),        # 15 dk / 2 saat — en hızlı bayatlayan
     "fear_greed": (129600.0, 259200.0),   # 36 saat / 72 saat
     "global":     (21600.0, 86400.0),     # 6 saat / 24 saat
+    # Fonlama ve açık pozisyon kaldıraç ortamını anlatıyor ve o ortam
+    # saatler içinde değişebiliyor. Bir gün önceki fonlama oranı bugünkü
+    # karar için yanıltıcıdır; o yüzden eşikler dar.
+    "funding":       (7200.0, 21600.0),   # 2 saat / 6 saat
+    "open_interest": (7200.0, 21600.0),
 }
+
+# Vadeli metrikler bu semboller için toplanır. Piyasa çerçevesi olduğu için
+# liste kısa: BTC yönü belirler, ETH ikinci referanstır. Kullanıcının kendi
+# pozisyonları için sembol başına vadeli veri çekmek hem çağrı sayısını
+# katlar hem de spot bir defterde karşılığı olmayan bir ayrıntıdır.
+VADELI_SEMBOLLER = ("BTCUSDT", "ETHUSDT")
+
+# Fonlama oranı 8 saatte bir ödenir; yıllığa çevirmek için günde 3 ödeme.
+FONLAMA_GUNLUK_ODEME = 3
+
+# Açık pozisyon değişimi bu günlük fotoğraflara göre ölçülür.
+AP_DEGISIM_GUNLERI = (1, 7)
+
+# `openInterestHist` günlük periyotta EN FAZLA 31 satır veriyor (ölçüldü,
+# limit=500 istense bile). 30 günden eski bir karşılaştırma istenemez.
+AP_GECMIS_LIMIT = 31
 
 TAZE = "fresh"
 BAYAT = "stale"
@@ -559,6 +600,167 @@ class MarketDataService:
     # -----------------------------------------------------------------
     # TOPLAMA
     # -----------------------------------------------------------------
+    # -----------------------------------------------------------------
+    # FAZ M2 — kaldıraç ortamı
+    # -----------------------------------------------------------------
+    def fetch_funding(self):
+        """Fonlama oranları. **Tek çağrı, bütün perpetual'lar.**
+
+        `premiumIndex` sembolsüz çağrıldığında 900 çiftin tamamını 370 ms'de
+        veriyor (ölçüldü). Bu, modülün 5 numaralı kuralının aynısı: veri
+        zaten elimize geliyorsa piyasa geneli istatistiği SIFIR ek çağrıya
+        mal olur.
+
+        HÜKÜM YOK. "Kaldıraç aşırı", "boğalar kalabalık" gibi bir etiket
+        üretmiyoruz; oranı, yıllıklandırılmış hâlini ve piyasa genelindeki
+        dağılımı veriyoruz. Yorum modele ve kullanıcıya ait.
+        """
+        ham = self._getir(self._url("funding_premium"), timeout=12)
+        return self._funding_to_dict(ham)
+
+    @staticmethod
+    def _funding_to_dict(ham):
+        """Fonlama yanıtını sözlüğe çevirir. **Ağa çıkmaz — test edilebilir.**"""
+        if not isinstance(ham, list) or not ham:
+            raise ValueError("fonlama yanıtı beklenen biçimde değil")
+
+        oranlar, sembol_oran = [], {}
+        for satir in ham:
+            if not isinstance(satir, dict):
+                continue
+            sembol = str(satir.get("symbol") or "").upper()
+            try:
+                oran = float(satir.get("lastFundingRate"))
+            except (TypeError, ValueError):
+                continue
+            # USDT marjlı perpetual'lar. Coin marjlı ve dated futures farklı
+            # bir enstrüman; aynı dağılıma katmak elmayla armudu toplamak olur.
+            if sembol.endswith("USDT"):
+                oranlar.append(oran)
+                sembol_oran[sembol] = oran
+
+        if not oranlar:
+            raise ValueError("fonlama yanıtında USDT perpetual bulunamadı")
+
+        oranlar.sort()
+        orta = len(oranlar) // 2
+        medyan = (oranlar[orta] if len(oranlar) % 2
+                  else (oranlar[orta - 1] + oranlar[orta]) / 2.0)
+        pozitif = sum(1 for o in oranlar if o > 0)
+
+        def _sembol_blogu(sembol):
+            oran = sembol_oran.get(sembol)
+            if oran is None:
+                return None
+            return {
+                "rate_8h": oran,
+                "rate_8h_pct": oran * 100.0,
+                # Yıllıklandırma bir yorum değil, aynı sayının okunabilir
+                # birimi: günde 3 ödeme, 365 gün. Bileşik DEĞİL, basit —
+                # bileşiklemek oranın sabit kalacağını varsaymak olurdu.
+                "annualized_pct": oran * FONLAMA_GUNLUK_ODEME * 365 * 100.0,
+            }
+
+        return {
+            "btc": _sembol_blogu("BTCUSDT"),
+            "eth": _sembol_blogu("ETHUSDT"),
+            # Piyasa geneli: ham sayım ve medyan. Hiçbiri hüküm değil.
+            "sample_size": len(oranlar),
+            "positive_count": pozitif,
+            "positive_share_pct": pozitif / len(oranlar) * 100.0,
+            "median_rate_8h": medyan,
+            "median_annualized_pct": medyan * FONLAMA_GUNLUK_ODEME * 365 * 100.0,
+            "definition": ("USDT marjlı perpetual'ların son fonlama oranı. "
+                           "Yıllık = oran x 3 ödeme x 365 gün (basit). "
+                           "'positive_share_pct' oranı sıfırdan büyük olan "
+                           "çiftlerin yüzdesidir."),
+            "source": "Binance fapi/premiumIndex",
+        }
+
+    def fetch_open_interest(self):
+        """Açık pozisyon: canlı değer + GÜNLÜK fotoğraflara göre değişim.
+
+        İki ayrı uç kullanılıyor ve bu bilinçli. Canlı `openInterest` anlık
+        değeri verir; `openInterestHist` ise günde bir (03:00) alınmış
+        fotoğraflar tutar. Ölçüldüğünde ikisi arasında 2.203 BTC fark vardı —
+        yani "bugünkü satır" canlı değer DEĞİLDİR. Karşılaştırmayı bu ikisini
+        birbirine karıştırarak yapmak, olmayan bir hareket uydururdu.
+
+        Bu yüzden her değişim, karşılaştırılan İKİ ZAMAN DAMGASIYLA birlikte
+        veriliyor: "canlı değer, N gün önceki günlük fotoğrafa göre şu kadar".
+        """
+        out = {"symbols": {}, "source": "Binance fapi/openInterest + openInterestHist",
+               "definition": (
+                   "'open_interest' canlı açık pozisyon (kontrat adedi). "
+                   "'change_Ng_pct' canlı değerin, N gün önceki GÜNLÜK "
+                   "fotoğrafa göre yüzde farkıdır; iki ölçümün zaman damgası "
+                   "'live_at' ve 'baselines' içinde ayrı ayrı verilir.")}
+
+        for sembol in VADELI_SEMBOLLER:
+            try:
+                out["symbols"][sembol] = self._sembol_acik_pozisyon(sembol)
+            except Exception as e:
+                # Bir sembolün düşmesi diğerini iptal etmemeli.
+                logger.debug("Açık pozisyon alınamadı (%s): %s", sembol, e)
+        if not out["symbols"]:
+            raise ValueError("hiçbir sembol için açık pozisyon alınamadı")
+        return out
+
+    def _sembol_acik_pozisyon(self, sembol):
+        anlik = self._getir(
+            f"{self._url('open_interest')}?symbol={sembol}", timeout=10)
+        gecmis = self._getir(
+            f"{self._url('open_interest_hist')}?symbol={sembol}"
+            f"&period=1d&limit={AP_GECMIS_LIMIT}", timeout=10)
+        return self._oi_to_dict(sembol, anlik, gecmis)
+
+    @staticmethod
+    def _oi_to_dict(sembol, anlik, gecmis):
+        """**Ağa çıkmaz — test edilebilir.**"""
+        if not isinstance(anlik, dict) or anlik.get("openInterest") is None:
+            raise ValueError("açık pozisyon yanıtı beklenen biçimde değil")
+        try:
+            canli = float(anlik["openInterest"])
+        except (TypeError, ValueError):
+            raise ValueError("açık pozisyon sayıya çevrilemedi")
+
+        blok = {
+            "symbol": sembol,
+            "open_interest": canli,
+            "live_at": int(anlik.get("time") or 0),
+            "baselines": {},
+        }
+
+        satirlar = [s for s in (gecmis or []) if isinstance(s, dict)]
+        if not satirlar:
+            return blok
+
+        # En yeni satır sonda. Değer USD karşılığını da taşıyor.
+        try:
+            son = satirlar[-1]
+            blok["open_interest_usd"] = float(son.get("sumOpenInterestValue"))
+        except (TypeError, ValueError):
+            pass
+
+        for gun in AP_DEGISIM_GUNLERI:
+            # `gun` gün öncesi = sondan `gun` satır geri. Yeterli geçmiş
+            # yoksa uydurmuyoruz; o alan hiç doğmuyor.
+            if len(satirlar) <= gun:
+                continue
+            eski = satirlar[-1 - gun]
+            try:
+                eski_oi = float(eski.get("sumOpenInterest"))
+            except (TypeError, ValueError):
+                continue
+            if eski_oi <= 0:
+                continue
+            blok["baselines"][f"{gun}d"] = {
+                "open_interest": eski_oi,
+                "at": int(eski.get("timestamp") or 0),
+            }
+            blok[f"change_{gun}d_pct"] = (canli - eski_oi) / eski_oi * 100.0
+        return blok
+
     def _cekiciler(self):
         return {
             "btc_trend": self.fetch_btc_trend,
@@ -566,6 +768,8 @@ class MarketDataService:
             "breadth": self.fetch_breadth,
             "fear_greed": self.fetch_fear_greed,
             "global": self.fetch_global,
+            "funding": self.fetch_funding,
+            "open_interest": self.fetch_open_interest,
         }
 
     def refresh_due(self, force=False):

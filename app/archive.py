@@ -70,7 +70,54 @@ SNAPSHOT_REFRESH_TTL = 3600.0
 #     Aynı yöntem.
 # 6 — `daily_closes` eklendi: geçmiş günlerin kapanış fiyatları için KALICI
 #     önbellek. Aynı yöntem.
-SCHEMA_VERSION = 6
+# 7 — `market_snapshots` tablosuna fonlama ve açık pozisyon sütunları
+#     eklendi (FAZ M2). Aynı yöntem.
+SCHEMA_VERSION = 7
+
+
+# Var olan tablolara SONRADAN eklenen sütunlar.
+#
+# `CREATE TABLE IF NOT EXISTS` yeni tablolar için yeterli ama var olan bir
+# tabloya sütun EKLEMEZ. Şimdiye kadarki bütün şema değişiklikleri yeni tablo
+# eklemekti, bu yüzden fark edilmedi; FAZ M2 ilk kez mevcut bir tabloyu
+# genişletiyor. Göç yapılmazsa kullanıcının arşivi "no such column" ile
+# yazmayı reddeder — sessiz değil gürültülü bir arıza, ama yine de arıza.
+#
+# ALTER TABLE ADD COLUMN, SQLite'ta var olan satırlara NULL yazar; eski
+# fotoğraflar olduğu gibi kalır ve o günler için "ölçmedik" demek zaten
+# doğrudur.
+SONRADAN_EKLENEN_SUTUNLAR = {
+    "market_snapshots": [
+        ("funding_btc_8h", "REAL"),
+        ("funding_eth_8h", "REAL"),
+        ("funding_median_8h", "REAL"),
+        ("funding_positive_pct", "REAL"),
+        ("oi_btc", "REAL"),
+        ("oi_btc_usd", "REAL"),
+        ("oi_btc_change_1d_pct", "REAL"),
+        ("oi_eth", "REAL"),
+        ("oi_eth_change_1d_pct", "REAL"),
+    ],
+}
+
+
+def _eksik_sutunlari_ekle(conn):
+    """Eksik sütunları ekler. Zaten varsa hiçbir şey yapmaz (fikir birliği)."""
+    for tablo, sutunlar in SONRADAN_EKLENEN_SUTUNLAR.items():
+        try:
+            mevcut = {r[1] for r in conn.execute(f"PRAGMA table_info({tablo})")}
+        except Exception:
+            continue
+        if not mevcut:
+            continue          # tablo henüz yok; CREATE zaten kuracak
+        for ad, tip in sutunlar:
+            if ad in mevcut:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE {tablo} ADD COLUMN {ad} {tip}")
+                logger.info("Arşive sütun eklendi: %s.%s", tablo, ad)
+            except Exception as e:
+                logger.warning("Sütun eklenemedi (%s.%s): %s", tablo, ad, e)
 
 
 def archive_path():
@@ -221,6 +268,20 @@ def init_archive():
                     dominance_source      TEXT,
                     breadth_advancing_pct REAL,
                     breadth_median_pct    REAL,
+                    -- FAZ M2 — kaldıraç ortamı. Fonlama ve açık pozisyon
+                    -- arşivde tutuluyor çünkü asıl değerleri SERİ hâlinde:
+                    -- tek bir günün fonlama oranı az şey söyler, haftalarca
+                    -- artan bir seri çok şey söyler. Borsa bu geçmişi
+                    -- kısıtlı tutuyor (açık pozisyon yalnızca 31 gün).
+                    funding_btc_8h        REAL,
+                    funding_eth_8h        REAL,
+                    funding_median_8h     REAL,
+                    funding_positive_pct  REAL,
+                    oi_btc                REAL,
+                    oi_btc_usd            REAL,
+                    oi_btc_change_1d_pct  REAL,
+                    oi_eth                REAL,
+                    oi_eth_change_1d_pct  REAL,
                     raw_json              TEXT
                 );
 
@@ -338,6 +399,7 @@ def init_archive():
                 CREATE INDEX IF NOT EXISTS idx_ai_reports_ts ON ai_reports(created_ts);
                 CREATE INDEX IF NOT EXISTS idx_ai_reports_mode ON ai_reports(mode, created_ts);
             """)
+            _eksik_sutunlari_ekle(conn)
             # OR IGNORE değil UPSERT: eski bir arşiv açıldığında meta satırı
             # "1"de takılı kalıyordu ve dosya aslında güncellenmiş olmasına
             # rağmen eski sürüm gibi görünüyordu.
@@ -836,6 +898,35 @@ def _piyasa_alanlari(snapshot):
         "dominance_source": glb.get("source"),
         "breadth_advancing_pct": gen.get("advancing_pct"),
         "breadth_median_pct": gen.get("median_change_24h_pct"),
+        **_kaldirac_alanlari(bloklar),
+    }
+
+
+def _kaldirac_alanlari(bloklar):
+    """FAZ M2 — fonlama ve açık pozisyonun tablo sütunları.
+
+    Ayrı bir işlev, çünkü bu iki blok yokken de arşiv yazılabilmeli: vadeli
+    uçlar ayrı bir sunucuda ve bazı ülkelerde erişilemiyor. Blok yoksa
+    sütunlar `None` kalır — sıfır yazmak "fonlama sıfırdı" demek olurdu ve
+    bu, "bakamadık"tan tamamen farklı bir iddiadır.
+    """
+    fon = bloklar.get("funding") or {}
+    ap = (bloklar.get("open_interest") or {}).get("symbols") or {}
+    btc_fon = fon.get("btc") or {}
+    eth_fon = fon.get("eth") or {}
+    btc_ap = ap.get("BTCUSDT") or {}
+    eth_ap = ap.get("ETHUSDT") or {}
+
+    return {
+        "funding_btc_8h": btc_fon.get("rate_8h"),
+        "funding_eth_8h": eth_fon.get("rate_8h"),
+        "funding_median_8h": fon.get("median_rate_8h"),
+        "funding_positive_pct": fon.get("positive_share_pct"),
+        "oi_btc": btc_ap.get("open_interest"),
+        "oi_btc_usd": btc_ap.get("open_interest_usd"),
+        "oi_btc_change_1d_pct": btc_ap.get("change_1d_pct"),
+        "oi_eth": eth_ap.get("open_interest"),
+        "oi_eth_change_1d_pct": eth_ap.get("change_1d_pct"),
     }
 
 
@@ -858,45 +949,28 @@ def write_market_snapshot(snapshot):
         init_archive()
         simdi = time.time()
         with _connect() as conn:
-            conn.execute("""
-                INSERT INTO market_snapshots (
-                    taken_date, taken_at, taken_ts,
-                    btc_price_usd, btc_change_7d_pct, btc_change_30d_pct,
-                    btc_sma50, btc_sma200, ethbtc,
-                    fear_greed, fear_greed_label,
-                    btc_dominance_pct, total_market_cap_usd, mcap_excl_btc_usd,
-                    dominance_source, breadth_advancing_pct, breadth_median_pct,
-                    raw_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(taken_date) DO UPDATE SET
-                    taken_at = excluded.taken_at,
-                    taken_ts = excluded.taken_ts,
-                    btc_price_usd = excluded.btc_price_usd,
-                    btc_change_7d_pct = excluded.btc_change_7d_pct,
-                    btc_change_30d_pct = excluded.btc_change_30d_pct,
-                    btc_sma50 = excluded.btc_sma50,
-                    btc_sma200 = excluded.btc_sma200,
-                    ethbtc = excluded.ethbtc,
-                    fear_greed = excluded.fear_greed,
-                    fear_greed_label = excluded.fear_greed_label,
-                    btc_dominance_pct = excluded.btc_dominance_pct,
-                    total_market_cap_usd = excluded.total_market_cap_usd,
-                    mcap_excl_btc_usd = excluded.mcap_excl_btc_usd,
-                    dominance_source = excluded.dominance_source,
-                    breadth_advancing_pct = excluded.breadth_advancing_pct,
-                    breadth_median_pct = excluded.breadth_median_pct,
-                    raw_json = excluded.raw_json
-            """, (
-                _bugun(), datetime.now().isoformat(timespec="seconds"), simdi,
-                alanlar["btc_price_usd"], alanlar["btc_change_7d_pct"],
-                alanlar["btc_change_30d_pct"], alanlar["btc_sma50"],
-                alanlar["btc_sma200"], alanlar["ethbtc"],
-                alanlar["fear_greed"], alanlar["fear_greed_label"],
-                alanlar["btc_dominance_pct"], alanlar["total_market_cap_usd"],
-                alanlar["mcap_excl_btc_usd"], alanlar["dominance_source"],
-                alanlar["breadth_advancing_pct"], alanlar["breadth_median_pct"],
-                json.dumps(snapshot.get("blocks") or {}, ensure_ascii=False),
-            ))
+            # SÜTUN LİSTESİ ELLE YAZILMIYOR.
+            #
+            # Buradaki INSERT eskiden sütunları, soru işaretlerini, UPDATE
+            # satırlarını ve değer demetini AYRI AYRI sayıyordu; bir alan
+            # eklemek dört yeri birden düzeltmek demekti ve biri unutulursa
+            # sütun sessizce hep NULL kalırdı. Bu projede aynı sınıftan
+            # hatalar (borsa profillerindeki üç ayrı liste, iki ayrı işlem
+            # numarası üreticisi) pahalıya mal oldu. Artık tek doğru kaynak
+            # `_piyasa_alanlari`: oraya bir anahtar eklemek yeterli.
+            adlar = list(alanlar.keys())
+            sutunlar = ["taken_date", "taken_at", "taken_ts"] + adlar + ["raw_json"]
+            degerler = [_bugun(), datetime.now().isoformat(timespec="seconds"),
+                        simdi] + [alanlar[a] for a in adlar] + [
+                json.dumps(snapshot.get("blocks") or {}, ensure_ascii=False)]
+            # `taken_date` birincil anahtar; çakışmada kendisi güncellenmez.
+            guncellenecek = [c for c in sutunlar if c != "taken_date"]
+            conn.execute(
+                f"INSERT INTO market_snapshots ({', '.join(sutunlar)}) "
+                f"VALUES ({', '.join('?' * len(sutunlar))}) "
+                f"ON CONFLICT(taken_date) DO UPDATE SET "
+                + ", ".join(f"{c} = excluded.{c}" for c in guncellenecek),
+                degerler)
         return True
     except Exception as e:
         logger.warning("Piyasa fotoğrafı yazılamadı: %s", e)

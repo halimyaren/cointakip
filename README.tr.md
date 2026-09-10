@@ -75,6 +75,15 @@ Binance'teki BTC'nizle MEXC'teki BTC'nizin maliyet tabanı ayrı tutulur.
   gibi sunulmak yerine hiç gönderilmez. Analiz piyasa verisini asla beklemez —
   kaynaklardan biri gerçek bir bağlantıda 7-22 saniye sürdü, o yüzden her şey arka
   planda toplanır ve önbellekten okunur.
+- **Kaldıraç ortamı** — fonlama oranları ve açık pozisyon, diğer metriklerin
+  cevaplayamadığı bir soruyu ölçülebilir kılar: bir hareketin arkasında spot alım mı
+  var, kaldıraç mı? Fonlama tek çağrıyla 850+ perpetual'ın tamamından geliyor, yani
+  piyasa geneli dağılımı sıfır ek maliyetle çıkıyor. Uygulama bunlardan da **hüküm
+  üretmez**: "aşırı kaldıraç" gibi bir etiket yazmaz, oranı 8 saatlik ve
+  yıllıklandırılmış hâliyle verir. Açık pozisyon değişimi canlı değerin N gün önceki
+  günlük fotoğrafa göre farkıdır ve karşılaştırılan **iki zaman damgası da** kayda
+  geçer. Likidasyon verisi bilerek yok: Binance'in genel ucu kaldırılmış (ölçüldü,
+  `404`), alternatifleri ücretli — ulaşamadığımızı ulaşmış gibi göstermiyoruz.
 - **Ayar yedekleri** — her farklı ayar hâli, kaydetmeden hem önce hem sonra
   saklanır ve arayüzden geri yüklenebilir. Bunun sebebi somut: 5 Eylül 2026'da ayar
   dosyası varsayılanlarla üzerine yazıldı ve bir kullanıcının API anahtarları, cüzdan
