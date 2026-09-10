@@ -22,6 +22,10 @@ Testler ağa ÇIKMAZ: tüm zincir çağrıları taklit edilir.
 """
 
 import json
+import os
+import shutil
+import subprocess
+import textwrap
 import time
 
 import pytest
@@ -1575,3 +1579,114 @@ class TestOnemeGoreSiralama:
         satirlar = {r["asset"]: r["status"] for r in rapor["rows"]}
         assert satirlar["BTC"] == "match" and satirlar["ETH"] == "mismatch"
         assert [r["asset"] for r in rapor["rows"]] == ["ETH", "BTC"]
+
+
+# =====================================================================
+# Arayüz kapısı: spam token deftere GİRMEZ
+#
+# Sunucu tarafındaki kural test edilmişti, ekrandaki kapı edilmemişti.
+# Yani biri `chainAddableQty`i ya da düğmenin koşulunu değiştirse hiçbir
+# test düşmüyordu ve "+ Deftere Ekle" spam satırında sessizce geri gelebilirdi.
+#
+# Kullanıcının isteği netti: *"spam otomatik portföye girmesin"* — görünmesin
+# değil. Bu yüzden burada iki şey birden korunuyor: ekleme düğmesi spam
+# satırında ÇIKMAMALI, ama satır ve "Bu gerçek" işareti DURMALI.
+# =====================================================================
+def _statik(ad):
+    kok = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(kok, "app", "static", ad), encoding="utf-8") as f:
+        return f.read()
+
+
+def _islev_kaynagi(js, ad):
+    """`ad(r) { ... }` gövdesini süslü parantezleri sayarak çıkarır."""
+    imza = f"{ad}(r) {{"
+    bas = js.index(imza)
+    i = bas + len(imza) - 1
+    derinlik = 0
+    for son in range(i, len(js)):
+        if js[son] == "{":
+            derinlik += 1
+        elif js[son] == "}":
+            derinlik -= 1
+            if derinlik == 0:
+                return js[bas:son + 1]
+    raise AssertionError(f"{ad} gövdesi kapanmıyor")
+
+
+class TestArayuzSpamKapisi:
+
+    def test_ekleme_dugmesi_yalnizca_bu_islevle_kapili(self):
+        """Kapı tek bir yerde olmalı; ikinci bir koşul eklenirse buradaki
+        garantiler o yolu kapsamaz."""
+        html = _statik("index.html")
+        nerede = html.index("+ Deftere Ekle", html.index('@click="addFromChain'))
+        blok = html[html.rindex("<button", 0, nerede):nerede]
+        assert 'x-show="chainAddableQty(r) > 0"' in blok
+
+    def test_spam_satirinda_isaret_dugmesi_durur(self):
+        """Son söz kullanıcının: katlanmış bir satırı 'Bu gerçek' diyerek
+        geri alabilmeli, yoksa yanlış işaretlenen gerçek bir airdrop
+        sonsuza kadar eklenemez olurdu."""
+        html = _statik("index.html")
+        assert 'x-show="(r.likely_spam || r.needs_review) && (r.contracts || []).length"' in html
+
+    def test_spam_satirlari_varsayilan_olarak_katlanir(self):
+        js = _statik("app.js")
+        assert "if (!this.connShowSpam && r.likely_spam) return false;" in js
+
+
+@pytest.mark.skipif(shutil.which("node") is None,
+                    reason="node yok; davranış testi atlandı")
+class TestArayuzKapisiCalistirilarak:
+    """Metin eşleştirmesi kuralı değil yazılışını korur. Burada işlev
+    GERÇEKTEN çalıştırılıp dönen sayı denetleniyor."""
+
+    def _calistir(self, satirlar):
+        kaynak = _islev_kaynagi(_statik("app.js"), "chainAddableQty")
+        betik = textwrap.dedent("""
+            const api = { %s };
+            const girdiler = %s;
+            console.log(JSON.stringify(girdiler.map(r => api.chainAddableQty(r))));
+        """) % (kaynak, json.dumps(satirlar))
+        cikti = subprocess.run(["node", "-e", betik], capture_output=True,
+                               text=True, timeout=30)
+        assert cikti.returncode == 0, cikti.stderr
+        return json.loads(cikti.stdout.strip())
+
+    def _satir(self, **ustler):
+        r = {"chain_qty": 500.0, "diff_qty": 500.0, "status": "only_chain",
+             "likely_spam": False, "needs_review": False, "misplaced": False}
+        r.update(ustler)
+        return r
+
+    def test_spam_satiri_sifir_doner(self):
+        """Kullanıcının ACT endişesinin tam karşılığı."""
+        assert self._calistir([self._satir(likely_spam=True)]) == [0]
+
+    def test_hukum_verilmemis_satir_sifir_doner(self):
+        """Spam KATLANIR, bu satır GÖRÜNÜR kalır — yalnızca ekleme önerilmez."""
+        assert self._calistir([self._satir(needs_review=True)]) == [0]
+
+    def test_yanlis_konumdaki_varlik_sifir_doner(self):
+        """Eklemek çift sayardı; yapılacak şey konumu düzeltmek."""
+        assert self._calistir([self._satir(misplaced=True)]) == [0]
+
+    def test_temiz_satir_miktari_doner(self):
+        """Kapı her şeyi kapatmamalı; gerçek bir varlık eklenebilmeli."""
+        assert self._calistir([self._satir()]) == [500.0]
+
+    def test_zincir_miktari_yoksa_sifir(self):
+        assert self._calistir([self._satir(chain_qty=None)]) == [0]
+
+    def test_kismi_eksikte_yalnizca_fark_onerilir(self):
+        """Zincirde defterden fazla varsa eklenecek olan farktır."""
+        assert self._calistir([
+            self._satir(status="mismatch", chain_qty=500.0, diff_qty=120.0)
+        ]) == [120.0]
+
+    def test_spam_isareti_diger_kosullari_EZER(self):
+        """Satır her bakımdan eklenebilir görünse bile spam ise girmez."""
+        assert self._calistir([
+            self._satir(likely_spam=True, status="only_chain", chain_qty=999.0)
+        ]) == [0]
